@@ -38,23 +38,21 @@ SR_LINE = "#58a6ff"
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 1.0rem; padding-bottom: 3rem; max-width: 1500px; }
+      /* Üstten bol boşluk — Streamlit'in kendi üst çubuğu içeriği kırpmasın */
+      .block-container { padding-top: 3.2rem; padding-bottom: 3rem; max-width: 1500px; }
       h1, h2, h3 { letter-spacing: .3px; }
       .section-title { font-size: 1.35rem; font-weight: 700; margin: 1.1rem 0 .3rem 0; }
       .section-sub { color: #8b949e; font-size: .85rem; margin-bottom: 1.1rem; }
-      /* Üst bar her zaman görünür kalsın (scroll ederken kaybolmasın) */
-      .st-key-detail_topbar, .st-key-fullchart_topbar {
-        position: sticky; top: 0; z-index: 999;
-        background: #0e1117; padding: .7rem 0 .8rem 0;
-        border-bottom: 1px solid #30363d; margin-bottom: .9rem;
+      /* Detay/Full-chart üst barı: normal akışta, altına ayraç + boşluk */
+      .st-key-detail_topbar, .st-key-fullchart_topbar, .st-key-watchlist_topbar {
+        padding: .3rem 0 .9rem 0; border-bottom: 1px solid #30363d; margin-bottom: 1.1rem;
       }
-      /* Markt-Kartenkopf */
-      .idx-head { display:flex; align-items:baseline; justify-content:space-between;
-                  gap:.6rem; margin-bottom:.5rem; flex-wrap:wrap; }
-      .idx-tick { font-size: 1.1rem; font-weight: 800; line-height: 1.2; white-space:nowrap; }
-      .idx-sub  { color: #8b949e; font-size: .72rem; line-height:1.2; }
-      .idx-last { font-size: 1.0rem; font-weight: 700; line-height:1.2; white-space:nowrap; }
-      .idx-chg  { font-weight:700; font-size:.82rem; white-space:nowrap; }
+      /* Markt-Kartenkopf — iki blok dikeyde, üst üste binmeyi tamamen önler */
+      .idx-head { margin-bottom:.5rem; }
+      .idx-tick { font-size: 1.1rem; font-weight: 800; line-height: 1.25; }
+      .idx-sub  { color: #8b949e; font-size: .72rem; line-height:1.3; margin-bottom:.35rem; }
+      .idx-last { font-size: 1.0rem; font-weight: 700; line-height:1.3; display:inline; }
+      .idx-chg  { font-weight:700; font-size:.82rem; display:inline; margin-left:.4rem; }
       /* Haber kartı */
       .news-item { display:flex; justify-content:space-between; gap:.6rem;
                    padding:.55rem 0; border-bottom:1px solid #21262d; }
@@ -77,11 +75,11 @@ st.markdown(
       .kv .k { color:#8b949e; font-size:.70rem; text-transform:uppercase; }
       .kv .v { font-size:1.02rem; font-weight:700; margin-top:.15rem; }
       /* Detay sayfası stat satırları (Bild 2 benzeri) */
-      .stat-row { display:flex; justify-content:space-between; align-items:center;
-                  padding:.62rem .3rem; border-bottom:1px solid #21262d; font-size:.92rem;
-                  line-height:1.3; min-height:1.6rem; }
-      .stat-row .lbl { color:#8b949e; }
-      .stat-row .val { font-weight:600; }
+      .stat-row { display:flex; justify-content:space-between; align-items:baseline;
+                  gap:.8rem; padding:.6rem .3rem; border-bottom:1px solid #21262d;
+                  font-size:.9rem; line-height:1.35; }
+      .stat-row .lbl { color:#8b949e; flex:0 0 auto; }
+      .stat-row .val { font-weight:600; text-align:right; }
       .pick-note { background:#12171f; border-left:3px solid #58a6ff; border-radius:6px;
                    padding:.65rem .85rem; color:#b9c2cc; font-size:.82rem;
                    line-height:1.5; margin-top:.5rem; }
@@ -95,6 +93,7 @@ ss = st.session_state
 ss.setdefault("view", "dashboard")
 ss.setdefault("selected", None)
 ss.setdefault("tf", "6M")
+ss.setdefault("watchlist", [])   # kullanıcının izleme listesi (ticker listesi)
 
 
 # ----------------------------------------------------------------------
@@ -248,18 +247,18 @@ def render_detail(ticker):
     d = md.get_company_detail(ticker)
     logo = md.logo_url(ticker)
 
-    # Üst bar: geri + isim + aksiyon butonları — sticky, scroll'da kaybolmaz
+    # Üst bar — normal akışta, üstten bol boşlukla tam görünür
     with st.container(key="detail_topbar"):
-        top = st.columns([0.6, 5, 1.2, 1.2])
+        top = st.columns([0.8, 4.4, 1.4, 1.6])
         with top[0]:
             if st.button("← Geri", key="back"):
                 ss.view = "dashboard"
                 st.rerun()
         with top[1]:
-            logo_html = f'<img src="{logo}" class="firm-logo" style="width:32px;height:32px">' if logo else ""
+            logo_html = f'<img src="{logo}" class="firm-logo" style="width:34px;height:34px">' if logo else ""
             st.markdown(
                 f'<div style="display:flex;align-items:center;gap:.6rem">{logo_html}'
-                f'<div><div style="font-size:1.25rem;font-weight:800;line-height:1.1">{d["name"]}</div>'
+                f'<div><div style="font-size:1.25rem;font-weight:800;line-height:1.15">{d["name"]}</div>'
                 f'<div style="color:#8b949e;font-size:.78rem">{ticker} · {d["sector"]} · USD</div></div></div>',
                 unsafe_allow_html=True)
         with top[2]:
@@ -267,7 +266,14 @@ def render_detail(ticker):
                 ss.view = "fullchart"
                 st.rerun()
         with top[3]:
-            st.button("☆ Watchlist", key="wl_btn")
+            in_wl = ticker in ss.watchlist
+            label = "★ Listede" if in_wl else "☆ Watchlist"
+            if st.button(label, key="wl_btn"):
+                if in_wl:
+                    ss.watchlist.remove(ticker)
+                else:
+                    ss.watchlist.append(ticker)
+                st.rerun()
 
     # Fiyat satırı
     col = UP if d["change_abs"] >= 0 else DOWN
@@ -353,11 +359,85 @@ def render_fullchart(ticker):
 
 
 # ======================================================================
+# WATCHLIST SAYFASI
+# ======================================================================
+def render_watchlist():
+    with st.container(key="watchlist_topbar"):
+        top = st.columns([0.8, 5])
+        with top[0]:
+            if st.button("← Geri", key="back_wl"):
+                ss.view = "dashboard"
+                st.rerun()
+        with top[1]:
+            st.markdown(f"### ⭐ Watchlist — {len(ss.watchlist)} şirket")
+
+    if not ss.watchlist:
+        st.info("İzleme listen boş. Bir şirketin detay sayfasını aç ve sağ üstteki "
+                "**☆ Watchlist** butonuna basarak ekle.")
+        return
+
+    # İzlenen şirketler — mini kartlar, tıkla -> detay
+    st.markdown('<div class="section-title">İzlenen Şirketler</div>', unsafe_allow_html=True)
+    PER_ROW = 4
+    wl = list(ss.watchlist)
+    for i in range(0, len(wl), PER_ROW):
+        row = st.columns(PER_ROW)
+        for col, ticker in zip(row, wl[i:i + PER_ROW]):
+            info = md.COMPANIES[ticker]
+            d = md.get_company_detail(ticker)
+            c = UP if d["change_pct"] >= 0 else DOWN
+            with col:
+                with st.container(border=True):
+                    lc, nc = st.columns([1, 3])
+                    with lc:
+                        logo = md.logo_url(ticker)
+                        if logo:
+                            st.markdown(f'<img src="{logo}" class="firm-logo">', unsafe_allow_html=True)
+                    with nc:
+                        st.markdown(
+                            f'<div class="firm-name">{info["name"]}</div>'
+                            f'<div class="firm-tick">{ticker} · '
+                            f'<span style="color:{c}">${d["last"]:,.2f} ({d["change_pct"]:+.2f}%)</span></div>',
+                            unsafe_allow_html=True)
+                    b1, b2 = st.columns(2)
+                    with b1:
+                        if st.button("Aç", key=f"wlopen_{ticker}"):
+                            ss.selected = ticker
+                            ss.view = "detail"
+                            st.rerun()
+                    with b2:
+                        if st.button("Çıkar", key=f"wlrm_{ticker}"):
+                            ss.watchlist.remove(ticker)
+                            st.rerun()
+
+    # Watchlist haberleri — aşağı scroll
+    st.divider()
+    st.markdown('<div class="section-title">Watchlist Haberleri</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">İzlediğin şirketlere dair en yeni haberler</div>',
+                unsafe_allow_html=True)
+    sentiment_color = {"Positive": UP, "Negative": DOWN, "Neutral": "#8b949e"}
+    for item in md.get_watchlist_news(list(ss.watchlist)):
+        dot = sentiment_color.get(item["sentiment"], "#8b949e")
+        st.markdown(
+            f'<div class="news-item">'
+            f'<div class="news-title"><span class="news-dot" style="background:{dot}"></span>'
+            f'<b style="color:#e6edf3">{item["ticker"]}</b> &nbsp;{item["title"]}</div>'
+            f'<div class="news-meta">{item["source"]} · {item["when"]}</div>'
+            f'</div>', unsafe_allow_html=True)
+
+
+# ======================================================================
 # DASHBOARD
 # ======================================================================
 def render_dashboard():
-    st.markdown("## 📈 Swing Trade Dashboard")
-    st.caption("Mock veri ile çalışıyor — gerçek veriyi sonradan mock_data.py üzerinden bağla.")
+    head = st.columns([5, 1.3])
+    with head[0]:
+        st.markdown("## 📈 Swing Trade Dashboard")
+        st.caption("Mock veri ile çalışıyor — gerçek veriyi sonradan mock_data.py üzerinden bağla.")
+    with head[1]:
+        if st.button(f"⭐ Watchlist ({len(ss.watchlist)})", key="go_wl"):
+            ss.view = "watchlist"
+            st.rerun()
     st.divider()
 
     # --- 1) MARKET (Bild 1 düzeni) ---
@@ -370,15 +450,14 @@ def render_dashboard():
             with st.container(border=True):
                 sign = "▲" if idx["change_pct"] >= 0 else "▼"
                 color = UP if idx["change_pct"] >= 0 else DOWN
-                # Üst satır: ticker + alt başlık solda, fiyat + değişim sağda
+                # Dikey düzen: ticker -> alt başlık -> fiyat + değişim (hepsi ayrı satır)
                 st.markdown(
                     f'<div class="idx-head">'
-                    f'<div><div class="idx-tick">{idx["ticker"]}</div>'
-                    f'<div class="idx-sub">{idx["subtitle"]}</div></div>'
-                    f'<div style="text-align:right">'
-                    f'<div class="idx-last">{idx["last"]:,.2f}</div>'
-                    f'<div class="idx-chg" style="color:{color}">{sign} {idx["change_pct"]:+.2f}%</div>'
-                    f'</div></div>',
+                    f'<div class="idx-tick">{idx["ticker"]}</div>'
+                    f'<div class="idx-sub">{idx["subtitle"]}</div>'
+                    f'<div><span class="idx-last">{idx["last"]:,.2f}</span>'
+                    f'<span class="idx-chg" style="color:{color}">{sign} {idx["change_pct"]:+.2f}%</span></div>'
+                    f'</div>',
                     unsafe_allow_html=True)
                 # Grafik tam genişlikte, altta — artık metinle yarışmıyor
                 st.plotly_chart(
@@ -478,5 +557,7 @@ if ss.view == "detail" and ss.selected:
     render_detail(ss.selected)
 elif ss.view == "fullchart" and ss.selected:
     render_fullchart(ss.selected)
+elif ss.view == "watchlist":
+    render_watchlist()
 else:
     render_dashboard()
