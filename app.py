@@ -43,9 +43,19 @@ st.markdown(
       .section-title { font-size: 1.35rem; font-weight: 700; margin: .4rem 0 .2rem 0; }
       .section-sub { color: #8b949e; font-size: .85rem; margin-bottom: .8rem; }
       /* Markt-Kartenkopf */
-      .idx-tick { font-size: 1.15rem; font-weight: 800; line-height: 1.1; }
-      .idx-sub  { color: #8b949e; font-size: .72rem; margin-bottom: .2rem; }
-      .idx-last { font-size: .95rem; font-weight: 700; }
+      .idx-head { display:flex; align-items:baseline; justify-content:space-between;
+                  gap:.5rem; margin-bottom:.3rem; flex-wrap:wrap; }
+      .idx-tick { font-size: 1.1rem; font-weight: 800; line-height: 1.2; white-space:nowrap; }
+      .idx-sub  { color: #8b949e; font-size: .72rem; line-height:1.2; }
+      .idx-last { font-size: 1.0rem; font-weight: 700; line-height:1.2; white-space:nowrap; }
+      .idx-chg  { font-weight:700; font-size:.82rem; white-space:nowrap; }
+      /* Haber kartı */
+      .news-item { display:flex; justify-content:space-between; gap:.6rem;
+                   padding:.55rem 0; border-bottom:1px solid #21262d; }
+      .news-title { font-size:.88rem; line-height:1.35; }
+      .news-meta  { color:#8b949e; font-size:.74rem; white-space:nowrap; padding-top:.1rem; }
+      .news-dot   { display:inline-block; width:7px; height:7px; border-radius:50%;
+                    margin-right:.4rem; }
       /* Şirket kartı */
       .firm-name { font-weight:600; font-size:.95rem; line-height:1.05; }
       .firm-tick { color:#8b949e; font-size:.72rem; }
@@ -208,17 +218,20 @@ def slice_timeframe(df_full, tf):
     return df_full.tail(n)
 
 
-# ----------------------------------------------------------------------
-# Full-Chart Dialog (Vollbild beim Klick auf "Full Chart")
-# ----------------------------------------------------------------------
-@st.dialog("Full Chart", width="large")
-def full_chart_dialog(ticker):
-    df_full = _ohlc_detail(ticker)
-    tf = st.radio("Zeitraum", list(TF_DAYS.keys()), index=list(TF_DAYS.keys()).index(ss.tf),
-                  horizontal=True, key="tf_full", label_visibility="collapsed")
-    df = slice_timeframe(df_full, tf)
-    st.plotly_chart(ta_chart(df, f"{ticker} — {tf}", height=700, show_sr=True),
-                    use_container_width=True)
+def render_news(ticker):
+    """Grafiğin altına konan haber listesi. Popup değil, sayfanın normal bir
+    parçası — bu yüzden sayfayla birlikte sorunsuz kayar (scroll)."""
+    st.markdown('<div class="section-title" style="font-size:1.05rem;margin-top:1rem">'
+                'İlgili Haberler</div>', unsafe_allow_html=True)
+    sentiment_color = {"Positive": UP, "Negative": DOWN, "Neutral": "#8b949e"}
+    for item in md.get_company_news(ticker):
+        dot = sentiment_color.get(item["sentiment"], "#8b949e")
+        st.markdown(
+            f'<div class="news-item">'
+            f'<div class="news-title"><span class="news-dot" style="background:{dot}"></span>'
+            f'{item["title"]}</div>'
+            f'<div class="news-meta">{item["source"]} · {item["when"]}</div>'
+            f'</div>', unsafe_allow_html=True)
 
 
 # ======================================================================
@@ -243,7 +256,8 @@ def render_detail(ticker):
             unsafe_allow_html=True)
     with top[2]:
         if st.button("⛶ Full Chart", key="fc_btn"):
-            full_chart_dialog(ticker)
+            ss.view = "fullchart"
+            st.rerun()
     with top[3]:
         st.button("☆ Watchlist", key="wl_btn")
 
@@ -298,6 +312,35 @@ def render_detail(ticker):
                         use_container_width=True)
         st.caption("Grafiğe tam ekran bakmak için üstteki **⛶ Full Chart** butonuna bas.")
 
+    st.divider()
+    render_news(ticker)
+
+
+# ======================================================================
+# TAM EKRAN GRAFİK SAYFASI ("Full Chart" butonuna basınca)
+# ======================================================================
+def render_fullchart(ticker):
+    info = md.COMPANIES[ticker]
+    top = st.columns([0.7, 5])
+    with top[0]:
+        if st.button("← Geri", key="back_fc"):
+            ss.view = "detail"
+            st.rerun()
+    with top[1]:
+        st.markdown(f"### {info['name']} ({ticker}) — Tam Ekran Grafik")
+
+    tfs = list(TF_DAYS.keys())
+    tf = st.radio("Zeitraum", tfs, index=tfs.index(ss.tf),
+                  horizontal=True, key="tf_full", label_visibility="collapsed")
+    ss.tf = tf
+    df_full = _ohlc_detail(ticker)
+    df = slice_timeframe(df_full, tf)
+    st.plotly_chart(ta_chart(df, f"{ticker} — {tf}", height=680, show_sr=True),
+                    use_container_width=True)
+
+    st.divider()
+    render_news(ticker)
+
 
 # ======================================================================
 # DASHBOARD
@@ -317,19 +360,20 @@ def render_dashboard():
             with st.container(border=True):
                 sign = "▲" if idx["change_pct"] >= 0 else "▼"
                 color = UP if idx["change_pct"] >= 0 else DOWN
-                head, chart = st.columns([1, 1.5])
-                with head:
-                    st.markdown(
-                        f'<div class="idx-tick">{idx["ticker"]}</div>'
-                        f'<div class="idx-sub">{idx["subtitle"]}</div>'
-                        f'<div class="idx-last">{idx["last"]:,.2f}</div>'
-                        f'<div style="color:{color};font-weight:700;font-size:.85rem">'
-                        f'{sign} {idx["change_pct"]:+.2f}%</div>',
-                        unsafe_allow_html=True)
-                with chart:
-                    st.plotly_chart(
-                        mini_index_chart(idx["series"], idx["prev_close"], idx["change_pct"]),
-                        use_container_width=True, config={"displayModeBar": False})
+                # Üst satır: ticker + alt başlık solda, fiyat + değişim sağda
+                st.markdown(
+                    f'<div class="idx-head">'
+                    f'<div><div class="idx-tick">{idx["ticker"]}</div>'
+                    f'<div class="idx-sub">{idx["subtitle"]}</div></div>'
+                    f'<div style="text-align:right">'
+                    f'<div class="idx-last">{idx["last"]:,.2f}</div>'
+                    f'<div class="idx-chg" style="color:{color}">{sign} {idx["change_pct"]:+.2f}%</div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True)
+                # Grafik tam genişlikte, altta — artık metinle yarışmıyor
+                st.plotly_chart(
+                    mini_index_chart(idx["series"], idx["prev_close"], idx["change_pct"]),
+                    use_container_width=True, config={"displayModeBar": False})
 
     st.divider()
 
@@ -417,5 +461,7 @@ def render_dashboard():
 # ======================================================================
 if ss.view == "detail" and ss.selected:
     render_detail(ss.selected)
+elif ss.view == "fullchart" and ss.selected:
+    render_fullchart(ss.selected)
 else:
     render_dashboard()
