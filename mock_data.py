@@ -66,7 +66,21 @@ COMPANIES = {
               "desc": "ABD merkezli en büyük kripto para borsalarından biri; perakende ve kurumsal işlem."},
     "SNOW":  {"name": "Snowflake",      "domain": "snowflake.com",  "sector": "Software",
               "desc": "Bulut tabanlı veri ambarı ve veri analitiği platformu; kullandıkça öde modeli."},
+    # Endeks ETF'leri — Märkte kartlarına tıklayınca aynı detay sayfasını kullanabilmek için
+    "SPY":   {"name": "SPDR S&P 500 ETF",         "domain": "ssga.com",    "sector": "Index ETF",
+              "desc": "S&P 500 endeksini takip eden en büyük ve en likit borsa yatırım fonu (ETF); ABD'nin en büyük 500 halka açık şirketini kapsar."},
+    "QQQ":   {"name": "Invesco QQQ Trust",         "domain": "invesco.com","sector": "Index ETF",
+              "desc": "Nasdaq-100 endeksini takip eden ETF; ağırlıklı olarak teknoloji ve büyüme odaklı şirketlerden oluşur."},
+    "DIA":   {"name": "SPDR Dow Jones Industrial Average ETF", "domain": "ssga.com", "sector": "Index ETF",
+              "desc": "Dow Jones Endüstri Ortalaması'nı takip eden ETF; 30 büyük ve köklü ABD şirketini fiyat ağırlıklı olarak izler."},
+    "IWM":   {"name": "iShares Russell 2000 ETF",  "domain": "ishares.com","sector": "Index ETF",
+              "desc": "Russell 2000 endeksini takip eden ETF; ABD'li küçük ölçekli (small-cap) şirketleri kapsar."},
 }
+
+# Endeks ETF'leri için gerçekçi başlangıç fiyatı (genel 40-420 aralığındaki rastgele
+# başlangıç yerine). get_index_summary()'deki prev_close değerleriyle aynı seviyede
+# tutuluyor ki Märkte kartındaki fiyat ile detay sayfasındaki grafik birbirini tutsun.
+_BASE_PRICE_OVERRIDE = {"SPY": 560.0, "QQQ": 485.0, "DIA": 421.0, "IWM": 228.0}
 
 
 def logo_url(ticker: str) -> str:
@@ -97,7 +111,7 @@ def _full_ohlc(ticker: str) -> pd.DataFrame:
     rng = np.random.default_rng(_seed(ticker))
     dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=_FULL_DAYS)
 
-    start = rng.uniform(40, 420)
+    start = _BASE_PRICE_OVERRIDE.get(ticker, rng.uniform(40, 420))
     drift = rng.uniform(-0.0001, 0.0007)
     rets = rng.normal(drift, 0.018, _FULL_DAYS)
     close = start * np.cumprod(1 + rets)
