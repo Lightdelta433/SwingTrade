@@ -40,11 +40,17 @@ st.markdown(
     <style>
       .block-container { padding-top: 1.0rem; padding-bottom: 3rem; max-width: 1500px; }
       h1, h2, h3 { letter-spacing: .3px; }
-      .section-title { font-size: 1.35rem; font-weight: 700; margin: .4rem 0 .2rem 0; }
-      .section-sub { color: #8b949e; font-size: .85rem; margin-bottom: .8rem; }
+      .section-title { font-size: 1.35rem; font-weight: 700; margin: 1.1rem 0 .3rem 0; }
+      .section-sub { color: #8b949e; font-size: .85rem; margin-bottom: 1.1rem; }
+      /* Üst bar her zaman görünür kalsın (scroll ederken kaybolmasın) */
+      .st-key-detail_topbar, .st-key-fullchart_topbar {
+        position: sticky; top: 0; z-index: 999;
+        background: #0e1117; padding: .7rem 0 .8rem 0;
+        border-bottom: 1px solid #30363d; margin-bottom: .9rem;
+      }
       /* Markt-Kartenkopf */
       .idx-head { display:flex; align-items:baseline; justify-content:space-between;
-                  gap:.5rem; margin-bottom:.3rem; flex-wrap:wrap; }
+                  gap:.6rem; margin-bottom:.5rem; flex-wrap:wrap; }
       .idx-tick { font-size: 1.1rem; font-weight: 800; line-height: 1.2; white-space:nowrap; }
       .idx-sub  { color: #8b949e; font-size: .72rem; line-height:1.2; }
       .idx-last { font-size: 1.0rem; font-weight: 700; line-height:1.2; white-space:nowrap; }
@@ -67,17 +73,18 @@ st.markdown(
       .stButton button:hover { border-color:#f6c177; color:#f6c177; }
       /* Key-Value Blöcke */
       .kv { background:#161b22; border:1px solid #30363d; border-radius:10px;
-            padding:.5rem .7rem; margin-bottom:.4rem; }
+            padding:.6rem .8rem; margin-bottom:.6rem; }
       .kv .k { color:#8b949e; font-size:.70rem; text-transform:uppercase; }
-      .kv .v { font-size:1.02rem; font-weight:700; }
+      .kv .v { font-size:1.02rem; font-weight:700; margin-top:.15rem; }
       /* Detay sayfası stat satırları (Bild 2 benzeri) */
-      .stat-row { display:flex; justify-content:space-between;
-                  padding:.42rem .2rem; border-bottom:1px solid #21262d; font-size:.9rem; }
+      .stat-row { display:flex; justify-content:space-between; align-items:center;
+                  padding:.62rem .3rem; border-bottom:1px solid #21262d; font-size:.92rem;
+                  line-height:1.3; min-height:1.6rem; }
       .stat-row .lbl { color:#8b949e; }
       .stat-row .val { font-weight:600; }
       .pick-note { background:#12171f; border-left:3px solid #58a6ff; border-radius:6px;
-                   padding:.55rem .75rem; color:#b9c2cc; font-size:.82rem;
-                   line-height:1.45; margin-top:.2rem; }
+                   padding:.65rem .85rem; color:#b9c2cc; font-size:.82rem;
+                   line-height:1.5; margin-top:.5rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -241,25 +248,26 @@ def render_detail(ticker):
     d = md.get_company_detail(ticker)
     logo = md.logo_url(ticker)
 
-    # Üst bar: geri + isim + aksiyon butonları
-    top = st.columns([0.6, 5, 1.2, 1.2])
-    with top[0]:
-        if st.button("← Geri", key="back"):
-            ss.view = "dashboard"
-            st.rerun()
-    with top[1]:
-        logo_html = f'<img src="{logo}" class="firm-logo" style="width:40px;height:40px">' if logo else ""
-        st.markdown(
-            f'<div style="display:flex;align-items:center;gap:.6rem">{logo_html}'
-            f'<div><div style="font-size:1.5rem;font-weight:800;line-height:1.1">{d["name"]}</div>'
-            f'<div style="color:#8b949e;font-size:.8rem">{ticker} · {d["sector"]} · USD</div></div></div>',
-            unsafe_allow_html=True)
-    with top[2]:
-        if st.button("⛶ Full Chart", key="fc_btn"):
-            ss.view = "fullchart"
-            st.rerun()
-    with top[3]:
-        st.button("☆ Watchlist", key="wl_btn")
+    # Üst bar: geri + isim + aksiyon butonları — sticky, scroll'da kaybolmaz
+    with st.container(key="detail_topbar"):
+        top = st.columns([0.6, 5, 1.2, 1.2])
+        with top[0]:
+            if st.button("← Geri", key="back"):
+                ss.view = "dashboard"
+                st.rerun()
+        with top[1]:
+            logo_html = f'<img src="{logo}" class="firm-logo" style="width:32px;height:32px">' if logo else ""
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:.6rem">{logo_html}'
+                f'<div><div style="font-size:1.25rem;font-weight:800;line-height:1.1">{d["name"]}</div>'
+                f'<div style="color:#8b949e;font-size:.78rem">{ticker} · {d["sector"]} · USD</div></div></div>',
+                unsafe_allow_html=True)
+        with top[2]:
+            if st.button("⛶ Full Chart", key="fc_btn"):
+                ss.view = "fullchart"
+                st.rerun()
+        with top[3]:
+            st.button("☆ Watchlist", key="wl_btn")
 
     # Fiyat satırı
     col = UP if d["change_abs"] >= 0 else DOWN
@@ -296,6 +304,7 @@ def render_detail(ticker):
             stat_row("Dividend", div)
             stat_row("Analysts", d["analysts"])
             stat_row("Price Target", f'${d["price_target"]:,.2f} (+{d["target_upside"]:.1f}%)')
+        st.markdown('<div style="height:.5rem"></div>', unsafe_allow_html=True)
         ed = d["earnings_date"].strftime("%b %d, %Y")
         xd = d["ex_div_date"].strftime("%b %d, %Y") if d["ex_div_date"] is not None else "—"
         stat_row("Earnings Date", ed)
@@ -321,13 +330,14 @@ def render_detail(ticker):
 # ======================================================================
 def render_fullchart(ticker):
     info = md.COMPANIES[ticker]
-    top = st.columns([0.7, 5])
-    with top[0]:
-        if st.button("← Geri", key="back_fc"):
-            ss.view = "detail"
-            st.rerun()
-    with top[1]:
-        st.markdown(f"### {info['name']} ({ticker}) — Tam Ekran Grafik")
+    with st.container(key="fullchart_topbar"):
+        top = st.columns([0.7, 5])
+        with top[0]:
+            if st.button("← Geri", key="back_fc"):
+                ss.view = "detail"
+                st.rerun()
+        with top[1]:
+            st.markdown(f"### {info['name']} ({ticker}) — Tam Ekran Grafik")
 
     tfs = list(TF_DAYS.keys())
     tf = st.radio("Zeitraum", tfs, index=tfs.index(ss.tf),
@@ -374,6 +384,11 @@ def render_dashboard():
                 st.plotly_chart(
                     mini_index_chart(idx["series"], idx["prev_close"], idx["change_pct"]),
                     use_container_width=True, config={"displayModeBar": False})
+                # Şirket kartlarıyla aynı davranış: tıkla -> aynı detay sayfası açılır
+                if st.button("Detayları gör", key=f"btn_{idx['ticker']}"):
+                    ss.selected = idx["ticker"]
+                    ss.view = "detail"
+                    st.rerun()
 
     st.divider()
 
