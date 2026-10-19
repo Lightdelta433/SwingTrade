@@ -281,6 +281,44 @@ def get_company_detail(ticker: str) -> dict:
 
 
 # ----------------------------------------------------------------------
+# Şirket haberleri (detay sayfasında grafiğin altında gösterilir)
+# ----------------------------------------------------------------------
+_NEWS_TEMPLATES = [
+    ("{name} için analistler fiyat hedefini yükseltti", "Reuters", "Positive"),
+    ("{name} çeyreklik kazançları piyasa beklentilerini aştı", "Bloomberg", "Positive"),
+    ("{name} yeni ürün/hizmet lansmanını duyurdu", "TechCrunch", "Positive"),
+    ("{name} hissesinde kâr realizasyonu satışı görüldü", "MarketWatch", "Negative"),
+    ("{name}, tedarik zinciri maliyetleri konusunda uyardı", "CNBC", "Negative"),
+    ("{name} CEO'su büyüme stratejisini yatırımcılara anlattı", "Yahoo Finance", "Neutral"),
+    ("{name} hisseleri sektör ortalamasının üzerinde performans gösterdi", "Seeking Alpha", "Positive"),
+    ("{name} hisse geri alım programını genişletti", "Reuters", "Positive"),
+    ("{name} düzenleyici inceleme haberiyle baskı altında", "Bloomberg", "Negative"),
+    ("{name} yapay zeka / Ar-Ge yatırımlarını artıracağını açıkladı", "CNBC", "Neutral"),
+    ("Kurumsal yatırımcılar {name} payını artırdı", "Barron's", "Positive"),
+    ("{name} için \"Hold\" notu korundu, hedef fiyat sabit", "Morningstar", "Neutral"),
+]
+
+
+def get_company_news(ticker: str, n: int = 6) -> list[dict]:
+    """Detay sayfasında grafiğin altında gösterilecek haber listesi.
+    Her haber: title, source, when (göreli zaman), sentiment (Positive/Negative/Neutral).
+    Gerçek veride: bir haber API'sinden (NewsAPI, Finnhub vb.) çekip aynı
+    anahtarlarla döndür — en yeni haber listenin başında olacak şekilde sırala."""
+    rng = np.random.default_rng(_seed(ticker) + 555)
+    name = COMPANIES[ticker]["name"]
+    n = min(n, len(_NEWS_TEMPLATES))
+    idxs = rng.choice(len(_NEWS_TEMPLATES), size=n, replace=False)
+    hours_ago = sorted(int(h) for h in rng.integers(1, 96, size=n))
+    news = []
+    for idx, hours in zip(idxs, hours_ago):
+        title_t, source, sentiment = _NEWS_TEMPLATES[idx]
+        when = f"{hours} saat önce" if hours < 24 else f"{hours // 24} gün önce"
+        news.append({"title": title_t.format(name=name), "source": source,
+                     "when": when, "sentiment": sentiment})
+    return news
+
+
+# ----------------------------------------------------------------------
 # Trading Strategy Picks (filtredekilerin bir kısmı, TA'ya göre)
 # ----------------------------------------------------------------------
 def get_strategy_picks() -> list[dict]:
