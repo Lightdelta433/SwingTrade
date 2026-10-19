@@ -327,9 +327,19 @@ def get_company_news(ticker: str, n: int = 6) -> list[dict]:
     for idx, hours in zip(idxs, hours_ago):
         title_t, source, sentiment = _NEWS_TEMPLATES[idx]
         when = f"{hours} saat önce" if hours < 24 else f"{hours // 24} gün önce"
-        news.append({"title": title_t.format(name=name), "source": source,
-                     "when": when, "sentiment": sentiment})
+        news.append({"ticker": ticker, "title": title_t.format(name=name), "source": source,
+                     "when": when, "hours_ago": int(hours), "sentiment": sentiment})
     return news
+
+
+def get_watchlist_news(tickers: list[str], per_ticker: int = 3) -> list[dict]:
+    """Watchlist'teki şirketlerin haberlerini birleştirip en yeniden eskiye sıralar.
+    Her haberde ayrıca 'ticker' alanı var ki hangi şirkete ait görülebilsin."""
+    all_news = []
+    for t in tickers:
+        all_news.extend(get_company_news(t, n=per_ticker))
+    all_news.sort(key=lambda x: x["hours_ago"])
+    return all_news
 
 
 # ----------------------------------------------------------------------
