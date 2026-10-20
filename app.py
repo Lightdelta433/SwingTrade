@@ -93,7 +93,9 @@ ss = st.session_state
 ss.setdefault("view", "dashboard")
 ss.setdefault("selected", None)
 ss.setdefault("tf", "6M")
-ss.setdefault("watchlist", [])   # kullanıcının izleme listesi (ticker listesi)
+ss.setdefault("section", "Watchlist")   # varsayılan açılış bölümü
+# Watchlist boş başlamasın: ilk açılışta örnek 10 şirketle dolu gelsin
+ss.setdefault("watchlist", list(md.DEFAULT_WATCHLIST))
 
 
 # ----------------------------------------------------------------------
@@ -194,9 +196,11 @@ def ta_chart(df, title, height=560, show_sr=False, show_formation=False,
         fig.add_trace(go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors,
                              name="Volume", opacity=0.6), row=2, col=1)
 
+    # Başlık artık plotly içinde değil (legend ile çakışıyordu); çağıran taraf
+    # markdown ile başlık yazıyor. Legend grafiğin üstünde tek başına duruyor.
     fig.update_layout(
-        template="plotly_dark", height=height, title=dict(text=title, font=dict(size=15)),
-        margin=dict(l=10, r=10, t=40, b=10), showlegend=True,
+        template="plotly_dark", height=height,
+        margin=dict(l=10, r=10, t=34, b=10), showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=10)),
         xaxis_rangeslider_visible=False, hovermode="x unified",
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -204,6 +208,18 @@ def ta_chart(df, title, height=560, show_sr=False, show_formation=False,
     fig.update_xaxes(gridcolor="#21262d")
     fig.update_yaxes(gridcolor="#21262d")
     return fig
+
+
+# Grafik toolbar'ı HEP görünür (zoom, pan, autoscale, reset her zaman ekranda)
+CHART_CONFIG = {
+    "displayModeBar": True, "displaylogo": False,
+    "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+}
+
+
+def chart_title(text):
+    st.markdown(f'<div style="font-weight:700;font-size:1rem;margin:.2rem 0 .1rem 0">'
+                f'{text}</div>', unsafe_allow_html=True)
 
 
 def kv_block(label, value):
@@ -324,8 +340,9 @@ def render_detail(ticker):
         df_full = _ohlc_detail(ticker)
         df = slice_timeframe(df_full, tf)
         st.plotly_chart(ta_chart(df, "", height=430, show_sr=True),
-                        use_container_width=True)
-        st.caption("Grafiğe tam ekran bakmak için üstteki **⛶ Full Chart** butonuna bas.")
+                        use_container_width=True, config=CHART_CONFIG)
+        st.caption("Grafiğe tam ekran bakmak için üstteki **⛶ Full Chart** butonuna bas. "
+                   "Grafiğin sağ üstündeki araç çubuğundan zoom / autoscale yapabilirsin.")
 
     st.divider()
     render_news(ticker)
@@ -351,132 +368,25 @@ def render_fullchart(ticker):
     ss.tf = tf
     df_full = _ohlc_detail(ticker)
     df = slice_timeframe(df_full, tf)
-    st.plotly_chart(ta_chart(df, f"{ticker} — {tf}", height=680, show_sr=True),
-                    use_container_width=True)
+    chart_title(f"{ticker} — {tf}")
+    st.plotly_chart(ta_chart(df, "", height=680, show_sr=True),
+                    use_container_width=True, config=CHART_CONFIG)
 
     st.divider()
     render_news(ticker)
 
 
 # ======================================================================
-# WATCHLIST SAYFASI
+# ORTAK PARÇALAR
 # ======================================================================
-def render_watchlist():
-    with st.container(key="watchlist_topbar"):
-        top = st.columns([0.8, 5])
-        with top[0]:
-            if st.button("← Geri", key="back_wl"):
-                ss.view = "dashboard"
-                st.rerun()
-        with top[1]:
-            st.markdown(f"### ⭐ Watchlist — {len(ss.watchlist)} şirket")
-
-    if not ss.watchlist:
-        st.info("İzleme listen boş. Bir şirketin detay sayfasını aç ve sağ üstteki "
-                "**☆ Watchlist** butonuna basarak ekle.")
-        return
-
-    # İzlenen şirketler — mini kartlar, tıkla -> detay
-    st.markdown('<div class="section-title">İzlenen Şirketler</div>', unsafe_allow_html=True)
-    PER_ROW = 4
-    wl = list(ss.watchlist)
-    for i in range(0, len(wl), PER_ROW):
-        row = st.columns(PER_ROW)
-        for col, ticker in zip(row, wl[i:i + PER_ROW]):
-            info = md.COMPANIES[ticker]
-            d = md.get_company_detail(ticker)
-            c = UP if d["change_pct"] >= 0 else DOWN
-            with col:
-                with st.container(border=True):
-                    lc, nc = st.columns([1, 3])
-                    with lc:
-                        logo = md.logo_url(ticker)
-                        if logo:
-                            st.markdown(f'<img src="{logo}" class="firm-logo">', unsafe_allow_html=True)
-                    with nc:
-                        st.markdown(
-                            f'<div class="firm-name">{info["name"]}</div>'
-                            f'<div class="firm-tick">{ticker} · '
-                            f'<span style="color:{c}">${d["last"]:,.2f} ({d["change_pct"]:+.2f}%)</span></div>',
-                            unsafe_allow_html=True)
-                    b1, b2 = st.columns(2)
-                    with b1:
-                        if st.button("Aç", key=f"wlopen_{ticker}"):
-                            ss.selected = ticker
-                            ss.view = "detail"
-                            st.rerun()
-                    with b2:
-                        if st.button("Çıkar", key=f"wlrm_{ticker}"):
-                            ss.watchlist.remove(ticker)
-                            st.rerun()
-
-    # Watchlist haberleri — aşağı scroll
-    st.divider()
-    st.markdown('<div class="section-title">Watchlist Haberleri</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">İzlediğin şirketlere dair en yeni haberler</div>',
-                unsafe_allow_html=True)
-    sentiment_color = {"Positive": UP, "Negative": DOWN, "Neutral": "#8b949e"}
-    for item in md.get_watchlist_news(list(ss.watchlist)):
-        dot = sentiment_color.get(item["sentiment"], "#8b949e")
-        st.markdown(
-            f'<div class="news-item">'
-            f'<div class="news-title"><span class="news-dot" style="background:{dot}"></span>'
-            f'<b style="color:#e6edf3">{item["ticker"]}</b> &nbsp;{item["title"]}</div>'
-            f'<div class="news-meta">{item["source"]} · {item["when"]}</div>'
-            f'</div>', unsafe_allow_html=True)
+def open_detail(ticker):
+    ss.selected = ticker
+    ss.view = "detail"
+    st.rerun()
 
 
-# ======================================================================
-# DASHBOARD
-# ======================================================================
-def render_dashboard():
-    head = st.columns([5, 1.3])
-    with head[0]:
-        st.markdown("## 📈 Swing Trade Dashboard")
-        st.caption("Mock veri ile çalışıyor — gerçek veriyi sonradan mock_data.py üzerinden bağla.")
-    with head[1]:
-        if st.button(f"⭐ Watchlist ({len(ss.watchlist)})", key="go_wl"):
-            ss.view = "watchlist"
-            st.rerun()
-    st.divider()
-
-    # --- 1) MARKET (Bild 1 düzeni) ---
-    st.markdown('<div class="section-title">Märkte</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Günlük performans</div>', unsafe_allow_html=True)
-
-    cols = st.columns(4)
-    for col, idx in zip(cols, md.get_index_summary()):
-        with col:
-            with st.container(border=True):
-                sign = "▲" if idx["change_pct"] >= 0 else "▼"
-                color = UP if idx["change_pct"] >= 0 else DOWN
-                # Dikey düzen: ticker -> alt başlık -> fiyat + değişim (hepsi ayrı satır)
-                st.markdown(
-                    f'<div class="idx-head">'
-                    f'<div class="idx-tick">{idx["ticker"]}</div>'
-                    f'<div class="idx-sub">{idx["subtitle"]}</div>'
-                    f'<div><span class="idx-last">{idx["last"]:,.2f}</span>'
-                    f'<span class="idx-chg" style="color:{color}">{sign} {idx["change_pct"]:+.2f}%</span></div>'
-                    f'</div>',
-                    unsafe_allow_html=True)
-                # Grafik tam genişlikte, altta — artık metinle yarışmıyor
-                st.plotly_chart(
-                    mini_index_chart(idx["series"], idx["prev_close"], idx["change_pct"]),
-                    use_container_width=True, config={"displayModeBar": False})
-                # Şirket kartlarıyla aynı davranış: tıkla -> aynı detay sayfası açılır
-                if st.button("Detayları gör", key=f"btn_{idx['ticker']}"):
-                    ss.selected = idx["ticker"]
-                    ss.view = "detail"
-                    st.rerun()
-
-    st.divider()
-
-    # --- 2) FİLTREYE UYAN 20 ŞİRKET ---
-    st.markdown('<div class="section-title">Filtrene Uyan Şirketler</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Bir şirkete tıkla → detay sayfası açılır (solda veri, sağda grafik)</div>',
-                unsafe_allow_html=True)
-
-    tickers = md.get_filtered_companies()
+def company_grid(tickers, key_prefix, show_price=False, removable=False):
+    """Şirket kartları ızgarası — her kart tıklanabilir, detay sayfasını açar."""
     PER_ROW = 4
     for i in range(0, len(tickers), PER_ROW):
         row = st.columns(PER_ROW)
@@ -490,20 +400,198 @@ def render_dashboard():
                         if logo:
                             st.markdown(f'<img src="{logo}" class="firm-logo">', unsafe_allow_html=True)
                     with nc:
+                        if show_price:
+                            q = md.get_quote(ticker)
+                            c = UP if q["change_pct"] >= 0 else DOWN
+                            sub = (f'{ticker} · <span style="color:{c}">${q["last"]:,.2f} '
+                                   f'({q["change_pct"]:+.2f}%)</span>')
+                        else:
+                            sub = f'{ticker} · {info["sector"]}'
                         st.markdown(f'<div class="firm-name">{info["name"]}</div>'
-                                    f'<div class="firm-tick">{ticker} · {info["sector"]}</div>',
-                                    unsafe_allow_html=True)
-                    if st.button("Detayı aç", key=f"btn_{ticker}"):
-                        ss.selected = ticker
-                        ss.view = "detail"
-                        st.rerun()
+                                    f'<div class="firm-tick">{sub}</div>', unsafe_allow_html=True)
+                    if removable:
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("Aç", key=f"{key_prefix}open_{ticker}"):
+                                open_detail(ticker)
+                        with b2:
+                            if st.button("Çıkar", key=f"{key_prefix}rm_{ticker}"):
+                                ss.watchlist.remove(ticker)
+                                st.rerun()
+                    else:
+                        if st.button("Detayı aç", key=f"{key_prefix}_{ticker}"):
+                            open_detail(ticker)
+
+
+def movers_list(items, title, color):
+    st.markdown(f'<div style="font-weight:700;margin-bottom:.3rem">{title}</div>',
+                unsafe_allow_html=True)
+    for q in items:
+        c = UP if q["change_pct"] >= 0 else DOWN
+        st.markdown(
+            f'<div class="news-item">'
+            f'<div class="news-title"><b>{q["ticker"]}</b> '
+            f'<span style="color:#8b949e;font-size:.8rem">{q["name"]}</span></div>'
+            f'<div class="news-meta" style="color:{c};font-weight:700">'
+            f'${q["last"]:,.2f} &nbsp; {q["change_pct"]:+.2f}%</div>'
+            f'</div>', unsafe_allow_html=True)
+
+
+def news_list(items, with_ticker=False):
+    sent = {"Positive": UP, "Negative": DOWN, "Neutral": "#8b949e"}
+    for item in items:
+        dot = sent.get(item.get("sentiment", "Neutral"), "#8b949e")
+        tag = f'<b style="color:#e6edf3">{item["ticker"]}</b>&nbsp; ' if with_ticker else ""
+        st.markdown(
+            f'<div class="news-item">'
+            f'<div class="news-title"><span class="news-dot" style="background:{dot}"></span>'
+            f'{tag}{item["title"]}</div>'
+            f'<div class="news-meta">{item["source"]} · {item["when"]}</div>'
+            f'</div>', unsafe_allow_html=True)
+
+
+# ======================================================================
+# FEAR & GREED göstergesi (Long Term)
+# ======================================================================
+def fear_greed_gauge(value):
+    steps = [
+        {"range": [0, 25],   "color": "#f85149"},   # Extreme Fear
+        {"range": [25, 45],  "color": "#f0883e"},   # Fear
+        {"range": [45, 55],  "color": "#d9c441"},   # Neutral
+        {"range": [55, 75],  "color": "#56b06a"},   # Greed
+        {"range": [75, 100], "color": "#3fb950"},   # Extreme Greed
+    ]
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number", value=value,
+        number={"font": {"size": 46, "color": "#e6edf3"}},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#8b949e",
+                     "tickvals": [0, 25, 50, 75, 100]},
+            "bar": {"color": "rgba(0,0,0,0)"},
+            "borderwidth": 0,
+            "steps": steps,
+            "threshold": {"line": {"color": "#e6edf3", "width": 5}, "thickness": 0.85,
+                          "value": value},
+        },
+    ))
+    fig.update_layout(height=260, margin=dict(l=20, r=20, t=10, b=10),
+                      paper_bgcolor="rgba(0,0,0,0)", font={"color": "#e6edf3"})
+    return fig
+
+
+# ======================================================================
+# BÖLÜM: WATCHLIST (varsayılan açılış)
+# ======================================================================
+def render_sec_watchlist():
+    # İzlenen şirketler + ekle/çıkar
+    head = st.columns([5, 1])
+    with head[0]:
+        st.markdown('<div class="section-title">İzlenen Şirketler</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Günlük performanslarıyla izleme listen — '
+                    'karttan aç ya da çıkar</div>', unsafe_allow_html=True)
+    if ss.watchlist:
+        company_grid(list(ss.watchlist), "wl", show_price=True, removable=True)
+    else:
+        st.info("İzleme listen boş. Bir şirketin detayını aç ve **☆ Watchlist** ile ekle.")
+
+    # Top movers / losers
+    st.divider()
+    st.markdown('<div class="section-title">Top Movers & Losers</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Bugün en çok yükselen ve düşen şirketler</div>',
+                unsafe_allow_html=True)
+    mcol = st.columns(2, gap="large")
+    with mcol[0]:
+        movers_list(md.get_top_movers(), "📈 Top Movers", UP)
+    with mcol[1]:
+        movers_list(md.get_top_losers(), "📉 Top Losers", DOWN)
+
+    # Upcoming IPOs
+    st.divider()
+    st.markdown('<div class="section-title">Yaklaşan Halka Arzlar (IPO)</div>', unsafe_allow_html=True)
+    st.dataframe(md.get_upcoming_ipos(), use_container_width=True, hide_index=True,
+                 column_config={"Shares (M)": st.column_config.NumberColumn("Shares (M)", format="%.1f")})
+
+    # Watchlist haberleri
+    if ss.watchlist:
+        st.divider()
+        st.markdown('<div class="section-title">Watchlist Haberleri</div>', unsafe_allow_html=True)
+        news_list(md.get_watchlist_news(list(ss.watchlist)), with_ticker=True)
+
+
+# ======================================================================
+# BÖLÜM: LONG TERM
+# ======================================================================
+def render_sec_longterm():
+    fg = md.get_fear_greed()
+    left, right = st.columns([1.1, 1], gap="large")
+    with left:
+        st.markdown('<div class="section-title">Fear & Greed Index</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Piyasayı şu an hangi duygu yönetiyor?</div>',
+                    unsafe_allow_html=True)
+        st.plotly_chart(fear_greed_gauge(fg["value"]),
+                        use_container_width=True, config={"displayModeBar": False})
+        st.markdown(
+            f'<div style="text-align:center;font-size:1.1rem;font-weight:700;margin-top:-.5rem">'
+            f'{fg["label"]}</div>'
+            f'<div style="background:#12171f;border-left:3px solid #f6c177;border-radius:6px;'
+            f'padding:.7rem .9rem;margin-top:.8rem;color:#c9d1d9;font-style:italic">'
+            f'"{fg["quote"]}"<br><span style="color:#8b949e;font-style:normal;font-size:.82rem">'
+            f'— {fg["quote_author"]}</span></div>', unsafe_allow_html=True)
+    with right:
+        st.markdown('<div class="section-title">Geçmiş</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">&nbsp;</div>', unsafe_allow_html=True)
+        for h in fg["history"]:
+            hc = DOWN if h["value"] < 45 else ("#d9c441" if h["value"] < 55 else UP)
+            st.markdown(
+                f'<div class="stat-row"><span class="lbl">{h["when"]}<br>'
+                f'<b style="color:#e6edf3">{h["label"]}</b></span>'
+                f'<span class="val" style="font-size:1.3rem;color:{hc}">{h["value"]}</span></div>',
+                unsafe_allow_html=True)
+
+    # Endeks / sektör sıralaması
+    st.divider()
+    st.markdown('<div class="section-title">Sektör Sıralaması</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Büyüme ve kâr marjına göre skorlanıp sıralandı '
+                '(Score = Büyüme×0.6 + Marj×0.4)</div>', unsafe_allow_html=True)
+    st.dataframe(
+        md.get_index_rankings(), use_container_width=True, hide_index=True,
+        column_config={
+            "Rank": st.column_config.NumberColumn("#", width="small"),
+            "Growth %": st.column_config.NumberColumn("Growth %", format="%.1f%%"),
+            "Profit Margin %": st.column_config.NumberColumn("Profit Margin %", format="%.1f%%"),
+            "Score": st.column_config.ProgressColumn("Score", format="%.1f",
+                                                     min_value=0, max_value=30),
+        })
+
+    # PEG / ucuz şirketler
+    st.divider()
+    st.markdown('<div class="section-title">Ucuz Şirketler (PEG / Forward PE)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Forward PE\'ye göre sıralı (ucuzdan pahalıya)</div>',
+                unsafe_allow_html=True)
+    st.dataframe(
+        md.get_value_stocks(), use_container_width=True, hide_index=True,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+            "PEG": st.column_config.NumberColumn("PEG", format="%.2f"),
+            "Forward PE": st.column_config.NumberColumn("Forward PE", format="%.1f"),
+            "Profit Margin %": st.column_config.NumberColumn("Profit M %", format="%.1f%%"),
+            "EPS Next 5Y %": st.column_config.NumberColumn("EPS Next 5Y %", format="%.1f%%"),
+        })
+
+
+# ======================================================================
+# BÖLÜM: SHORT TERM & SWINGS
+# ======================================================================
+def render_sec_short():
+    st.markdown('<div class="section-title">Filtrene Uyan Şirketler</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Bir şirkete tıkla → detay sayfası açılır</div>',
+                unsafe_allow_html=True)
+    company_grid(md.get_filtered_companies(), "flt")
 
     st.divider()
-
-    # --- 3) TRADING STRATEGY PICKS ---
     st.markdown('<div class="section-title">Trading Strategy Picks</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Teknik analize göre seçilenler — EMA 20/50/100/200, ranked S/R, '
-                'formasyon (trendline / bull flag / triangle)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">EMA 20/50/100/200, ranked S/R, formasyon '
+                '(trendline / bull flag / triangle)</div>', unsafe_allow_html=True)
 
     picks = md.get_strategy_picks()
     PICKS_PER_ROW = 2
@@ -512,11 +600,11 @@ def render_dashboard():
         for col, pick in zip(row, picks[i:i + PICKS_PER_ROW]):
             with col:
                 df = _ohlc(pick["ticker"])
+                chart_title(f"{pick['ticker']} — {pick['setup']}")   # başlık dışarıda → çakışma yok
                 st.plotly_chart(
-                    ta_chart(df, f"{pick['ticker']} — {pick['setup']}", height=460,
-                             show_sr=True, show_formation=True, formation_type=pick["formation"]),
-                    use_container_width=True)
-                # Trade-Aspekte
+                    ta_chart(df, "", height=460, show_sr=True,
+                             show_formation=True, formation_type=pick["formation"]),
+                    use_container_width=True, config=CHART_CONFIG)
                 d = st.columns(3)
                 with d[0]:
                     kv_block("Avg Volume (20)", f"{pick['avg_volume']:,}")
@@ -527,27 +615,95 @@ def render_dashboard():
                 with d[2]:
                     kv_block("Stop / Target", f"${pick['stop']} → ${pick['target']}")
                     kv_block("Risk/Reward", f"{pick['rr']} : 1")
-                # Kısa açıklama metni (Trade-Aspekte altında)
                 st.markdown(f'<div class="pick-note">💡 {pick["note"]}</div>', unsafe_allow_html=True)
 
+
+# ======================================================================
+# BÖLÜM: FOREX & NEWS
+# ======================================================================
+def render_sec_forex():
+    # Forex kur şeridi
+    st.markdown('<div class="section-title">Forex</div>', unsafe_allow_html=True)
+    fx_cols = st.columns(6)
+    for col, fx in zip(fx_cols, md.get_forex_rates()):
+        c = UP if fx["change_pct"] >= 0 else DOWN
+        with col:
+            with st.container(border=True):
+                st.markdown(
+                    f'<div style="font-weight:700">{fx["pair"]}</div>'
+                    f'<div style="font-size:1.1rem;font-weight:700">{fx["rate"]:.4f}</div>'
+                    f'<div style="color:{c};font-weight:700;font-size:.82rem">'
+                    f'{fx["change_pct"]:+.2f}%</div>', unsafe_allow_html=True)
+
+    # Ekonomik takvim
+    st.divider()
+    st.markdown('<div class="section-title">Ekonomik Takvim</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Yaklaşan makro veri ve açıklamalar</div>',
+                unsafe_allow_html=True)
+    cal = md.get_economic_calendar()
+    st.dataframe(cal, use_container_width=True, hide_index=True)
+
+    # Haber kategorileri
+    st.divider()
+    ncols = st.columns(3, gap="large")
+    cats = [("war_politics", "⚔️ Savaş & Politika"),
+            ("markets", "📰 Borsa Haberleri"),
+            ("index", "🤖 Endeks Bazında (AI, Yarı İletken…)")]
+    for col, (cat, title) in zip(ncols, cats):
+        with col:
+            st.markdown(f'<div class="section-title" style="font-size:1.05rem">{title}</div>',
+                        unsafe_allow_html=True)
+            news_list(md.get_market_news(cat))
+
+
+# ======================================================================
+# DASHBOARD — market kartları (hep üstte) + bölüm navigasyonu
+# ======================================================================
+def render_market_header():
+    st.markdown("## 📈 Swing Trade Dashboard")
+    st.markdown('<div class="section-title" style="margin-top:.3rem">Märkte</div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Günlük performans — bir endekse tıkla, detayını aç</div>',
+                unsafe_allow_html=True)
+    cols = st.columns(4)
+    for col, idx in zip(cols, md.get_index_summary()):
+        with col:
+            with st.container(border=True):
+                sign = "▲" if idx["change_pct"] >= 0 else "▼"
+                color = UP if idx["change_pct"] >= 0 else DOWN
+                st.markdown(
+                    f'<div class="idx-head">'
+                    f'<div class="idx-tick">{idx["ticker"]}</div>'
+                    f'<div class="idx-sub">{idx["subtitle"]}</div>'
+                    f'<div><span class="idx-last">{idx["last"]:,.2f}</span>'
+                    f'<span class="idx-chg" style="color:{color}">{sign} {idx["change_pct"]:+.2f}%</span></div>'
+                    f'</div>', unsafe_allow_html=True)
+                st.plotly_chart(
+                    mini_index_chart(idx["series"], idx["prev_close"], idx["change_pct"]),
+                    use_container_width=True, config={"displayModeBar": False})
+                if st.button("Detayları gör", key=f"idx_{idx['ticker']}"):
+                    open_detail(idx["ticker"])
+
+
+def render_dashboard():
+    render_market_header()
     st.divider()
 
-    # --- 4) LONG-TERM UCUZ ŞİRKETLER ---
-    st.markdown('<div class="section-title">Long-Term — Ucuz Şirketler</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Forward PE\'ye göre sıralı (ucuzdan pahalıya)</div>',
-                unsafe_allow_html=True)
+    # Bölüm navigasyonu — market kartlarının altında
+    sections = ["Watchlist", "Long Term", "Short Term & Swings", "Forex & News"]
+    sec = st.radio("Bölüm", sections, index=sections.index(ss.section),
+                   horizontal=True, key="nav", label_visibility="collapsed")
+    ss.section = sec
+    st.divider()
 
-    value_df = md.get_value_stocks()
-    st.dataframe(
-        value_df, use_container_width=True, hide_index=True,
-        column_config={
-            "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-            "PEG": st.column_config.NumberColumn("PEG", format="%.2f"),
-            "Forward PE": st.column_config.NumberColumn("Forward PE", format="%.1f"),
-            "Profit Margin %": st.column_config.NumberColumn("Profit M %", format="%.1f%%"),
-            "EPS Next 5Y %": st.column_config.NumberColumn("EPS Next 5Y %", format="%.1f%%"),
-        },
-    )
+    if sec == "Watchlist":
+        render_sec_watchlist()
+    elif sec == "Long Term":
+        render_sec_longterm()
+    elif sec == "Short Term & Swings":
+        render_sec_short()
+    else:
+        render_sec_forex()
 
 
 # ======================================================================
@@ -557,7 +713,5 @@ if ss.view == "detail" and ss.selected:
     render_detail(ss.selected)
 elif ss.view == "fullchart" and ss.selected:
     render_fullchart(ss.selected)
-elif ss.view == "watchlist":
-    render_watchlist()
 else:
     render_dashboard()
