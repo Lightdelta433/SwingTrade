@@ -411,3 +411,207 @@ def get_value_stocks() -> pd.DataFrame:
     ]
     df = pd.DataFrame(rows, columns=["Ticker", "PEG", "Forward PE", "Profit Margin %", "EPS Next 5Y %"])
     return df.sort_values("Forward PE").reset_index(drop=True)
+
+
+# ======================================================================
+# YENİ BÖLÜMLER İÇİN VERİ
+# ======================================================================
+
+# Varsayılan watchlist — kullanıcı henüz bir şey eklemediğinde dolu gelsin
+DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
+                     "META", "TSLA", "AMD", "NFLX", "AVGO"]
+
+
+def _daily_change(ticker: str):
+    """Bir ticker için (son fiyat, günlük % değişim). Movers/losers ve
+    watchlist performansı bundan hesaplanır — get_company_detail ile tutarlı."""
+    df = _full_ohlc(ticker)
+    last = float(df["Close"].iloc[-1])
+    prev = float(df["Close"].iloc[-2])
+    return last, (last / prev - 1) * 100
+
+
+def get_quote(ticker: str) -> dict:
+    """Kart/tablo için hafif fiyat özeti: last + günlük % (detay kadar ağır değil)."""
+    last, chg = _daily_change(ticker)
+    return {"ticker": ticker, "name": COMPANIES[ticker]["name"],
+            "sector": COMPANIES[ticker]["sector"], "last": last, "change_pct": chg}
+
+
+# ----------------------------------------------------------------------
+# Fear & Greed Index (Long Term bölümü) — CNN tarzı
+# ----------------------------------------------------------------------
+def _fg_label(v: int) -> str:
+    if v < 25:  return "Extreme Fear"
+    if v < 45:  return "Fear"
+    if v < 55:  return "Neutral"
+    if v < 75:  return "Greed"
+    return "Extreme Greed"
+
+
+def get_fear_greed() -> dict:
+    """Güncel Fear & Greed değeri + geçmiş kıyas noktaları.
+    Gerçek veride: CNN Fear & Greed veya alternative.me API'sinden çek."""
+    value = 27
+    history = [
+        {"when": "Previous close", "value": 23},
+        {"when": "1 week ago",     "value": 44},
+        {"when": "1 month ago",    "value": 30},
+        {"when": "1 year ago",     "value": 29},
+    ]
+    for h in history:
+        h["label"] = _fg_label(h["value"])
+    return {"value": value, "label": _fg_label(value), "history": history,
+            "quote": "Be fearful when others are greedy, and greedy when others are fearful.",
+            "quote_author": "Warren Buffett"}
+
+
+# ----------------------------------------------------------------------
+# Endeks / sektör sıralaması (büyüme + kâr marjı skoru) — Long Term
+# ----------------------------------------------------------------------
+def get_index_rankings() -> pd.DataFrame:
+    """Sektörleri büyüme ve kâr marjına göre skorlayıp sıralar.
+    Score = Growth*0.6 + Margin*0.4. Gerçek veride: her sektör/endeks için
+    toplam gelir büyümesi ve ortalama net marjı hesaplayıp aynı mantıkla sırala."""
+    rows = [
+        ("Semiconductors", 28.5, 31.2),
+        ("Software",       22.1, 24.8),
+        ("Technology",     18.9, 27.5),
+        ("Fintech",        26.4, 12.1),
+        ("Communication",  14.2, 20.3),
+        ("Consumer",       11.8, 9.4),
+        ("Automotive",     17.5, 8.9),
+        ("Retail",         8.6, 4.2),
+        ("Consumer Staples", 6.1, 11.0),
+    ]
+    df = pd.DataFrame(rows, columns=["Sector", "Growth %", "Profit Margin %"])
+    df["Score"] = (df["Growth %"] * 0.6 + df["Profit Margin %"] * 0.4).round(1)
+    df = df.sort_values("Score", ascending=False).reset_index(drop=True)
+    df.insert(0, "Rank", range(1, len(df) + 1))
+    return df
+
+
+# ----------------------------------------------------------------------
+# Top movers / losers (Watchlist bölümü)
+# ----------------------------------------------------------------------
+def get_top_movers(n: int = 5) -> list[dict]:
+    quotes = [get_quote(t) for t in get_filtered_companies()]
+    quotes.sort(key=lambda x: x["change_pct"], reverse=True)
+    return quotes[:n]
+
+
+def get_top_losers(n: int = 5) -> list[dict]:
+    quotes = [get_quote(t) for t in get_filtered_companies()]
+    quotes.sort(key=lambda x: x["change_pct"])
+    return quotes[:n]
+
+
+# ----------------------------------------------------------------------
+# Yaklaşan halka arzlar (Watchlist bölümü) — tamamen kurgusal şirketler
+# ----------------------------------------------------------------------
+def get_upcoming_ipos() -> pd.DataFrame:
+    """Yaklaşan IPO tablosu. İsimler kurgusaldır (gerçek bir IPO ima etmez).
+    Gerçek veride: bir IPO takvimi API'sinden çek."""
+    today = pd.Timestamp.today().normalize()
+    rows = [
+        ("NovaAI Systems",      "NASDAQ", 4,  "$18 – $20", 12.5),
+        ("Helios Energy",       "NYSE",   9,  "$22 – $25", 8.0),
+        ("Quantio Compute",     "NASDAQ", 12, "$30 – $34", 15.2),
+        ("Verdant Biotech",     "NASDAQ", 16, "$14 – $16", 6.4),
+        ("Orbit Logistics",     "NYSE",   21, "$25 – $28", 10.1),
+        ("Lumen Robotics",      "NASDAQ", 27, "$40 – $45", 9.8),
+    ]
+    data = []
+    for name, exch, days, price_range, shares in rows:
+        data.append({
+            "Company": name, "Exchange": exch,
+            "Expected Date": (today + pd.Timedelta(days=days)).strftime("%b %d, %Y"),
+            "Price Range": price_range, "Shares (M)": shares,
+        })
+    return pd.DataFrame(data)
+
+
+# ----------------------------------------------------------------------
+# Ekonomik takvim (Forex & News bölümü)
+# ----------------------------------------------------------------------
+def get_economic_calendar() -> pd.DataFrame:
+    """Yaklaşan makro veri takvimi. Gerçek veride: bir ekonomik takvim
+    API'sinden (ForexFactory, Investing.com, TradingEconomics) çek."""
+    today = pd.Timestamp.today().normalize()
+    rows = [
+        (0, "14:30", "USD", "Core CPI (MoM)",         "High",   "0.3%",  "0.2%"),
+        (0, "16:00", "USD", "Fed Chair Speech",        "High",   "—",     "—"),
+        (1, "11:00", "EUR", "ECB Interest Rate Decision","High", "3.25%", "3.25%"),
+        (1, "14:30", "USD", "Initial Jobless Claims",  "Medium", "228K",  "223K"),
+        (2, "08:00", "GBP", "GDP (QoQ)",               "High",   "0.4%",  "0.5%"),
+        (2, "14:30", "USD", "Nonfarm Payrolls",        "High",   "180K",  "254K"),
+        (3, "10:00", "EUR", "German Ifo Business Climate","Medium","86.0", "85.4"),
+        (4, "14:30", "CAD", "Unemployment Rate",       "Medium", "6.6%",  "6.5%"),
+    ]
+    data = []
+    for days, time, cur, event, impact, forecast, prev in rows:
+        data.append({
+            "Date": (today + pd.Timedelta(days=days)).strftime("%a %b %d"),
+            "Time": time, "Cur": cur, "Event": event,
+            "Impact": impact, "Forecast": forecast, "Previous": prev,
+        })
+    return pd.DataFrame(data)
+
+
+# ----------------------------------------------------------------------
+# Kategorili piyasa haberleri (Forex & News bölümü)
+# ----------------------------------------------------------------------
+_MARKET_NEWS = {
+    "war_politics": [
+        ("Jeopolitik gerilim enerji fiyatlarında oynaklığı artırdı", "Reuters", "2 saat önce"),
+        ("Ticaret tarifeleri görüşmeleri piyasalarda temkinli hava yarattı", "Bloomberg", "5 saat önce"),
+        ("Seçim belirsizliği bölgesel endekslerde baskı oluşturdu", "AP", "9 saat önce"),
+        ("Merkez bankası başkanından jeopolitik risk uyarısı", "FT", "1 gün önce"),
+        ("Yaptırım haberleri emtia piyasalarını hareketlendirdi", "Reuters", "1 gün önce"),
+    ],
+    "markets": [
+        ("S&P 500 kazanç sezonu beklentileriyle dalgalı seyretti", "CNBC", "1 saat önce"),
+        ("Tahvil getirileri yükselince büyüme hisseleri geriledi", "Bloomberg", "3 saat önce"),
+        ("Dolar endeksi haftalık kazancını korudu", "MarketWatch", "6 saat önce"),
+        ("Petrol fiyatları arz endişeleriyle yükseldi", "Reuters", "8 saat önce"),
+        ("Altın güvenli liman talebiyle rekor seviyeye yaklaştı", "Kitco", "12 saat önce"),
+    ],
+    "index": [
+        ("Yapay zeka hisseleri endeks getirisinin büyük kısmını sürüklüyor", "The Information", "2 saat önce"),
+        ("Yarı iletken endeksi yeni veri merkezi siparişleriyle yükseldi", "SemiAnalysis", "4 saat önce"),
+        ("Yazılım sektörü bulut harcamalarının toparlanmasıyla güçlendi", "Seeking Alpha", "7 saat önce"),
+        ("AI altyapı yatırımları teknoloji ağırlıklı endeksleri destekliyor", "CNBC", "10 saat önce"),
+        ("Küçük ölçekli (small-cap) endeks faiz beklentisiyle öne çıktı", "Barron's", "1 gün önce"),
+    ],
+}
+
+_NEWS_CATEGORY_TITLES = {
+    "war_politics": "Savaş & Politika",
+    "markets": "Borsa Haberleri",
+    "index": "Endeks Bazında (AI, Yarı İletken…)",
+}
+
+
+def get_market_news(category: str) -> list[dict]:
+    """Kategoriye göre haber listesi. category: 'war_politics' | 'markets' | 'index'.
+    Gerçek veride: bir haber API'sinden ilgili kategoride çek."""
+    out = []
+    for title, source, when in _MARKET_NEWS.get(category, []):
+        out.append({"title": title, "source": source, "when": when})
+    return out
+
+
+# ----------------------------------------------------------------------
+# Forex kurları şeridi (Forex & News bölümü)
+# ----------------------------------------------------------------------
+def get_forex_rates() -> list[dict]:
+    """Başlıca forex paritelerinin anlık özeti.
+    Gerçek veride: bir FX fiyat feed'inden çek."""
+    specs = [("EUR/USD", 1.0845), ("GBP/USD", 1.2680), ("USD/JPY", 149.30),
+             ("USD/CHF", 0.8820), ("AUD/USD", 0.6615), ("USD/CAD", 1.3720)]
+    out = []
+    for pair, base in specs:
+        rng = np.random.default_rng(_seed(pair) + 11)
+        chg = float(rng.normal(0, 0.35))
+        out.append({"pair": pair, "rate": base, "change_pct": chg})
+    return out
