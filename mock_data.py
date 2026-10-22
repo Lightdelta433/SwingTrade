@@ -854,3 +854,73 @@ _MARKET_NEWS = {
 def get_market_news(category: str) -> list[dict]:
     return [{"title": t, "source": s, "when": w}
             for t, s, w in _MARKET_NEWS.get(category, [])]
+
+
+# ======================================================================
+# TEŞHİS — veri kaynakları canlı mı? (uygulamada panel olarak gösterilir)
+# ======================================================================
+@_ttl_cache(120)
+def get_data_health() -> dict:
+    """yfinance ve CNN gerçekten erişilebiliyor mu diye hızlı bir test.
+    Uygulamadaki '🔎 Veri kaynağı durumu' paneli bunu gösterir."""
+    info = {"yfinance_installed": _HAS_YF, "requests_installed": _HAS_REQ,
+            "yf_ok": False, "yf_msg": "", "cnn_ok": False, "cnn_msg": ""}
+    if _HAS_YF:
+        try:
+            import yfinance as _yf
+            v = _yf.__version__
+            price = _yf.Ticker("AAPL").fast_info.last_price
+            if price and float(price) > 0:
+                info["yf_ok"] = True
+                info["yf_msg"] = f"yfinance {v} · AAPL son fiyat = {float(price):.2f}"
+            else:
+                info["yf_msg"] = f"yfinance {v} kurulu ama fiyat boş döndü (Yahoo engellemiş olabilir)"
+        except Exception as e:
+            info["yf_msg"] = f"{type(e).__name__}: {str(e)[:140]}"
+    else:
+        info["yf_msg"] = "yfinance IMPORT EDİLEMEDİ — requirements.txt'te 'yfinance' yok ya da kurulmadı."
+    if _HAS_REQ:
+        try:
+            r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+                             headers=_HEADERS, timeout=8)
+            info["cnn_ok"] = (r.status_code == 200 and "fear_and_greed" in r.text)
+            info["cnn_msg"] = f"HTTP {r.status_code}"
+        except Exception as e:
+            info["cnn_msg"] = f"{type(e).__name__}: {str(e)[:140]}"
+    else:
+        info["requests_msg"] = "requests import edilemedi."
+    return info
+
+
+# ======================================================================
+# SEKTÖR PERFORMANSI (ısı haritası) — Long Term + Piyasalar görünümü
+# ======================================================================
+_SECTOR_ETFS = [
+    ("Teknoloji", "XLK"), ("Yarı İletken", "SMH"), ("Finans", "XLF"),
+    ("Enerji", "XLE"), ("Sağlık", "XLV"), ("Sanayi", "XLI"),
+    ("Tüketici (İsteğe Bağlı)", "XLY"), ("Tüketici (Temel)", "XLP"),
+    ("Hizmet", "XLU"), ("Hammadde", "XLB"), ("İletişim", "XLC"),
+    ("Gayrimenkul", "XLRE"),
+]
+
+
+@_ttl_cache(300)
+def get_sector_performance() -> list[dict]:
+    """Sektör ETF'lerinin günlük % değişimi (ısı haritası için).
+    Gerçek veride: her sektör ETF'inin günlük değişimini çeker; başarısızsa
+    deterministik mock."""
+    out = []
+    for name, etf in _SECTOR_ETFS:
+        chg = None
+        if _HAS_YF:
+            try:
+                fi = yf.Ticker(etf).fast_info
+                last = float(fi.last_price); prev = float(fi.previous_close)
+                chg = (last / prev - 1) * 100
+            except Exception:
+                chg = None
+        if chg is None:
+            rng = np.random.default_rng(_seed(etf) + 3)
+            chg = float(rng.normal(0.1, 1.1))
+        out.append({"name": name, "etf": etf, "change_pct": chg})
+    return out
