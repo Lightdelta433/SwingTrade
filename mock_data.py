@@ -1,29 +1,70 @@
 """
 ========================================================================
- VERİ KATMANI  (mock_data.py)
+ VERİ KATMANI  (mock_data.py)  —  GERÇEK VERİ + mock fallback
 ========================================================================
-Şu an her şey SAHTE (mock) veri üretir. İleride gerçek veriye geçerken
-SADECE bu dosyayı değiştirmen yeterli — app.py'ye dokunmana gerek yok.
+Artık fonksiyonlar önce GERÇEK veriyi çeker (yfinance / CNN / Nasdaq /
+TradingEconomics). Herhangi bir çağrı başarısız olursa (ağ yok, API
+tıkandı, format değişti) sessizce eski MOCK veriye düşer — böylece
+uygulama asla çökmez.
 
-Gerçek veriye geçiş için öneri:
-  - get_index_summary()      -> yfinance / bir fiyat API'si
-  - get_ohlc(ticker)         -> yfinance.download(ticker) (OHLCV döndür)
-  - get_company_detail(t)    -> fundamental + anlık fiyat verisi
-  - get_filtered_companies() -> kendi swing-trade filtrenin çıktısı
-  - get_strategy_picks()     -> teknik analiz motorunun çıktısı
-  - get_value_stocks()       -> fundamental veri (PEG, Fwd PE, Margin, EPS)
+Her fonksiyonun DÖNÜŞ FORMATI aynı kaldı; app.py'ye dokunmaya gerek yok.
 
-Fonksiyonların DÖNÜŞ FORMATLARINI koru; app.py bu formatlara göre çizer.
+Kaynaklar:
+  - yfinance : endeks/hisse fiyatı, grafik (OHLC), fundamentaller,
+               forex, top movers/losers, ucuz şirket taraması
+  - CNN      : Fear & Greed Index
+  - Nasdaq   : yaklaşan IPO takvimi (best-effort)
+  - TradingEconomics (guest) : ekonomik takvim (best-effort)
+
+Not: Performans için her çağrı TTL önbelleğe alınır (Streamlit her
+etkileşimde sayfayı baştan çalıştırdığından API'leri dövmemek şart).
 ========================================================================
 """
 
+import time
+import functools
 import numpy as np
 import pandas as pd
+
+# ---- Opsiyonel bağımlılıklar (yoksa her şey mock'a düşer) -------------
+try:
+    import yfinance as yf
+    _HAS_YF = True
+except Exception:
+    _HAS_YF = False
+
+try:
+    import requests
+    _HAS_REQ = True
+except Exception:
+    _HAS_REQ = False
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+_HEADERS = {"User-Agent": _UA, "Accept": "application/json, text/plain, */*"}
+
+
+def _ttl_cache(ttl):
+    """Basit süreli (TTL) önbellek. Streamlit her rerun'da aynı veriyi
+    tekrar çekmesin diye."""
+    def deco(fn):
+        store = {}
+
+        @functools.wraps(fn)
+        def wrap(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            now = time.time()
+            if key in store and now - store[key][0] < ttl:
+                return store[key][1]
+            val = fn(*args, **kwargs)
+            store[key] = (now, val)
+            return val
+        return wrap
+    return deco
 
 
 # ----------------------------------------------------------------------
 # Şirket evreni — ticker -> isim / logo domaini / sektör / kısa tanım
-# (logo için Clearbit: https://logo.clearbit.com/<domain>)
 # ----------------------------------------------------------------------
 COMPANIES = {
     "AAPL":  {"name": "Apple",          "domain": "apple.com",      "sector": "Technology",
@@ -66,7 +107,7 @@ COMPANIES = {
               "desc": "ABD merkezli en büyük kripto para borsalarından biri; perakende ve kurumsal işlem."},
     "SNOW":  {"name": "Snowflake",      "domain": "snowflake.com",  "sector": "Software",
               "desc": "Bulut tabanlı veri ambarı ve veri analitiği platformu; kullandıkça öde modeli."},
-    # Endeks ETF'leri — Märkte kartlarına tıklayınca aynı detay sayfasını kullanabilmek için
+    # Endeks ETF'leri
     "SPY":   {"name": "SPDR S&P 500 ETF",         "domain": "ssga.com",    "sector": "Index ETF",
               "desc": "S&P 500 endeksini takip eden en büyük ve en likit borsa yatırım fonu (ETF); ABD'nin en büyük 500 halka açık şirketini kapsar."},
     "QQQ":   {"name": "Invesco QQQ Trust",         "domain": "invesco.com","sector": "Index ETF",
@@ -77,85 +118,96 @@ COMPANIES = {
               "desc": "Russell 2000 endeksini takip eden ETF; ABD'li küçük ölçekli (small-cap) şirketleri kapsar."},
 }
 
-# Endeks ETF'leri için gerçekçi başlangıç fiyatı (genel 40-420 aralığındaki rastgele
-# başlangıç yerine). get_index_summary()'deki prev_close değerleriyle aynı seviyede
-# tutuluyor ki Märkte kartındaki fiyat ile detay sayfasındaki grafik birbirini tutsun.
 _BASE_PRICE_OVERRIDE = {"SPY": 560.0, "QQQ": 485.0, "DIA": 421.0, "IWM": 228.0}
+
+DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
+                     "META", "TSLA", "AMD", "NFLX", "AVGO"]
+
+_FULL_DAYS = 1300  # mock fallback uzunluğu / Max timeframe
 
 
 def logo_url(ticker: str) -> str:
-    """Ticker için logo URL'i. İnternet yoksa görseller kırık görünür;
-    o durumda local dosya yolu döndürecek şekilde burayı değiştir."""
     domain = COMPANIES.get(ticker, {}).get("domain", "")
     return f"https://logo.clearbit.com/{domain}" if domain else ""
 
 
+def company_name(ticker: str) -> str:
+    return COMPANIES.get(ticker, {}).get("name", ticker)
+
+
+def company_sector(ticker: str) -> str:
+    return COMPANIES.get(ticker, {}).get("sector", "")
+
+
 def _seed(ticker: str) -> int:
-    """Ticker'a göre sabit tohum — her yüklemede aynı grafik çıksın diye."""
-    return sum(ord(c) for c in ticker) + 7
+    return sum(ord(c) for c in str(ticker)) + 7
 
 
-# ----------------------------------------------------------------------
-# OHLC (candlestick) üretici
-# Tek bir uzun geçmiş (~5 yıl) üretilir ve istenen kadarı (tail) döndürülür.
-# Böylece dashboard'daki kısa grafik ile detaydaki uzun grafik TUTARLI olur.
-# ----------------------------------------------------------------------
-_FULL_DAYS = 1300  # ~5 iş yılı
-
-_full_cache: dict[str, pd.DataFrame] = {}
+def get_filtered_companies() -> list[str]:
+    return list(COMPANIES.keys())[:20]
 
 
-def _full_ohlc(ticker: str) -> pd.DataFrame:
-    if ticker in _full_cache:
-        return _full_cache[ticker]
+# ======================================================================
+# OHLC — gerçek (yfinance) + sentetik fallback
+# ======================================================================
+_synth_cache: dict[str, pd.DataFrame] = {}
+
+
+def _synth_full_ohlc(ticker: str) -> pd.DataFrame:
+    if ticker in _synth_cache:
+        return _synth_cache[ticker]
     rng = np.random.default_rng(_seed(ticker))
     dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=_FULL_DAYS)
-
     start = _BASE_PRICE_OVERRIDE.get(ticker, rng.uniform(40, 420))
     drift = rng.uniform(-0.0001, 0.0007)
     rets = rng.normal(drift, 0.018, _FULL_DAYS)
     close = start * np.cumprod(1 + rets)
-
     open_ = close * (1 + rng.normal(0, 0.004, _FULL_DAYS))
     high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.006, _FULL_DAYS)))
     low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.006, _FULL_DAYS)))
     volume = rng.integers(2_000_000, 45_000_000, _FULL_DAYS)
-
-    df = pd.DataFrame(
-        {"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume},
-        index=dates,
-    )
+    df = pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close,
+                       "Volume": volume}, index=dates)
     df.index.name = "Date"
-    _full_cache[ticker] = df
+    _synth_cache[ticker] = df
     return df
 
 
+@_ttl_cache(1800)
+def _full_ohlc(ticker: str) -> pd.DataFrame:
+    """Gerçek ~6 yıllık günlük OHLC (yfinance). Başarısızsa sentetik."""
+    if _HAS_YF:
+        try:
+            df = yf.Ticker(ticker).history(period="6y", auto_adjust=False)
+            if df is not None and len(df) > 60:
+                df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+                idx = pd.to_datetime(df.index)
+                try:
+                    idx = idx.tz_localize(None)
+                except (TypeError, AttributeError):
+                    idx = idx.tz_convert(None) if getattr(idx, "tz", None) else idx
+                df.index = idx
+                df.index.name = "Date"
+                return df
+        except Exception:
+            pass
+    return _synth_full_ohlc(ticker)
+
+
 def get_ohlc(ticker: str, days: int = 180) -> pd.DataFrame:
-    """Date index + Open/High/Low/Close/Volume kolonlu DataFrame döndürür.
-    Gerçek veride: yfinance.download(ticker, period=...) çıktısını aynı
-    kolon isimleriyle döndürmen yeterli."""
-    full = _full_ohlc(ticker)
-    return full.tail(days).copy()
+    return _full_ohlc(ticker).tail(days).copy()
 
 
 def add_emas(df: pd.DataFrame, periods=(20, 50, 100, 200)) -> pd.DataFrame:
-    """DataFrame'e EMA20/50/100/200 kolonları ekler.
-    EMA'lar verilen df üzerinde hesaplanır; uzun geçmişle çağırıp sonra
-    kısaltırsan EMA200 baştan itibaren doğru olur."""
     out = df.copy()
     for p in periods:
         out[f"EMA{p}"] = out["Close"].ewm(span=p, adjust=False).mean()
     return out
 
 
-# ----------------------------------------------------------------------
-# Ranked Support / Resistance zones
-# ----------------------------------------------------------------------
 def get_sr_zones(df: pd.DataFrame, n: int = 3) -> list[dict]:
-    """Fiyat aralığından n adet S/R bandı. rank=1 en güçlü.
-    Gerçek veride: swing high/low kümeleme veya hacim profili ile üret."""
     lo, hi = float(df["Low"].min()), float(df["High"].max())
-    rng = np.random.default_rng(_seed(df.index.name or "x") + len(df))
+    rng = np.random.default_rng(int(abs(hi - lo)) + len(df) + 7)
     centers = np.sort(rng.uniform(lo + (hi - lo) * 0.15, hi - (hi - lo) * 0.15, n))
     band = (hi - lo) * 0.012
     zones = []
@@ -164,139 +216,198 @@ def get_sr_zones(df: pd.DataFrame, n: int = 3) -> list[dict]:
     return zones
 
 
-# ----------------------------------------------------------------------
-# Formasyonlar (trendline / bull flag / triangle) — çizim için nokta seti
-# ----------------------------------------------------------------------
 def get_formation(df: pd.DataFrame, ftype: str) -> dict:
-    """Formasyon tipi + çizilecek çizgiler (tarih, fiyat) döndürür.
-    Gerçek veride: pattern-recognition çıktını bu formata çevir."""
     tail = df.tail(45)
     x0, x1 = tail.index[0], tail.index[-1]
     hi0, hi1 = float(tail["High"].iloc[:10].max()), float(tail["High"].iloc[-10:].max())
     lo0, lo1 = float(tail["Low"].iloc[:10].min()), float(tail["Low"].iloc[-10:].min())
-
     if ftype == "Triangle":
-        lines = [((x0, hi0), (x1, min(hi0, hi1))),   # üst direnç (düşen)
-                 ((x0, lo0), (x1, max(lo0, lo1)))]    # alt destek (yükselen)
+        lines = [((x0, hi0), (x1, min(hi0, hi1))), ((x0, lo0), (x1, max(lo0, lo1)))]
     elif ftype == "Bull Flag":
         mid = tail.index[len(tail) // 2]
-        lines = [((x0, lo0), (mid, hi1)),             # bayrak direği
-                 ((mid, hi1), (x1, hi1 * 0.985)),      # bayrak üst
-                 ((mid, lo1 * 1.01), (x1, lo1))]       # bayrak alt
-    else:  # Trendline
+        lines = [((x0, lo0), (mid, hi1)), ((mid, hi1), (x1, hi1 * 0.985)),
+                 ((mid, lo1 * 1.01), (x1, lo1))]
+    else:
         lines = [((x0, lo0), (x1, lo1))]
     return {"type": ftype, "lines": lines}
 
 
-# ----------------------------------------------------------------------
-# Endeks / ETF özeti (üst bölüm) — SPY / QQQ / DIA / IWM
-# ----------------------------------------------------------------------
+# ======================================================================
+# ENDEKS ÖZETİ (SPY/QQQ/DIA/IWM) — gerçek + mock fallback
+# ======================================================================
+_INDEX_SPECS = [("SPY", "S&P 500"), ("QQQ", "Nasdaq 100"),
+                ("DIA", "Dow Jones"), ("IWM", "Russell 2000")]
+
+
+def _mock_index_item(ticker, subtitle):
+    base = _BASE_PRICE_OVERRIDE.get(ticker, 300.0)
+    rng = np.random.default_rng(_seed(ticker))
+    steps = rng.normal(0, 0.0013, 78)
+    series = base * np.cumprod(1 + steps)
+    last = float(series[-1])
+    return {"ticker": ticker, "subtitle": subtitle, "prev_close": base,
+            "last": last, "change_pct": (last / base - 1) * 100, "series": series.tolist()}
+
+
+def _real_index_item(ticker, subtitle):
+    t = yf.Ticker(ticker)
+    fi = t.fast_info
+    last = float(fi.last_price); prev = float(fi.previous_close)
+    try:
+        intr = t.history(period="1d", interval="5m")["Close"].dropna()
+        series = [float(x) for x in intr.tolist()] if len(intr) > 3 else [prev, last]
+    except Exception:
+        series = [prev, last]
+    return {"ticker": ticker, "subtitle": subtitle, "prev_close": prev,
+            "last": last, "change_pct": (last / prev - 1) * 100, "series": series}
+
+
+@_ttl_cache(300)
 def get_index_summary() -> list[dict]:
-    """Her kart için: ticker, subtitle, prev_close, last, change_pct, intraday seri.
-    Gerçek veride: her ETF için günlük fiyatı ve intraday seriyi çek,
-    prev_close olarak bir önceki kapanışı ver (grafikteki kesikli çizgi için)."""
-    specs = [
-        ("SPY", "S&P 500",      560.0),
-        ("QQQ", "Nasdaq 100",   485.0),
-        ("DIA", "Dow Jones",    421.0),
-        ("IWM", "Russell 2000", 228.0),
-    ]
     out = []
-    for ticker, subtitle, prev_close in specs:
-        rng = np.random.default_rng(_seed(ticker))
-        steps = rng.normal(0, 0.0013, 78)           # ~intraday
-        series = prev_close * np.cumprod(1 + steps)
-        last = float(series[-1])
-        change_pct = (last / prev_close - 1) * 100
-        out.append({
-            "ticker": ticker,
-            "subtitle": subtitle,
-            "prev_close": prev_close,
-            "last": last,
-            "change_pct": change_pct,
-            "series": series.tolist(),
-        })
+    for ticker, subtitle in _INDEX_SPECS:
+        item = None
+        if _HAS_YF:
+            try:
+                item = _real_index_item(ticker, subtitle)
+            except Exception:
+                item = None
+        out.append(item or _mock_index_item(ticker, subtitle))
     return out
 
 
-# ----------------------------------------------------------------------
-# Filtrene uyan 20 şirket
-# ----------------------------------------------------------------------
-def get_filtered_companies() -> list[str]:
-    """O gün swing-trade filtrene uyan tickerlar.
-    Gerçek veride: filtre motorunun döndürdüğü ticker listesi."""
-    return list(COMPANIES.keys())[:20]
-
-
-# ----------------------------------------------------------------------
-# Şirket detayı (ticker'a tıklayınca açılan sayfa) — fundamental + fiyat
-# ----------------------------------------------------------------------
-def get_company_detail(ticker: str) -> dict:
-    """Detay sayfasındaki sol taraftaki tüm veriler + şirket tanımı.
-    Gerçek veride: fiyatı canlı feed'den, fundamentalleri veri
-    sağlayıcıdan çek; aynı anahtarlarla döndür."""
-    info = COMPANIES[ticker]
-    df = _full_ohlc(ticker)
-    last = float(df["Close"].iloc[-1])
-    prev_close = float(df["Close"].iloc[-2])
-    day = df.iloc[-1]
-    y1 = df.tail(252)
-
+# ======================================================================
+# ŞİRKET DETAYI — gerçek + mock fallback
+# ======================================================================
+def _mock_company_detail(ticker: str) -> dict:
+    info = COMPANIES.get(ticker, {"name": ticker, "sector": "", "desc": ""})
+    df = _synth_full_ohlc(ticker)
+    last = float(df["Close"].iloc[-1]); prev_close = float(df["Close"].iloc[-2])
+    day = df.iloc[-1]; y1 = df.tail(252)
     rng = np.random.default_rng(_seed(ticker) + 99)
-    shares_out = rng.uniform(0.2, 16.0)            # milyar adet
-    market_cap = last * shares_out * 1e9           # $
-    pe = float(rng.uniform(9, 42))
-    eps = last / pe
+    shares_out = rng.uniform(0.2, 16.0)
+    market_cap = last * shares_out * 1e9
+    pe = float(rng.uniform(9, 42)); eps = last / pe
     fwd_pe = pe * float(rng.uniform(0.82, 0.98))
     revenue = market_cap * float(rng.uniform(0.08, 0.6))
     net_income = revenue * float(rng.uniform(0.05, 0.34))
     beta = float(rng.uniform(0.55, 1.9))
     has_div = bool(rng.random() < 0.55)
     div_amt = float(rng.uniform(0.4, 3.2)) if has_div else 0.0
-    div_yield = (div_amt / last * 100) if has_div else 0.0
-    rating = str(rng.choice(["Strong Buy", "Buy", "Hold"], p=[0.4, 0.4, 0.2]))
-    price_target = last * (1 + float(rng.uniform(0.05, 0.30)))
-
     today = pd.Timestamp.today().normalize()
-    earnings = today + pd.Timedelta(days=int(rng.integers(5, 70)))
-    ex_div = today - pd.Timedelta(days=int(rng.integers(5, 60))) if has_div else None
-
     return {
-        "ticker": ticker,
-        "name": info["name"],
-        "sector": info["sector"],
-        "desc": info["desc"],
-        "last": last,
-        "prev_close": prev_close,
-        "change_abs": last - prev_close,
-        "change_pct": (last / prev_close - 1) * 100,
-        "market_cap": market_cap,
-        "revenue": revenue,
-        "net_income": net_income,
-        "eps": eps,
-        "shares_out": shares_out * 1e9,
-        "pe": pe,
-        "fwd_pe": fwd_pe,
-        "dividend": div_amt,
-        "div_yield": div_yield,
-        "ex_div_date": ex_div,
-        "volume": int(day["Volume"]),
-        "open": float(day["Open"]),
-        "day_low": float(day["Low"]),
-        "day_high": float(day["High"]),
-        "low_52w": float(y1["Low"].min()),
-        "high_52w": float(y1["High"].max()),
-        "beta": beta,
-        "analysts": rating,
-        "price_target": price_target,
-        "target_upside": (price_target / last - 1) * 100,
-        "earnings_date": earnings,
+        "ticker": ticker, "name": info["name"], "sector": info["sector"], "desc": info["desc"],
+        "last": last, "prev_close": prev_close, "change_abs": last - prev_close,
+        "change_pct": (last / prev_close - 1) * 100, "market_cap": market_cap,
+        "revenue": revenue, "net_income": net_income, "eps": eps,
+        "shares_out": shares_out * 1e9, "pe": pe, "fwd_pe": fwd_pe,
+        "dividend": div_amt, "div_yield": (div_amt / last * 100) if has_div else 0.0,
+        "ex_div_date": (today - pd.Timedelta(days=int(rng.integers(5, 60)))) if has_div else None,
+        "volume": int(day["Volume"]), "open": float(day["Open"]),
+        "day_low": float(day["Low"]), "day_high": float(day["High"]),
+        "low_52w": float(y1["Low"].min()), "high_52w": float(y1["High"].max()),
+        "beta": beta, "analysts": str(rng.choice(["Strong Buy", "Buy", "Hold"])),
+        "price_target": last * (1 + float(rng.uniform(0.05, 0.30))),
+        "target_upside": float(rng.uniform(5, 30)),
+        "earnings_date": today + pd.Timedelta(days=int(rng.integers(5, 70))),
     }
 
 
-# ----------------------------------------------------------------------
-# Şirket haberleri (detay sayfasında grafiğin altında gösterilir)
-# ----------------------------------------------------------------------
+def _g(info, *keys, default=None):
+    for k in keys:
+        v = info.get(k)
+        if v is not None:
+            return v
+    return default
+
+
+def _real_company_detail(ticker: str) -> dict:
+    t = yf.Ticker(ticker)
+    info = t.get_info()
+    last = _g(info, "currentPrice", "regularMarketPrice", "regularMarketPreviousClose")
+    prev = _g(info, "previousClose", "regularMarketPreviousClose")
+    if last is None or prev is None:
+        raise ValueError("fiyat yok")
+    last = float(last); prev = float(prev)
+    name = COMPANIES.get(ticker, {}).get("name") or _g(info, "shortName", "longName", default=ticker)
+    sector = COMPANIES.get(ticker, {}).get("sector") or _g(info, "sector", default="")
+    desc = _g(info, "longBusinessSummary") or COMPANIES.get(ticker, {}).get("desc", "")
+    pe = _g(info, "trailingPE")
+    eps = _g(info, "trailingEps", default=(last / pe if pe else float("nan")))
+    pt = _g(info, "targetMeanPrice", default=last)
+
+    def _ts(v):
+        try:
+            return pd.to_datetime(v, unit="s") if v and float(v) > 1e6 else pd.to_datetime(v)
+        except Exception:
+            return None
+
+    return {
+        "ticker": ticker, "name": name, "sector": sector, "desc": desc,
+        "last": last, "prev_close": prev, "change_abs": last - prev,
+        "change_pct": (last / prev - 1) * 100,
+        "market_cap": float(_g(info, "marketCap", default=0) or 0),
+        "revenue": float(_g(info, "totalRevenue", default=0) or 0),
+        "net_income": float(_g(info, "netIncomeToCommon", default=0) or 0),
+        "eps": float(eps) if eps is not None else float("nan"),
+        "shares_out": float(_g(info, "sharesOutstanding", default=0) or 0),
+        "pe": float(pe) if pe else float("nan"),
+        "fwd_pe": float(_g(info, "forwardPE", default=pe or float("nan"))),
+        "dividend": float(_g(info, "dividendRate", default=0) or 0),
+        "div_yield": float(_g(info, "dividendYield", default=0) or 0) * 100,
+        "ex_div_date": _ts(_g(info, "exDividendDate")),
+        "volume": int(_g(info, "volume", "regularMarketVolume", default=0) or 0),
+        "open": float(_g(info, "open", "regularMarketOpen", default=last)),
+        "day_low": float(_g(info, "dayLow", "regularMarketDayLow", default=last)),
+        "day_high": float(_g(info, "dayHigh", "regularMarketDayHigh", default=last)),
+        "low_52w": float(_g(info, "fiftyTwoWeekLow", default=last)),
+        "high_52w": float(_g(info, "fiftyTwoWeekHigh", default=last)),
+        "beta": float(_g(info, "beta", default=1.0) or 1.0),
+        "analysts": str(_g(info, "recommendationKey", default="hold")).replace("_", " ").title(),
+        "price_target": float(pt),
+        "target_upside": (float(pt) / last - 1) * 100,
+        "earnings_date": _ts(_g(info, "earningsTimestamp", "earningsTimestampStart"))
+                         or (pd.Timestamp.today().normalize() + pd.Timedelta(days=30)),
+    }
+
+
+@_ttl_cache(1800)
+def get_company_detail(ticker: str) -> dict:
+    if _HAS_YF:
+        try:
+            return _real_company_detail(ticker)
+        except Exception:
+            pass
+    return _mock_company_detail(ticker)
+
+
+# ======================================================================
+# HAFİF FİYAT ÖZETİ (quote) — gerçek + fallback
+# ======================================================================
+def _daily_change(ticker: str):
+    df = _full_ohlc(ticker)
+    last = float(df["Close"].iloc[-1]); prev = float(df["Close"].iloc[-2])
+    return last, (last / prev - 1) * 100
+
+
+@_ttl_cache(300)
+def get_quote(ticker: str) -> dict:
+    name = company_name(ticker); sector = company_sector(ticker)
+    if _HAS_YF:
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            last = float(fi.last_price); prev = float(fi.previous_close)
+            return {"ticker": ticker, "name": name, "sector": sector,
+                    "last": last, "change_pct": (last / prev - 1) * 100}
+        except Exception:
+            pass
+    last, chg = _daily_change(ticker)
+    return {"ticker": ticker, "name": name, "sector": sector, "last": last, "change_pct": chg}
+
+
+# ======================================================================
+# HABERLER — gerçek (yfinance) + mock fallback
+# ======================================================================
 _NEWS_TEMPLATES = [
     ("{name} için analistler fiyat hedefini yükseltti", "Reuters", "Positive"),
     ("{name} çeyreklik kazançları piyasa beklentilerini aştı", "Bloomberg", "Positive"),
@@ -313,13 +424,9 @@ _NEWS_TEMPLATES = [
 ]
 
 
-def get_company_news(ticker: str, n: int = 6) -> list[dict]:
-    """Detay sayfasında grafiğin altında gösterilecek haber listesi.
-    Her haber: title, source, when (göreli zaman), sentiment (Positive/Negative/Neutral).
-    Gerçek veride: bir haber API'sinden (NewsAPI, Finnhub vb.) çekip aynı
-    anahtarlarla döndür — en yeni haber listenin başında olacak şekilde sırala."""
+def _mock_company_news(ticker: str, n: int = 6) -> list[dict]:
     rng = np.random.default_rng(_seed(ticker) + 555)
-    name = COMPANIES[ticker]["name"]
+    name = company_name(ticker)
     n = min(n, len(_NEWS_TEMPLATES))
     idxs = rng.choice(len(_NEWS_TEMPLATES), size=n, replace=False)
     hours_ago = sorted(int(h) for h in rng.integers(1, 96, size=n))
@@ -332,9 +439,47 @@ def get_company_news(ticker: str, n: int = 6) -> list[dict]:
     return news
 
 
+def _parse_news_item(it, ticker):
+    title = source = None; ts = None
+    if isinstance(it, dict) and it.get("title"):
+        title = it.get("title"); source = it.get("publisher")
+        ts = it.get("providerPublishTime")
+    elif isinstance(it, dict) and isinstance(it.get("content"), dict):
+        c = it["content"]; title = c.get("title")
+        prov = c.get("provider") or {}
+        source = prov.get("displayName")
+        pub = c.get("pubDate") or c.get("displayTime")
+        if pub:
+            try:
+                ts = pd.Timestamp(pub).timestamp()
+            except Exception:
+                ts = None
+    if not title:
+        return None
+    if ts:
+        hours = max(1, int((time.time() - float(ts)) / 3600))
+    else:
+        hours = 1
+    when = f"{hours} saat önce" if hours < 24 else f"{hours // 24} gün önce"
+    return {"ticker": ticker, "title": title, "source": source or "Yahoo Finance",
+            "when": when, "hours_ago": hours, "sentiment": "Neutral"}
+
+
+@_ttl_cache(900)
+def get_company_news(ticker: str, n: int = 6) -> list[dict]:
+    if _HAS_YF:
+        try:
+            raw = yf.Ticker(ticker).news or []
+            parsed = [p for p in (_parse_news_item(it, ticker) for it in raw) if p]
+            if parsed:
+                parsed.sort(key=lambda x: x["hours_ago"])
+                return parsed[:n]
+        except Exception:
+            pass
+    return _mock_company_news(ticker, n)
+
+
 def get_watchlist_news(tickers: list[str], per_ticker: int = 3) -> list[dict]:
-    """Watchlist'teki şirketlerin haberlerini birleştirip en yeniden eskiye sıralar.
-    Her haberde ayrıca 'ticker' alanı var ki hangi şirkete ait görülebilsin."""
     all_news = []
     for t in tickers:
         all_news.extend(get_company_news(t, n=per_ticker))
@@ -342,30 +487,27 @@ def get_watchlist_news(tickers: list[str], per_ticker: int = 3) -> list[dict]:
     return all_news
 
 
-# ----------------------------------------------------------------------
-# Trading Strategy Picks (filtredekilerin bir kısmı, TA'ya göre)
-# ----------------------------------------------------------------------
+# ======================================================================
+# STRATEGY PICKS — gerçek OHLC üzerinde hesaplanır
+# ======================================================================
 def get_strategy_picks() -> list[dict]:
-    """Her pick: ticker, setup, formasyon tipi + hesaplanmış seviyeler + kısa not.
-    Gerçek veride: TA motorundan gelen sinyalleri bu formata çevir."""
     picks_spec = [
-        ("NVDA", "Breakout retest",   "Bull Flag",
+        ("NVDA", "Breakout retest", "Bull Flag",
          "EMA20 üzerinde sıkışan fiyat, 50 günlük ortalamaya yapılan geri çekilmenin ardından "
-         "bayrak formasyonunu yukarı kırdı. Hacim teyidiyle momentum devam edebilir; kırılım "
-         "bölgesine geri test alım fırsatı sunuyor."),
-        ("AMD",  "Trend continuation", "Triangle",
+         "bayrak formasyonunu yukarı kırdı. Hacim teyidiyle momentum devam edebilir."),
+        ("AMD", "Trend continuation", "Triangle",
          "Yükselen tabanlar ve yatay direnç bir simetrik üçgen oluşturuyor. Fiyat tüm EMA'ların "
-         "üzerinde seyrediyor; üçgenin üst sınırının kırılması trendin devamı sinyali verir."),
-        ("SHOP", "Flag breakout",     "Bull Flag",
+         "üzerinde; üçgenin üst sınırının kırılması trendin devamı sinyali verir."),
+        ("SHOP", "Flag breakout", "Bull Flag",
          "Güçlü yükseliş sonrası sağlıklı bir konsolidasyon bayrağı. Risk/ödül oranı cazip; "
-         "stop seviyesi bayrağın alt sınırının hemen altında tutulabilir."),
-        ("PLTR", "Ascending triangle","Triangle",
+         "stop seviyesi bayrağın alt sınırının altında tutulabilir."),
+        ("PLTR", "Ascending triangle", "Triangle",
          "Sabit direnç seviyesine karşı yükselen destek çizgisi klasik bir yükselen üçgen. "
-         "Alıcılar her geri çekilmede daha yüksek fiyattan devrede; kırılım yukarı yönlü beklenir."),
-        ("UBER", "Pullback to EMA",   "Trendline",
+         "Alıcılar her geri çekilmede daha yüksek fiyattan devrede."),
+        ("UBER", "Pullback to EMA", "Trendline",
          "Fiyat ana trend çizgisine ve 50 günlük EMA'ya geri çekildi. Trend bozulmadığı sürece "
-         "bu bölge dinamik destek olarak alım için izleniyor."),
-        ("COIN", "Momentum",          "Triangle",
+         "bu bölge dinamik destek olarak izleniyor."),
+        ("COIN", "Momentum", "Triangle",
          "Yüksek volatilite ve artan hacimle momentum oyunu. Daralan fiyat aralığı yakında sert "
          "bir hareketin habercisi; seviyeler yakından takip edilmeli, pozisyon küçük tutulmalı."),
     ]
@@ -375,113 +517,306 @@ def get_strategy_picks() -> list[dict]:
         last = float(df["Close"].iloc[-1])
         atr = float((df["High"] - df["Low"]).tail(14).mean())
         picks.append({
-            "ticker": ticker,
-            "name": COMPANIES[ticker]["name"],
-            "setup": setup,
-            "formation": ftype,
-            "note": note,
-            "last": last,
+            "ticker": ticker, "name": company_name(ticker), "setup": setup,
+            "formation": ftype, "note": note, "last": last,
             "buy_zone": (round(last - atr * 0.6, 2), round(last + atr * 0.2, 2)),
-            "stop": round(last - atr * 1.8, 2),
-            "target": round(last + atr * 3.0, 2),
-            "rr": round(3.0 / 1.8, 2),
-            "avg_volume": int(df["Volume"].tail(20).mean()),
+            "stop": round(last - atr * 1.8, 2), "target": round(last + atr * 3.0, 2),
+            "rr": round(3.0 / 1.8, 2), "avg_volume": int(df["Volume"].tail(20).mean()),
             "rel_volume": round(float(df["Volume"].iloc[-1] / df["Volume"].tail(20).mean()), 2),
         })
     return picks
 
 
-# ----------------------------------------------------------------------
-# Long-term ucuz şirketler (en alt tablo)
-# ----------------------------------------------------------------------
-def get_value_stocks() -> pd.DataFrame:
-    """Kolonlar: Ticker, PEG, Forward PE, Profit Margin %, EPS Next 5Y %.
-    Gerçek veride: fundamental veri sağlayıcından çek, aynı kolonlarla döndür."""
+# ======================================================================
+# UCUZ ŞİRKETLER (PEG / Forward PE) — gerçek tarama + mock fallback
+# ======================================================================
+def _mock_value_stocks() -> pd.DataFrame:
     rows = [
-        ("GOOGL", 1.1, 18.4, 27.0, 14.5),
-        ("META",  0.9, 20.1, 33.2, 16.0),
-        ("PEP",   1.4, 16.8, 10.1,  7.2),
-        ("COST",  2.0, 34.5,  2.8, 11.0),
-        ("AMZN",  1.3, 28.9,  7.4, 22.3),
-        ("CRM",   1.0, 22.0, 15.6, 18.9),
-        ("AVGO",  1.2, 24.3, 21.9, 19.5),
-        ("UBER",  0.8, 21.5,  6.2, 30.1),
-        ("SOFI",  0.7, 19.0,  8.9, 28.4),
-        ("ADBE",  1.1, 19.9, 28.5, 13.8),
+        ("GOOGL", 1.1, 18.4, 27.0, 14.5), ("META", 0.9, 20.1, 33.2, 16.0),
+        ("PEP", 1.4, 16.8, 10.1, 7.2), ("COST", 2.0, 34.5, 2.8, 11.0),
+        ("AMZN", 1.3, 28.9, 7.4, 22.3), ("CRM", 1.0, 22.0, 15.6, 18.9),
+        ("AVGO", 1.2, 24.3, 21.9, 19.5), ("UBER", 0.8, 21.5, 6.2, 30.1),
+        ("SOFI", 0.7, 19.0, 8.9, 28.4), ("ADBE", 1.1, 19.9, 28.5, 13.8),
     ]
     df = pd.DataFrame(rows, columns=["Ticker", "PEG", "Forward PE", "Profit Margin %", "EPS Next 5Y %"])
     return df.sort_values("Forward PE").reset_index(drop=True)
 
 
+@_ttl_cache(1800)
+def get_value_stocks() -> pd.DataFrame:
+    """Yahoo 'undervalued_large_caps' taramasından en düşük Forward PE'li
+    şirketleri getirir. Başarısızsa mock liste."""
+    if _HAS_YF:
+        try:
+            res = yf.screen("undervalued_large_caps")
+            quotes = res.get("quotes", []) if isinstance(res, dict) else []
+            rows = []
+            for q in quotes[:14]:
+                sym = q.get("symbol")
+                if not sym:
+                    continue
+                try:
+                    info = yf.Ticker(sym).get_info()
+                except Exception:
+                    info = {}
+                peg = _g(info, "trailingPegRatio", "pegRatio")
+                fpe = _g(info, "forwardPE") or q.get("forwardPE")
+                margin = _g(info, "profitMargins")
+                growth = _g(info, "earningsGrowth")
+                if fpe is None:
+                    continue
+                rows.append((sym,
+                             round(float(peg), 2) if peg else np.nan,
+                             round(float(fpe), 1),
+                             round(float(margin) * 100, 1) if margin is not None else np.nan,
+                             round(float(growth) * 100, 1) if growth is not None else np.nan))
+            if len(rows) >= 5:
+                df = pd.DataFrame(rows, columns=["Ticker", "PEG", "Forward PE",
+                                                 "Profit Margin %", "EPS Next 5Y %"])
+                df = df[df["Forward PE"] > 0].sort_values("Forward PE").head(10)
+                return df.reset_index(drop=True)
+        except Exception:
+            pass
+    return _mock_value_stocks()
+
+
 # ======================================================================
-# YENİ BÖLÜMLER İÇİN VERİ
+# FEAR & GREED — gerçek (CNN) + mock fallback
 # ======================================================================
-
-# Varsayılan watchlist — kullanıcı henüz bir şey eklemediğinde dolu gelsin
-DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
-                     "META", "TSLA", "AMD", "NFLX", "AVGO"]
-
-
-def _daily_change(ticker: str):
-    """Bir ticker için (son fiyat, günlük % değişim). Movers/losers ve
-    watchlist performansı bundan hesaplanır — get_company_detail ile tutarlı."""
-    df = _full_ohlc(ticker)
-    last = float(df["Close"].iloc[-1])
-    prev = float(df["Close"].iloc[-2])
-    return last, (last / prev - 1) * 100
-
-
-def get_quote(ticker: str) -> dict:
-    """Kart/tablo için hafif fiyat özeti: last + günlük % (detay kadar ağır değil)."""
-    last, chg = _daily_change(ticker)
-    return {"ticker": ticker, "name": COMPANIES[ticker]["name"],
-            "sector": COMPANIES[ticker]["sector"], "last": last, "change_pct": chg}
-
-
-# ----------------------------------------------------------------------
-# Fear & Greed Index (Long Term bölümü) — CNN tarzı
-# ----------------------------------------------------------------------
-def _fg_label(v: int) -> str:
-    if v < 25:  return "Extreme Fear"
-    if v < 45:  return "Fear"
-    if v < 55:  return "Neutral"
-    if v < 75:  return "Greed"
+def _fg_label(v) -> str:
+    v = float(v)
+    if v < 25: return "Extreme Fear"
+    if v < 45: return "Fear"
+    if v < 55: return "Neutral"
+    if v < 75: return "Greed"
     return "Extreme Greed"
 
 
-def get_fear_greed() -> dict:
-    """Güncel Fear & Greed değeri + geçmiş kıyas noktaları.
-    Gerçek veride: CNN Fear & Greed veya alternative.me API'sinden çek."""
-    value = 27
-    history = [
-        {"when": "Previous close", "value": 23},
-        {"when": "1 week ago",     "value": 44},
-        {"when": "1 month ago",    "value": 30},
-        {"when": "1 year ago",     "value": 29},
-    ]
+_FG_QUOTE = "Be fearful when others are greedy, and greedy when others are fearful."
+_FG_AUTHOR = "Warren Buffett"
+
+
+def _mock_fear_greed() -> dict:
+    history = [{"when": "Previous close", "value": 23}, {"when": "1 week ago", "value": 44},
+               {"when": "1 month ago", "value": 30}, {"when": "1 year ago", "value": 29}]
     for h in history:
         h["label"] = _fg_label(h["value"])
-    return {"value": value, "label": _fg_label(value), "history": history,
-            "quote": "Be fearful when others are greedy, and greedy when others are fearful.",
-            "quote_author": "Warren Buffett"}
+    return {"value": 27, "label": _fg_label(27), "history": history,
+            "quote": _FG_QUOTE, "quote_author": _FG_AUTHOR}
 
 
-# ----------------------------------------------------------------------
-# Endeks / sektör sıralaması (büyüme + kâr marjı skoru) — Long Term
-# ----------------------------------------------------------------------
-def get_index_rankings() -> pd.DataFrame:
-    """Sektörleri büyüme ve kâr marjına göre skorlayıp sıralar.
-    Score = Growth*0.6 + Margin*0.4. Gerçek veride: her sektör/endeks için
-    toplam gelir büyümesi ve ortalama net marjı hesaplayıp aynı mantıkla sırala."""
+@_ttl_cache(900)
+def get_fear_greed() -> dict:
+    if _HAS_REQ:
+        try:
+            url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+            r = requests.get(url, headers=_HEADERS, timeout=10)
+            fg = r.json()["fear_and_greed"]
+            value = round(float(fg["score"]))
+            pairs = [("Previous close", fg.get("previous_close")),
+                     ("1 week ago", fg.get("previous_1_week")),
+                     ("1 month ago", fg.get("previous_1_month")),
+                     ("1 year ago", fg.get("previous_1_year"))]
+            history = [{"when": w, "value": round(float(v)), "label": _fg_label(v)}
+                       for w, v in pairs if v is not None]
+            if history:
+                return {"value": value, "label": _fg_label(value), "history": history,
+                        "quote": _FG_QUOTE, "quote_author": _FG_AUTHOR}
+        except Exception:
+            pass
+    return _mock_fear_greed()
+
+
+# ======================================================================
+# TOP MOVERS / LOSERS — gerçek (Yahoo screener) + fallback
+# ======================================================================
+def _screen_quotes(screen_name, n):
+    res = yf.screen(screen_name)
+    quotes = res.get("quotes", []) if isinstance(res, dict) else []
+    out = []
+    for q in quotes[:n]:
+        sym = q.get("symbol")
+        if not sym:
+            continue
+        out.append({"ticker": sym,
+                    "name": q.get("shortName") or q.get("displayName") or sym,
+                    "sector": q.get("sector", "") or "",
+                    "last": float(q.get("regularMarketPrice") or 0),
+                    "change_pct": float(q.get("regularMarketChangePercent") or 0)})
+    return out
+
+
+def _mock_movers(reverse, n):
+    quotes = [get_quote(t) for t in get_filtered_companies()]
+    quotes.sort(key=lambda x: x["change_pct"], reverse=reverse)
+    return quotes[:n]
+
+
+@_ttl_cache(300)
+def get_top_movers(n: int = 5) -> list[dict]:
+    if _HAS_YF:
+        try:
+            m = _screen_quotes("day_gainers", n)
+            if m:
+                return m
+        except Exception:
+            pass
+    return _mock_movers(True, n)
+
+
+@_ttl_cache(300)
+def get_top_losers(n: int = 5) -> list[dict]:
+    if _HAS_YF:
+        try:
+            m = _screen_quotes("day_losers", n)
+            if m:
+                return m
+        except Exception:
+            pass
+    return _mock_movers(False, n)
+
+
+# ======================================================================
+# YAKLAŞAN IPO'LAR — gerçek (Nasdaq) + mock fallback
+# ======================================================================
+def _mock_ipos() -> pd.DataFrame:
+    today = pd.Timestamp.today().normalize()
     rows = [
-        ("Semiconductors", 28.5, 31.2),
-        ("Software",       22.1, 24.8),
-        ("Technology",     18.9, 27.5),
-        ("Fintech",        26.4, 12.1),
-        ("Communication",  14.2, 20.3),
-        ("Consumer",       11.8, 9.4),
-        ("Automotive",     17.5, 8.9),
-        ("Retail",         8.6, 4.2),
+        ("NovaAI Systems", "NASDAQ", 4, "$18 – $20", 12.5),
+        ("Helios Energy", "NYSE", 9, "$22 – $25", 8.0),
+        ("Quantio Compute", "NASDAQ", 12, "$30 – $34", 15.2),
+        ("Verdant Biotech", "NASDAQ", 16, "$14 – $16", 6.4),
+        ("Orbit Logistics", "NYSE", 21, "$25 – $28", 10.1),
+        ("Lumen Robotics", "NASDAQ", 27, "$40 – $45", 9.8),
+    ]
+    return pd.DataFrame([{"Company": n, "Exchange": e,
+                          "Expected Date": (today + pd.Timedelta(days=d)).strftime("%b %d, %Y"),
+                          "Price Range": p, "Shares (M)": s} for n, e, d, p, s in rows])
+
+
+@_ttl_cache(3600)
+def get_upcoming_ipos() -> pd.DataFrame:
+    if _HAS_REQ:
+        try:
+            month = pd.Timestamp.today().strftime("%Y-%m")
+            url = "https://api.nasdaq.com/api/ipo/calendar"
+            r = requests.get(url, params={"date": month}, headers=_HEADERS, timeout=10)
+            rows = (r.json().get("data", {}).get("upcoming", {})
+                    .get("upcomingTable", {}).get("rows") or [])
+            out = []
+            for row in rows[:12]:
+                shares = str(row.get("sharesOffered", "")).replace(",", "")
+                try:
+                    shares_m = round(float(shares) / 1e6, 2)
+                except Exception:
+                    shares_m = np.nan
+                out.append({"Company": row.get("companyName", ""),
+                            "Exchange": row.get("proposedExchange", ""),
+                            "Expected Date": row.get("expectedPriceDate", ""),
+                            "Price Range": row.get("proposedSharePrice", ""),
+                            "Shares (M)": shares_m})
+            if out:
+                return pd.DataFrame(out)
+        except Exception:
+            pass
+    return _mock_ipos()
+
+
+# ======================================================================
+# EKONOMİK TAKVİM — gerçek (TradingEconomics guest) + mock fallback
+# ======================================================================
+def _mock_calendar() -> pd.DataFrame:
+    today = pd.Timestamp.today().normalize()
+    rows = [
+        (0, "14:30", "USD", "Core CPI (MoM)", "High", "0.3%", "0.2%"),
+        (0, "16:00", "USD", "Fed Chair Speech", "High", "—", "—"),
+        (1, "11:00", "EUR", "ECB Interest Rate Decision", "High", "3.25%", "3.25%"),
+        (1, "14:30", "USD", "Initial Jobless Claims", "Medium", "228K", "223K"),
+        (2, "08:00", "GBP", "GDP (QoQ)", "High", "0.4%", "0.5%"),
+        (2, "14:30", "USD", "Nonfarm Payrolls", "High", "180K", "254K"),
+        (3, "10:00", "EUR", "German Ifo Business Climate", "Medium", "86.0", "85.4"),
+        (4, "14:30", "CAD", "Unemployment Rate", "Medium", "6.6%", "6.5%"),
+    ]
+    return pd.DataFrame([{"Date": (today + pd.Timedelta(days=d)).strftime("%a %b %d"),
+                          "Time": t, "Cur": c, "Event": e, "Impact": i,
+                          "Forecast": f, "Previous": p} for d, t, c, e, i, f, p in rows])
+
+
+_IMPORTANCE = {1: "Low", 2: "Medium", 3: "High"}
+_COUNTRY_CUR = {"united states": "USD", "euro area": "EUR", "germany": "EUR",
+                "united kingdom": "GBP", "japan": "JPY", "canada": "CAD",
+                "australia": "AUD", "switzerland": "CHF", "china": "CNY"}
+
+
+@_ttl_cache(3600)
+def get_economic_calendar() -> pd.DataFrame:
+    if _HAS_REQ:
+        try:
+            today = pd.Timestamp.today().normalize()
+            end = today + pd.Timedelta(days=7)
+            url = "https://api.tradingeconomics.com/calendar"
+            params = {"c": "guest:guest", "format": "json",
+                      "d1": today.strftime("%Y-%m-%d"), "d2": end.strftime("%Y-%m-%d")}
+            r = requests.get(url, params=params, headers=_HEADERS, timeout=12)
+            data = r.json()
+            out = []
+            for ev in data:
+                country = str(ev.get("Country", "")).lower()
+                cur = _COUNTRY_CUR.get(country)
+                imp = ev.get("Importance")
+                if cur is None or imp not in (2, 3):
+                    continue
+                d = pd.to_datetime(ev.get("Date"))
+                out.append({"Date": d.strftime("%a %b %d"), "Time": d.strftime("%H:%M"),
+                            "Cur": cur, "Event": ev.get("Event", ""),
+                            "Impact": _IMPORTANCE.get(imp, "Medium"),
+                            "Forecast": str(ev.get("Forecast", "") or "—"),
+                            "Previous": str(ev.get("Previous", "") or "—")})
+                if len(out) >= 20:
+                    break
+            if out:
+                return pd.DataFrame(out)
+        except Exception:
+            pass
+    return _mock_calendar()
+
+
+# ======================================================================
+# FOREX KURLARI — gerçek (yfinance) + mock fallback
+# ======================================================================
+_FX_PAIRS = [("EUR/USD", "EURUSD=X", 1.0845), ("GBP/USD", "GBPUSD=X", 1.2680),
+             ("USD/JPY", "USDJPY=X", 149.30), ("USD/CHF", "USDCHF=X", 0.8820),
+             ("AUD/USD", "AUDUSD=X", 0.6615), ("USD/CAD", "USDCAD=X", 1.3720)]
+
+
+@_ttl_cache(300)
+def get_forex_rates() -> list[dict]:
+    out = []
+    for pair, sym, base in _FX_PAIRS:
+        item = None
+        if _HAS_YF:
+            try:
+                fi = yf.Ticker(sym).fast_info
+                last = float(fi.last_price); prev = float(fi.previous_close)
+                item = {"pair": pair, "rate": last, "change_pct": (last / prev - 1) * 100}
+            except Exception:
+                item = None
+        if item is None:
+            rng = np.random.default_rng(_seed(pair) + 11)
+            item = {"pair": pair, "rate": base, "change_pct": float(rng.normal(0, 0.35))}
+        out.append(item)
+    return out
+
+
+# ======================================================================
+# SEKTÖR SIRALAMASI & KATEGORİ HABERLERİ — analitik/kurgusal (mock kalır)
+# ======================================================================
+def get_index_rankings() -> pd.DataFrame:
+    rows = [
+        ("Semiconductors", 28.5, 31.2), ("Software", 22.1, 24.8),
+        ("Technology", 18.9, 27.5), ("Fintech", 26.4, 12.1),
+        ("Communication", 14.2, 20.3), ("Consumer", 11.8, 9.4),
+        ("Automotive", 17.5, 8.9), ("Retail", 8.6, 4.2),
         ("Consumer Staples", 6.1, 11.0),
     ]
     df = pd.DataFrame(rows, columns=["Sector", "Growth %", "Profit Margin %"])
@@ -491,76 +826,6 @@ def get_index_rankings() -> pd.DataFrame:
     return df
 
 
-# ----------------------------------------------------------------------
-# Top movers / losers (Watchlist bölümü)
-# ----------------------------------------------------------------------
-def get_top_movers(n: int = 5) -> list[dict]:
-    quotes = [get_quote(t) for t in get_filtered_companies()]
-    quotes.sort(key=lambda x: x["change_pct"], reverse=True)
-    return quotes[:n]
-
-
-def get_top_losers(n: int = 5) -> list[dict]:
-    quotes = [get_quote(t) for t in get_filtered_companies()]
-    quotes.sort(key=lambda x: x["change_pct"])
-    return quotes[:n]
-
-
-# ----------------------------------------------------------------------
-# Yaklaşan halka arzlar (Watchlist bölümü) — tamamen kurgusal şirketler
-# ----------------------------------------------------------------------
-def get_upcoming_ipos() -> pd.DataFrame:
-    """Yaklaşan IPO tablosu. İsimler kurgusaldır (gerçek bir IPO ima etmez).
-    Gerçek veride: bir IPO takvimi API'sinden çek."""
-    today = pd.Timestamp.today().normalize()
-    rows = [
-        ("NovaAI Systems",      "NASDAQ", 4,  "$18 – $20", 12.5),
-        ("Helios Energy",       "NYSE",   9,  "$22 – $25", 8.0),
-        ("Quantio Compute",     "NASDAQ", 12, "$30 – $34", 15.2),
-        ("Verdant Biotech",     "NASDAQ", 16, "$14 – $16", 6.4),
-        ("Orbit Logistics",     "NYSE",   21, "$25 – $28", 10.1),
-        ("Lumen Robotics",      "NASDAQ", 27, "$40 – $45", 9.8),
-    ]
-    data = []
-    for name, exch, days, price_range, shares in rows:
-        data.append({
-            "Company": name, "Exchange": exch,
-            "Expected Date": (today + pd.Timedelta(days=days)).strftime("%b %d, %Y"),
-            "Price Range": price_range, "Shares (M)": shares,
-        })
-    return pd.DataFrame(data)
-
-
-# ----------------------------------------------------------------------
-# Ekonomik takvim (Forex & News bölümü)
-# ----------------------------------------------------------------------
-def get_economic_calendar() -> pd.DataFrame:
-    """Yaklaşan makro veri takvimi. Gerçek veride: bir ekonomik takvim
-    API'sinden (ForexFactory, Investing.com, TradingEconomics) çek."""
-    today = pd.Timestamp.today().normalize()
-    rows = [
-        (0, "14:30", "USD", "Core CPI (MoM)",         "High",   "0.3%",  "0.2%"),
-        (0, "16:00", "USD", "Fed Chair Speech",        "High",   "—",     "—"),
-        (1, "11:00", "EUR", "ECB Interest Rate Decision","High", "3.25%", "3.25%"),
-        (1, "14:30", "USD", "Initial Jobless Claims",  "Medium", "228K",  "223K"),
-        (2, "08:00", "GBP", "GDP (QoQ)",               "High",   "0.4%",  "0.5%"),
-        (2, "14:30", "USD", "Nonfarm Payrolls",        "High",   "180K",  "254K"),
-        (3, "10:00", "EUR", "German Ifo Business Climate","Medium","86.0", "85.4"),
-        (4, "14:30", "CAD", "Unemployment Rate",       "Medium", "6.6%",  "6.5%"),
-    ]
-    data = []
-    for days, time, cur, event, impact, forecast, prev in rows:
-        data.append({
-            "Date": (today + pd.Timedelta(days=days)).strftime("%a %b %d"),
-            "Time": time, "Cur": cur, "Event": event,
-            "Impact": impact, "Forecast": forecast, "Previous": prev,
-        })
-    return pd.DataFrame(data)
-
-
-# ----------------------------------------------------------------------
-# Kategorili piyasa haberleri (Forex & News bölümü)
-# ----------------------------------------------------------------------
 _MARKET_NEWS = {
     "war_politics": [
         ("Jeopolitik gerilim enerji fiyatlarında oynaklığı artırdı", "Reuters", "2 saat önce"),
@@ -585,33 +850,7 @@ _MARKET_NEWS = {
     ],
 }
 
-_NEWS_CATEGORY_TITLES = {
-    "war_politics": "Savaş & Politika",
-    "markets": "Borsa Haberleri",
-    "index": "Endeks Bazında (AI, Yarı İletken…)",
-}
-
 
 def get_market_news(category: str) -> list[dict]:
-    """Kategoriye göre haber listesi. category: 'war_politics' | 'markets' | 'index'.
-    Gerçek veride: bir haber API'sinden ilgili kategoride çek."""
-    out = []
-    for title, source, when in _MARKET_NEWS.get(category, []):
-        out.append({"title": title, "source": source, "when": when})
-    return out
-
-
-# ----------------------------------------------------------------------
-# Forex kurları şeridi (Forex & News bölümü)
-# ----------------------------------------------------------------------
-def get_forex_rates() -> list[dict]:
-    """Başlıca forex paritelerinin anlık özeti.
-    Gerçek veride: bir FX fiyat feed'inden çek."""
-    specs = [("EUR/USD", 1.0845), ("GBP/USD", 1.2680), ("USD/JPY", 149.30),
-             ("USD/CHF", 0.8820), ("AUD/USD", 0.6615), ("USD/CAD", 1.3720)]
-    out = []
-    for pair, base in specs:
-        rng = np.random.default_rng(_seed(pair) + 11)
-        chg = float(rng.normal(0, 0.35))
-        out.append({"pair": pair, "rate": base, "change_pct": chg})
-    return out
+    return [{"title": t, "source": s, "when": w}
+            for t, s, w in _MARKET_NEWS.get(category, [])]
