@@ -924,3 +924,206 @@ def get_sector_performance() -> list[dict]:
             chg = float(rng.normal(0.1, 1.1))
         out.append({"name": name, "etf": etf, "change_pct": chg})
     return out
+
+
+# ======================================================================
+# FOREX & HABERLER sayfası için veri
+# ======================================================================
+
+# --- Üst makro şerit: DXY, 10Y tahvil, altın, brent, USDTRY, BTC --------
+_MACRO = [
+    ("Dolar Endeksi", "DXY",     "DX-Y.NYB", 98.42,    2),
+    ("ABD 10Y Tahvil", "US10Y",  "^TNX",      4.38,    2),
+    ("Altın", "XAUUSD",          "GC=F",      4128.40, 2),
+    ("Brent Petrol", "UKOIL",    "BZ=F",      64.85,   2),
+    ("Dolar / TL", "USDTRY",     "USDTRY=X",  43.1250, 4),
+    ("Bitcoin", "BTCUSD",        "BTC-USD",   108420., 0),
+]
+
+
+@_ttl_cache(300)
+def get_macro_strip() -> list[dict]:
+    """Forex sayfasının üstündeki 6 enstrüman kartı."""
+    out = []
+    for name, code, sym, base, dec in _MACRO:
+        last = chg = None
+        series = None
+        if _HAS_YF:
+            try:
+                t = yf.Ticker(sym)
+                fi = t.fast_info
+                last = float(fi.last_price); prev = float(fi.previous_close)
+                chg = (last / prev - 1) * 100
+                h = t.history(period="1mo")["Close"].dropna()
+                if len(h) > 5:
+                    series = [float(x) for x in h.tolist()][-40:]
+            except Exception:
+                last = chg = None
+        if last is None:
+            rng = np.random.default_rng(_seed(code) + 21)
+            chg = float(rng.normal(0, 0.8))
+            last = base * (1 + chg / 100)
+            series = (base * np.cumprod(1 + rng.normal(0, 0.004, 40))).tolist()
+        if not series:
+            series = [last] * 10
+        out.append({"name": name, "code": code, "value": last,
+                    "change_pct": chg, "series": series, "dec": dec})
+    return out
+
+
+# --- Pariteler listesi (kategorili) ------------------------------------
+_FX_LIST = [
+    ("EUR/USD", "EURUSD=X", "Euro / ABD Doları",            "Majör",   1.16380, 5),
+    ("GBP/USD", "GBPUSD=X", "Sterlin / ABD Doları",         "Majör",   1.33520, 5),
+    ("USD/JPY", "USDJPY=X", "ABD Doları / Japon Yeni",      "Majör",   151.284, 3),
+    ("USD/CHF", "USDCHF=X", "ABD Doları / İsviçre Frangı",  "Majör",   0.79412, 5),
+    ("AUD/USD", "AUDUSD=X", "Avustralya Doları / ABD Doları","Majör",  0.65518, 5),
+    ("USD/CAD", "USDCAD=X", "ABD Doları / Kanada Doları",   "Majör",   1.37905, 5),
+    ("NZD/USD", "NZDUSD=X", "Yeni Zelanda Doları / ABD Doları","Majör",0.59840, 5),
+    ("EUR/GBP", "EURGBP=X", "Euro / Sterlin",               "Çapraz",  0.87160, 5),
+    ("EUR/JPY", "EURJPY=X", "Euro / Japon Yeni",            "Çapraz",  176.050, 3),
+    ("GBP/JPY", "GBPJPY=X", "Sterlin / Japon Yeni",         "Çapraz",  201.980, 3),
+    ("AUD/JPY", "AUDJPY=X", "Avustralya Doları / Japon Yeni","Çapraz", 99.120,  3),
+    ("USD/TRY", "USDTRY=X", "ABD Doları / Türk Lirası",     "Egzotik", 43.1250, 4),
+    ("USD/ZAR", "USDZAR=X", "ABD Doları / G. Afrika Randı", "Egzotik", 17.2400, 4),
+    ("USD/MXN", "USDMXN=X", "ABD Doları / Meksika Pesosu",  "Egzotik", 18.3900, 4),
+    ("XAU/USD", "GC=F",     "Altın / ABD Doları",           "Metal",   4128.40, 2),
+    ("XAG/USD", "SI=F",     "Gümüş / ABD Doları",           "Metal",   49.880,  3),
+]
+
+FX_CATEGORIES = ["Tümü", "Majör", "Çapraz", "Egzotik", "Metal"]
+
+
+def fx_symbol(pair: str) -> str:
+    for p, sym, _n, _c, _b, _d in _FX_LIST:
+        if p == pair:
+            return sym
+    return "EURUSD=X"
+
+
+def fx_meta(pair: str) -> dict:
+    for p, sym, n, c, b, d in _FX_LIST:
+        if p == pair:
+            return {"pair": p, "symbol": sym, "name": n, "category": c, "base": b, "dec": d}
+    return {"pair": pair, "symbol": "EURUSD=X", "name": "", "category": "Majör",
+            "base": 1.0, "dec": 5}
+
+
+@_ttl_cache(300)
+def get_fx_list(category: str = "Tümü") -> list[dict]:
+    """Pariteler paneli. category: Tümü/Majör/Çapraz/Egzotik/Metal"""
+    out = []
+    for p, sym, name, cat, base, dec in _FX_LIST:
+        if category != "Tümü" and cat != category:
+            continue
+        last = chg = None
+        if _HAS_YF:
+            try:
+                fi = yf.Ticker(sym).fast_info
+                last = float(fi.last_price); prev = float(fi.previous_close)
+                chg = (last / prev - 1) * 100
+            except Exception:
+                last = None
+        if last is None:
+            rng = np.random.default_rng(_seed(p) + 33)
+            chg = float(rng.normal(0, 0.3))
+            last = base * (1 + chg / 100)
+        out.append({"pair": p, "symbol": sym, "name": name, "category": cat,
+                    "last": last, "change_pct": chg, "dec": dec})
+    return out
+
+
+def get_fx_history(pair: str, days: int = 120):
+    """Parite için OHLC geçmişi (grafik)."""
+    return add_emas(get_ohlc(fx_symbol(pair), days=max(days, 260))).tail(days)
+
+
+# --- Ekonomik takvim satırları (etki noktalarıyla) ---------------------
+_CAL_MOCK = [
+    ("08:00", "EUR", 2, "Almanya GfK Tüketici Güveni", "-22,4", "-21,8", "-22,3"),
+    ("10:00", "EUR", 3, "Euro Bölgesi İmalat PMI",      "49,9",  "49,6",  "49,8"),
+    ("10:30", "GBP", 3, "BK Hizmet PMI",                "50,4",  "51,0",  "50,8"),
+    ("14:00", "TRY", 3, "TCMB Faiz Kararı",             "—",     "%38,50", "%40,50"),
+    ("14:30", "USD", 3, "İşsizlik Maaşı Başvuruları",   "—",     "232K",  "228K"),
+    ("16:00", "USD", 1, "İkinci El Konut Satışları",    "—",     "4,06M", "4,00M"),
+]
+
+CAL_FILTERS = ["Dün", "Bugün", "Yarın", "Bu Hafta"]
+CAL_IMPACTS = ["Tümü", "Yüksek", "Orta +"]
+
+
+@_ttl_cache(1800)
+def get_calendar_rows(impact: str = "Tümü") -> list[dict]:
+    """Takvim satırları: saat, döviz, etki (1-3), etkinlik, açıklanan, beklenti, önceki.
+    Gerçek veride TradingEconomics'ten; başarısızsa mock."""
+    rows = []
+    if _HAS_REQ:
+        try:
+            today = pd.Timestamp.today().normalize()
+            end = today + pd.Timedelta(days=2)
+            r = requests.get("https://api.tradingeconomics.com/calendar",
+                             params={"c": "guest:guest", "format": "json",
+                                     "d1": today.strftime("%Y-%m-%d"),
+                                     "d2": end.strftime("%Y-%m-%d")},
+                             headers=_HEADERS, timeout=12)
+            for ev in r.json():
+                cur = _COUNTRY_CUR.get(str(ev.get("Country", "")).lower())
+                imp = ev.get("Importance")
+                if cur is None or not imp:
+                    continue
+                d = pd.to_datetime(ev.get("Date"))
+                rows.append({"time": d.strftime("%H:%M"), "cur": cur, "impact": int(imp),
+                             "event": ev.get("Event", ""),
+                             "actual": str(ev.get("Actual", "") or "—"),
+                             "forecast": str(ev.get("Forecast", "") or "—"),
+                             "previous": str(ev.get("Previous", "") or "—")})
+                if len(rows) >= 20:
+                    break
+        except Exception:
+            rows = []
+    if not rows:
+        rows = [{"time": t, "cur": c, "impact": i, "event": e,
+                 "actual": a, "forecast": f, "previous": p}
+                for t, c, i, e, a, f, p in _CAL_MOCK]
+    if impact == "Yüksek":
+        rows = [r for r in rows if r["impact"] >= 3]
+    elif impact == "Orta +":
+        rows = [r for r in rows if r["impact"] >= 2]
+    return rows
+
+
+# --- Piyasa haberleri (öne çıkan + liste, kategorili) ------------------
+NEWS_CATEGORIES = ["Tümü", "Forex", "Merkez Bankaları", "Emtia", "Türkiye"]
+
+_FX_NEWS = [
+    ("Dolar endeksi istihdam verisi öncesi geriliyor", "DXY", "Düşüş", "Forex", 32),
+    ("BoJ yetkilileri yendeki hızlı hareketlere karşı uyardı", "USD/JPY", "Düşüş", "Merkez Bankaları", 47),
+    ("Altın güvenli liman talebiyle zirveyi yeniden test ediyor", "XAU/USD", "Yükseliş", "Emtia", 60),
+    ("TCMB kararı öncesi TL'de oynaklık beklentisi arttı", "USD/TRY", "Nötr", "Türkiye", 120),
+    ("Brent stok verisi sonrası toparlandı, Kanada doları destek buldu", "USD/CAD", "Düşüş", "Emtia", 180),
+    ("Sterlin zayıf hizmet PMI verisi sonrası baskı altında", "GBP/USD", "Düşüş", "Forex", 240),
+    ("Fed tutanakları faiz patikasında ayrışmaya işaret etti", "DXY", "Nötr", "Merkez Bankaları", 300),
+    ("Euro Bölgesi PMI beklentiyi aştı, euro toparlandı", "EUR/USD", "Yükseliş", "Forex", 360),
+]
+
+_FEATURED = {
+    "title": "ECB toplantısı öncesi euro dar bantta; piyasa Aralık için indirim fiyatlıyor",
+    "summary": ("Yatırımcılar Lagarde'ın basın toplantısındaki tonu bekliyor. Opsiyon piyasası "
+                "kısa vadede EUR/USD'de sınırlı oynaklık fiyatlıyor; 1,1600 desteği öne çıkıyor."),
+    "category": "Merkez Bankaları", "sentiment": "Nötr", "source": "Reuters",
+    "when": "18 dk", "tags": ["EUR/USD", "USD/JPY", "DXY"],
+}
+
+
+def get_forex_news(category: str = "Tümü") -> dict:
+    """Forex sayfasının haber bölümü: öne çıkan + liste."""
+    items = []
+    for title, pair, sent, cat, mins in _FX_NEWS:
+        if category != "Tümü" and cat != category:
+            continue
+        when = f"{mins} dk" if mins < 60 else f"{mins // 60} sa"
+        rng = np.random.default_rng(_seed(title) + 5)
+        spark = (100 * np.cumprod(1 + rng.normal(0, 0.012, 24))).tolist()
+        items.append({"title": title, "pair": pair, "sentiment": sent,
+                      "category": cat, "when": when, "source": "KAYNAK", "spark": spark})
+    return {"featured": _FEATURED, "items": items}
