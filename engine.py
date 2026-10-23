@@ -782,3 +782,151 @@ def backtest(df, cfg, extra=None, bench=None):
             "price": pd.Series(c[start:], index=idx),
             "ma": pd.Series(ma[start:], index=idx) if cfg["c2on"] else None,
             "kpi": kpi, "range": (idx[0], idx[-1]), "desc": describe(cfg), "cfg": cfg}
+
+
+# ======================================================================
+# GRAFİK İNDİKATÖRLERİ
+# Hepsi gerçek OHLCV üzerinde çalışır; ayarlar arayüzden değiştirilebilir.
+# ======================================================================
+def wavetrend(df, n1=10, n2=21, sig=4):
+    """LazyBear WaveTrend: wt1 (hızlı), wt2 (sinyal). Aşırı alım +60, aşırı satım −60."""
+    ap = (df["High"] + df["Low"] + df["Close"]) / 3
+    esa = ema(ap, n1)
+    d = ema((ap - esa).abs(), n1)
+    ci = (ap - esa) / (0.015 * d.replace(0, np.nan))
+    wt1 = ema(ci, n2)
+    return wt1, sma(wt1, max(2, int(sig)))
+
+
+def nadaraya_watson(close, h=8.0, mult=3.0, window=500):
+    """Nadaraya-Watson tahmincisi (Gauss çekirdeği) + ortalama mutlak hata bandı."""
+    s = pd.to_numeric(close, errors="coerce").dropna()
+    n = min(int(window), len(s))
+    empty = pd.Series(np.nan, index=close.index)
+    if n < 20:
+        return empty, empty.copy(), empty.copy()
+    y = s.to_numpy(float)[-n:]
+    i = np.arange(n, dtype=float)
+    h = max(0.5, float(h))
+    w = np.exp(-((i[:, None] - i[None, :]) ** 2) / (2 * h * h))
+    mid = (w * y).sum(1) / w.sum(1)
+    mae = float(np.mean(np.abs(y - mid))) * max(0.1, float(mult))
+    idx = s.index[-n:]
+    up = pd.Series(mid + mae, index=idx).reindex(close.index)
+    lo = pd.Series(mid - mae, index=idx).reindex(close.index)
+    md = pd.Series(mid, index=idx).reindex(close.index)
+    return up, lo, md
+
+
+def pivot_points(s, left=5, right=5):
+    """(tepe indeksleri, dip indeksleri) — her iki yanında da uç değer olan barlar."""
+    v = pd.to_numeric(s, errors="coerce").to_numpy(float)
+    n = len(v)
+    left, right = max(1, int(left)), max(1, int(right))
+    hi, lo = [], []
+    for i in range(left, n - right):
+        x = v[i]
+        if x != x:
+            continue
+        w = v[i - left:i + right + 1]
+        if np.all(np.isnan(w)):
+            continue
+        if x >= np.nanmax(w):
+            hi.append(i)
+        if x <= np.nanmin(w):
+            lo.append(i)
+    return hi, lo
+
+
+DIV_KINDS = {"reg_bull": ("Yükseliş uyumsuzluğu", "bull"), "hid_bull": ("Gizli yükseliş", "bull"),
+             "reg_bear": ("Düşüş uyumsuzluğu", "bear"), "hid_bear": ("Gizli düşüş", "bear")}
+
+
+def divergences(df, osc, left=5, right=5, min_gap=5, max_gap=60, hidden=True, limit=14):
+    """Fiyat ile osilatör arasındaki klasik ve gizli uyumsuzluklar.
+    Pivotlar osilatörden alınır, fiyat aynı barlardan okunur."""
+    osc = pd.to_numeric(osc, errors="coerce")
+    hi, lo = pivot_points(osc, left, right)
+    hv, lv = df["High"].to_numpy(float), df["Low"].to_numpy(float)
+    ov = osc.to_numpy(float)
+    out = []
+
+    def add(i1, i2, kind, py1, py2):
+        out.append({"i1": int(i1), "i2": int(i2), "p1": float(py1), "p2": float(py2),
+                    "o1": float(ov[i1]), "o2": float(ov[i2]), "kind": kind})
+
+    for seq, is_low in ((lo, True), (hi, False)):
+        for a, b in zip(seq, seq[1:]):
+            gap = b - a
+            if not (min_gap <= gap <= max_gap):
+                continue
+            if ov[a] != ov[a] or ov[b] != ov[b]:
+                continue
+            if is_low:
+                p1, p2 = lv[a], lv[b]
+                if p2 < p1 and ov[b] > ov[a]:
+                    add(a, b, "reg_bull", p1, p2)
+                elif hidden and p2 > p1 and ov[b] < ov[a]:
+                    add(a, b, "hid_bull", p1, p2)
+            else:
+                p1, p2 = hv[a], hv[b]
+                if p2 > p1 and ov[b] < ov[a]:
+                    add(a, b, "reg_bear", p1, p2)
+                elif hidden and p2 < p1 and ov[b] > ov[a]:
+                    add(a, b, "hid_bear", p1, p2)
+    out.sort(key=lambda d: -d["i2"])
+    return out[:int(limit)]
+
+
+def ranked_sr_zones(df, lookback=300, left=8, right=8, merge_pct=0.6, max_zones=8,
+                    weak_below=35.0):
+    """Destek/direnç bantları: pivotları fiyata göre kümeler, her kümeyi temas sayısı,
+    hacim ve yakınlık ile puanlar; en güçlü bant %100 olacak şekilde normalize eder."""
+    d = df.tail(int(lookback))
+    n = len(d)
+    if n < 40:
+        return []
+    hi, lo = pivot_points(d["High"], left, right)
+    pl_hi, pl_lo = pivot_points(d["Low"], left, right)
+    hv, lv = d["High"].to_numpy(float), d["Low"].to_numpy(float)
+    vol = pd.to_numeric(d["Volume"], errors="coerce").fillna(0.0).to_numpy(float)
+    pts = [(i, hv[i], vol[i]) for i in hi] + [(i, lv[i], vol[i]) for i in pl_lo]
+    if not pts:
+        return []
+    pts.sort(key=lambda x: x[1])
+    close = float(d["Close"].iloc[-1])
+    tol = max(1e-9, close * float(merge_pct) / 100)
+    groups, cur = [], [pts[0]]
+    for p in pts[1:]:
+        if p[1] - cur[-1][1] <= tol:
+            cur.append(p)
+        else:
+            groups.append(cur)
+            cur = [p]
+    groups.append(cur)
+    vol_max = max(1.0, float(np.nanmax(vol)) if len(vol) else 1.0)
+    raw = []
+    for g in groups:
+        idxs = [x[0] for x in g]
+        prices = [x[1] for x in g]
+        touches = len(g)
+        vsum = sum(x[2] for x in g) / (vol_max * touches)
+        recency = (max(idxs) + 1) / n
+        score = touches * 1.0 + vsum * 1.2 + recency * 1.5
+        raw.append({"lo": min(prices), "hi": max(prices), "touches": touches,
+                    "start": min(idxs), "last": max(idxs), "score": score})
+    top = max(r["score"] for r in raw) or 1.0
+    out = []
+    for r in raw:
+        pct = round(r["score"] / top * 100)
+        mid = (r["lo"] + r["hi"]) / 2
+        pad = max(tol * 0.5, (r["hi"] - r["lo"]) * 0.15)
+        kind = "res" if mid > close else "sup"
+        weak = pct < float(weak_below)
+        base = "Direnç" if kind == "res" else "Destek"
+        out.append({"lo": r["lo"] - pad, "hi": r["hi"] + pad, "pct": int(pct), "kind": kind,
+                    "weak": bool(weak), "touches": r["touches"],
+                    "start": int(r["start"]) + (len(df) - n), "last": int(r["last"]) + (len(df) - n),
+                    "label": ("Zayıf " + base) if weak else base})
+    out.sort(key=lambda z: -z["pct"])
+    return out[:int(max_zones)]
