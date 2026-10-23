@@ -36,18 +36,29 @@ st.set_page_config(page_title="Pulse — Piyasa Paneli", layout="wide", initial_
 APP_VERSION = "3.0"
 import mock_data as md  # noqa: E402
 
+_missing = []
 try:
     import engine as en  # noqa: E402
 except ModuleNotFoundError:
-    st.error("**engine.py bulunamadı.** Bu sürüm üç dosyadan oluşuyor: `app.py`, `mock_data.py`, "
-             "`engine.py`. GitHub reposunda app.py ile aynı klasöre **engine.py**'yi de yükleyip "
-             "Streamlit'te **Reboot app** yap.")
+    en = None
+    _missing.append("engine.py")
+try:
+    import chart as ch  # noqa: E402
+except ModuleNotFoundError:
+    ch = None
+    _missing.append("chart.py")
+if _missing:
+    st.error("**" + ", ".join(_missing) + " bulunamadı.** Bu sürüm şu dosyalardan oluşuyor: `app.py`, "
+             "`mock_data.py`, `engine.py`, `chart.py` ve `pulse_chart/index.html`. Eksik dosyaları "
+             "GitHub'da app.py ile aynı klasöre yükleyip Streamlit'te **Reboot app** yap.")
     st.stop()
 
-if getattr(md, "DATA_VERSION", None) != APP_VERSION or getattr(en, "ENGINE_VERSION", None) != APP_VERSION:
-    st.error(f"**Dosya sürümleri uyuşmuyor** — app.py v{APP_VERSION} · mock_data.py "
-             f"v{getattr(md, 'DATA_VERSION', 'eski')} · engine.py v{getattr(en, 'ENGINE_VERSION', 'eski')}. "
-             f"Üç dosyanın da son halini GitHub'a yükleyip **Reboot app** yap.")
+_vers = {"app.py": APP_VERSION, "mock_data.py": getattr(md, "DATA_VERSION", "eski"),
+         "engine.py": getattr(en, "ENGINE_VERSION", "eski"), "chart.py": getattr(ch, "CHART_VERSION", "eski")}
+if set(_vers.values()) != {APP_VERSION}:
+    st.error("**Dosya sürümleri uyuşmuyor** — " +
+             " · ".join(f"{k} v{v}" for k, v in _vers.items()) +
+             ". Hepsinin son halini GitHub'a yükleyip **Reboot app** yap.")
     st.stop()
 
 # ======================================================================
@@ -64,7 +75,7 @@ TONE = {"good": (UP, "#0F1A15", "#1F4D3A", "#0A0B0D"), "warn": (WARN, "#1A160E",
         "bad": (DOWN, "#1A0F10", "#4D1F24", "#ECEEF1")}
 
 SECTIONS = ["Piyasalar", "Long Term", "Short Term", "Backtest", "Forex & Haberler"]
-TF_BARS = {"1G": 78, "1H": 65, "1A": 22, "3A": 66, "1Y": 252, "5Y": 1260}
+TF_BARS = {"1G": 10, "1H": 22, "1A": 22, "3A": 66, "1Y": 252, "5Y": 1260}  # 1G/1H: gün içi veri yoksa
 # 1G / 1H gün içi mumlarla çizilir: (yfinance periyodu, mum aralığı, gösterilecek gün sayısı)
 INTRA = {"1G": ("5d", "5m", 1), "1H": ("1mo", "30m", 7)}
 TF_NAME = {"1G": "Son 1 gün", "1H": "Son 1 hafta", "1A": "Son 1 ay", "3A": "Son 3 ay", "1Y": "Son 1 yıl",
@@ -131,9 +142,10 @@ WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_
                "w_calimp", "w_nc", "w_mov", "w_setup", "w_sort", "w_bttf", "bt_inst", "bt_custom", "bt_pick",
                "bt_yrs", "bt_ind1", "bt_p1", "bt_op1", "bt_v1", "bt_logic", "bt_c2on", "bt_src2", "bt_p2",
                "bt_op2", "bt_dir", "bt_slMode", "bt_slV", "bt_tpMode", "bt_tpV", "bt_maxBars", "bt_cap",
-               "bt_risk", "bt_comm"]
+               "bt_risk", "bt_comm", "bt_xmin"]
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
-           "bt_extra_ver", "bt_ran", "bt_saved"] + WIDGET_KEYS
+           "bt_extra_ver", "bt_ran", "bt_saved",
+           "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n"] + WIDGET_KEYS
 
 
 def _qp(key, default=None):
@@ -173,13 +185,14 @@ def _save_state():
 BT_WIDGETS = {"bt_inst": "AAPL", "bt_custom": "", "bt_yrs": 3, "bt_ind1": "RSI", "bt_p1": 14, "bt_op1": "lt",
               "bt_v1": 30.0, "bt_logic": "and", "bt_c2on": True, "bt_src2": "sma", "bt_p2": 200,
               "bt_op2": "above", "bt_dir": "long", "bt_slMode": "atr", "bt_slV": 2.0, "bt_tpMode": "rr",
-              "bt_tpV": 2.0, "bt_maxBars": 0, "bt_cap": 10000.0, "bt_risk": 1.0, "bt_comm": 0.1}
+              "bt_tpV": 2.0, "bt_maxBars": 0, "bt_cap": 10000.0, "bt_risk": 1.0, "bt_comm": 0.1, "bt_xmin": 0}
 for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journal_closed": [],
                "flt_rows": copy.deepcopy(en.DEFAULT_FILTER), "flt_logic": "VE",
                "flt_min": len(en.DEFAULT_FILTER) - 1, "flt_lastN": len(en.DEFAULT_FILTER),
                "flt_name": "Trend içi geri çekilme", "flt_ver": 0,
                "flt_edit": False, "bt_extra": [], "bt_extra_ver": 0, "bt_ran": None, "bt_saved": [],
-               "acct": 100000.0, **BT_WIDGETS}.items():
+               "acct": 100000.0, "draws": {}, "alerts": {}, "ch_cfg": copy.deepcopy(ch.DEFAULT_CFG),
+               "ch_type": "candles", "ch_rev": 1, "ch_n": None, **BT_WIDGETS}.items():
     ss.setdefault(_k, copy.deepcopy(_v))
 # Streamlit, o çalıştırmada çizilmeyen widget'ın değerini siler (ör. filtre editörü kapalıyken).
 # Değeri kendine yeniden atamak bu temizliği engeller → ayarlar kaybolmaz.
@@ -254,6 +267,9 @@ if _consume("bt_from_flt"):
     ss.bt_extra = [dict(r) for r in en.normalize_conds(ss.flt_rows) if r["Aktif"]]
     ss.bt_extra_ver += 1
     ss.bt_ind1, ss.bt_c2on = en.IND1_OFF, False
+    _n = len(ss.bt_extra)
+    _k = int(ss.get("flt_min") or _n)
+    ss.bt_xmin = 1 if ss.get("flt_logic") == "VEYA" else (_k if 0 < _k < _n else 0)  # Short Term ile aynı mantık
     ss["bt_show_extra"] = True
     ss.bt_ran = None  # yeni kurallarla otomatik çalıştır
     st.toast("Short Term filtresi backtest giriş koşulu olarak yüklendi")
@@ -273,6 +289,11 @@ if _a is not None and ss.journal:
 # ======================================================================
 # Biçim yardımcıları
 # ======================================================================
+def safe_url(u):
+    u = str(u or "").strip()
+    return u if u.lower().startswith(("http://", "https://")) else ""
+
+
 def esc(s):
     # Satır sonları HTML bloğunu bölmesin diye boşluğa çevrilir
     return re.sub(r"\s*[\r\n]+\s*", " ", html.escape(str(s if s is not None else "")))
@@ -613,15 +634,56 @@ def _rangebreaks(idx, intraday=False):
         return []
 
 
-def chart_data(sym, tf):
-    """(veri, gösterilecek mum sayısı, gün içi mi). 1G/1H → gün içi mumlar, diğerleri → günlük."""
-    if tf in INTRA:
-        period, interval, days = INTRA[tf]
-        full = md.get_intraday(sym, period, interval)
-        if len(full) > 10:
-            cutoff = full.index[-1] - pd.Timedelta(days=days)
-            return full, max(2, int((full.index > cutoff).sum())), True
-    return md.get_history(sym), TF_BARS[tf], False
+chart_data = ch.chart_data   # tek kaynak: chart.py
+
+
+# ----------------------------------------------------------------------
+# Grafik bileşeni olayları (çizim, alarm, indikatör ayarı, grafik türü)
+# ----------------------------------------------------------------------
+def handle_chart_event(ev):
+    if not isinstance(ev, dict):
+        return
+    n = ev.get("n")
+    if n is None or n == ss.get("ch_n"):
+        return
+    ss.ch_n = n
+    sym = _SYM_RE.sub("", str(ev.get("sym") or ACTIVE)).upper()[:24] or ACTIVE
+    kind = ev.get("kind")
+    if kind == "draws":
+        d = ev.get("draws")
+        ss.draws[sym] = d if isinstance(d, list) else []
+    elif kind == "alerts":
+        a = ev.get("alerts")
+        ss.alerts[sym] = a if isinstance(a, list) else []
+    elif kind == "type":
+        ss.ch_type = ev.get("type") or "candles"
+    elif kind == "cfg":
+        ss.ch_cfg = ch.merge_cfg(ev.get("cfg"))
+        st.rerun()   # indikatörler gerçek veriyle yeniden hesaplanacak
+
+
+def render_big_chart(sym, tf, height=600):
+    """TradingView tarzı grafik; dosya eksikse Plotly'ye düşer."""
+    if ch.missing_frontend():
+        st.warning("`pulse_chart/index.html` yüklenmemiş — basit grafiğe düşüldü. GitHub'da "
+                   "**pulse_chart** klasörünü ve içindeki **index.html** dosyasını da yükle.")
+        full, bars, intr = chart_data(sym, tf)
+        if not full.empty:
+            plot(price_chart(full, bars, height - 60, intraday=intr), config=CHART_CFG, key="fallback_" + sym)
+        return
+    payload = ch.build_payload(sym, tf, json.dumps(ss.ch_cfg, sort_keys=True), ch.data_token(sym, tf))
+    if not payload.get("ok"):
+        H('<div class="muted">Bu sembol için grafik verisi alınamadı.</div>')
+        return
+    ev = ch.render_chart(payload, ss.draws.get(sym, []), ss.alerts.get(sym, []),
+                         ss.ch_type, height=height, rev=ss.ch_rev, key="pulse_chart")
+    handle_chart_event(ev)
+
+
+def candle_label(tf, intraday):
+    if intraday:
+        return {"1G": "5 dk mumlar", "1H": "30 dk mumlar"}.get(tf, "gün içi mumlar")
+    return "gün içi veri yok · günlük mumlar" if tf in INTRA else "günlük mumlar"
 
 
 def price_chart(full, bars, height=430, rsi_panel=True, intraday=False):
@@ -850,8 +912,8 @@ def render_chart_panel(sym):
     if not lead and d.get("sector"):
         lead = f'{d["name"]}, {d["sector"]} sektöründe yer alan bir şirket.'
     meta = " · ".join(x for x in [d.get("sector"), d.get("industry"), d.get("country")] if x)
-    web = (f' · <a class="lnk" href="{esc(d["website"])}" target="_blank">web sitesi ↗</a>'
-           if d.get("website") else "")
+    web = (f' · <a class="lnk" href="{esc(safe_url(d.get("website")))}" target="_blank">web sitesi ↗</a>'
+           if safe_url(d.get("website")) else "")
     if lead:
         H(f'<div class="desc">{esc(lead)}</div>')
     if meta or web:
@@ -861,16 +923,18 @@ def render_chart_panel(sym):
             H(f'<div class="desc" style="margin:0">{esc(en_sum)}</div>')
     full, bars, intr = chart_data(sym, tf)
     df = full.tail(bars)
-    candle = {"1G": "5 dk mumlar", "1H": "30 dk mumlar"}.get(tf, "günlük mumlar") if intr else "günlük mumlar"
-    H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:12px 0 2px 0">'
+    H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:12px 0 6px 0">'
       f'<span class="muted">Açılış <span class="mono" style="color:{TXT}">{tr(df["Open"].iloc[0], dec)}</span></span>'
       f'<span class="muted">Yüksek <span class="mono" style="color:{TXT}">{tr(df["High"].max(), dec)}</span></span>'
       f'<span class="muted">Düşük <span class="mono" style="color:{TXT}">{tr(df["Low"].min(), dec)}</span></span>'
       f'<span class="muted">Kapanış <span class="mono" style="color:{TXT}">{tr(df["Close"].iloc[-1], dec)}</span></span>'
-      f'<span class="muted">{TF_NAME[tf]} · {candle}</span><span style="flex:1"></span>'
-      f'<span class="legend"><span><i style="background:{ACCENT}"></i>SMA 20</span>'
-      f'<span><i style="background:{WARN}"></i>SMA 50</span></span></div>')
-    plot(price_chart(full, bars, intraday=intr), config=CHART_CFG, key="main_chart")
+      f'<span class="muted">{TF_NAME[tf]} · {candle_label(tf, intr)}</span><span style="flex:1"></span>'
+      f'<span class="muted small">çift tık / tekerlek: yakınlaştır · sürükle: kaydır · '
+      f'soldaki araçlarla çiz</span></div>')
+    render_big_chart(sym, tf, height=620)
+    fired = ch.check_alerts(ss.alerts.get(sym, []), daily)
+    for a in fired:
+        st.toast(f"🔔 {sym}: {ch.alert_text(a)} — tetiklendi")
     with st.expander("Temel veriler"):
         g = st.columns(4)
         items = [("Piyasa değeri", big(d["market_cap"], cur)), ("F/K", tr(d["pe"])), ("İleri F/K", tr(d["fwd_pe"])),
@@ -1064,7 +1128,8 @@ def render_piyasalar():
               f'{src_chip(news[0]["src"] if news else "none")}</span></div>')
             rows = ""
             for it in news[:8]:
-                title = (f'<a href="{esc(it["link"])}" target="_blank">{esc(it["title"])}</a>' if it.get("link")
+                title = (f'<a href="{esc(it["link"])}" target="_blank">{esc(it["title"])}</a>'
+                         if safe_url(it.get("link"))
                          else esc(it["title"]))
                 sc = {"Yükseliş": UP, "Düşüş": DOWN}.get(it["sentiment"], MUT)
                 rows += (f'<div class="nw"><div style="flex:1"><b>{title}</b><div class="muted small" '
@@ -1502,7 +1567,13 @@ def bt_cfg():
             "p2": int(ss.bt_p2), "op2": ss.bt_op2, "dir": ss.bt_dir, "slMode": ss.bt_slMode,
             "slV": float(ss.bt_slV), "tpMode": ss.bt_tpMode, "tpV": float(ss.bt_tpV),
             "maxBars": int(ss.bt_maxBars), "cap": float(ss.bt_cap), "risk": float(ss.bt_risk),
-            "comm": float(ss.bt_comm), "extra": en.normalize_conds(ss.bt_extra)}
+            "comm": float(ss.bt_comm), "extra": en.normalize_conds(ss.bt_extra), "extra_min": _bt_xmin()}
+
+
+def _bt_xmin():
+    n = len([c for c in en.normalize_conds(ss.bt_extra) if c["Aktif"]])
+    k = int(ss.get("bt_xmin") or 0)
+    return k if 0 < k < n else 0
 
 
 def _bt_reset():
@@ -1519,7 +1590,7 @@ def _bt_load(cfg):
     m = {"yrs": "bt_yrs", "ind1": "bt_ind1", "p1": "bt_p1", "op1": "bt_op1", "v1": "bt_v1", "logic": "bt_logic",
          "c2on": "bt_c2on", "src2": "bt_src2", "p2": "bt_p2", "op2": "bt_op2", "dir": "bt_dir",
          "slMode": "bt_slMode", "slV": "bt_slV", "tpMode": "bt_tpMode", "tpV": "bt_tpV", "maxBars": "bt_maxBars",
-         "cap": "bt_cap", "risk": "bt_risk", "comm": "bt_comm"}
+         "cap": "bt_cap", "risk": "bt_risk", "comm": "bt_comm", "extra_min": "bt_xmin"}
     for a, b in m.items():
         if a in cfg:
             ss[b] = copy.deepcopy(cfg[a])
@@ -1621,6 +1692,13 @@ def _bt_settings():
         with st.expander(f"+ Koşul ekle (MACD, Bollinger, Hacim…){f' · {len(ss.bt_extra)} ek koşul' if ss.bt_extra else ''}",
                          expanded=bool(ss.get("bt_show_extra"))):
             cond_editor("bt_extra", "bt_extra_ver", "bt_ed")
+            n_ex = len([c for c in en.normalize_conds(ss.bt_extra) if c["Aktif"]])
+            if n_ex >= 2:
+                opts = [0] + list(range(n_ex - 1, 0, -1))
+                if ss.get("bt_xmin") not in opts:
+                    ss.bt_xmin = 0
+                st.selectbox("Ek koşullardan kaçı sağlansın?", opts, key="bt_xmin",
+                             format_func=lambda k: f"Hepsi ({n_ex}/{n_ex})" if k == 0 else f"En az {k}/{n_ex}")
             st.caption("Ek koşullar giriş sinyaline VE ile eklenir; Short işlemlerde aynen uygulanır.")
         H('<div class="hdr-line" style="margin:10px 0"></div>')
         step_head(4, "Yön")
@@ -1899,15 +1977,15 @@ def render_forex():
                     tf = seg("Zaman", list(TF_BARS), "w_fxtf", "1A")
                 full, bars, intr = chart_data(meta["symbol"], tf)
                 d = full.tail(bars)
-                candle = {"1G": "5 dk mumlar", "1H": "30 dk mumlar"}.get(tf, "günlük mumlar") if intr \
-                    else "günlük mumlar"
-                H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;margin:10px 0 2px 0">'
+                H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;margin:10px 0 6px 0">'
                   f'<span class="muted">Yüksek <span class="mono" style="color:{TXT}">{tr(d["High"].max(), dec)}</span>'
                   f'</span><span class="muted">Düşük <span class="mono" style="color:{TXT}">{tr(d["Low"].min(), dec)}'
-                  f'</span></span><span class="muted">{TF_NAME[tf]} · {candle}</span><span style="flex:1"></span>'
-                  f'<span class="legend"><span><i style="background:{ACCENT}"></i>SMA 20</span><span>'
-                  f'<i style="background:{WARN}"></i>SMA 50</span></span></div>')
-                plot(price_chart(full, bars, 380, rsi_panel=False, intraday=intr), config=CHART_CFG, key="fx_chart")
+                  f'</span></span><span class="muted">{TF_NAME[tf]} · {candle_label(tf, intr)}</span>'
+                  f'<span style="flex:1"></span><span class="muted small">çift tık: yakınlaştır · '
+                  f'soldaki araçlarla çiz</span></div>')
+                render_big_chart(meta["symbol"], tf, height=520)
+                for a in ch.check_alerts(ss.alerts.get(meta["symbol"], []), daily):
+                    st.toast(f"🔔 {FX}: {ch.alert_text(a)} — tetiklendi")
     with right:
         with st.container(border=True):
             H('<div class="panel-title">Pariteler</div>')
@@ -1974,8 +2052,9 @@ def render_forex():
     sbg = {"Yükseliş": (UP, UP_BG), "Düşüş": (DOWN, DOWN_BG)}
     with l:
         fs, fb = sbg.get(f["sentiment"], (NEU, NEU_BG))
-        img = (f'<img src="{esc(f["thumb"])}" alt="">' if f.get("thumb") else "[HABER GÖRSELİ]")
-        ttl = (f'<a href="{esc(f["link"])}" target="_blank">{esc(f["title"])}</a>' if f.get("link") else esc(f["title"]))
+        img = (f'<img src="{esc(f["thumb"])}" alt="">' if safe_url(f.get("thumb")) else "[HABER GÖRSELİ]")
+        ttl = (f'<a href="{esc(f["link"])}" target="_blank">{esc(f["title"])}</a>' if safe_url(f.get("link"))
+               else esc(f["title"]))
         tags = " ".join(f'<span class="chip mono">{esc(t)}</span>' for t in f.get("tags", []))
         H(f'<div class="feat"><div class="img">{img}</div><div style="padding:16px 18px"><div style="display:flex;'
           f'align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap"><span class="badge" style="color:{fs};'
@@ -1989,7 +2068,8 @@ def render_forex():
             rows = ""
             for it in data["items"]:
                 sc, sb = sbg.get(it["sentiment"], (NEU, NEU_BG))
-                ttl = (f'<a href="{esc(it["link"])}" target="_blank">{esc(it["title"])}</a>' if it.get("link")
+                ttl = (f'<a href="{esc(it["link"])}" target="_blank">{esc(it["title"])}</a>'
+                       if safe_url(it.get("link"))
                        else esc(it["title"]))
                 rows += (f'<div class="nw"><div style="width:84px;flex:none;display:flex;align-items:center;'
                          f'background:#0C0D10;border-radius:10px;padding:4px">{svg_spark(it["spark"], sc, 76, 40)}</div>'
