@@ -33,7 +33,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Piyasa Paneli", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -75,11 +75,13 @@ TONE = {"good": (UP, "#0F1A15", "#1F4D3A", "#0A0B0D"), "warn": (WARN, "#1A160E",
         "bad": (DOWN, "#1A0F10", "#4D1F24", "#ECEEF1")}
 
 SECTIONS = ["Piyasalar", "Long Term", "Short Term", "Backtest", "Forex & Haberler"]
-TF_BARS = {"1G": 10, "1H": 22, "1A": 22, "3A": 66, "1Y": 252, "5Y": 1260}  # 1G/1H: gün içi veri yoksa
-# 1G / 1H gün içi mumlarla çizilir: (yfinance periyodu, mum aralığı, gösterilecek gün sayısı)
-INTRA = {"1G": ("5d", "5m", 1), "1H": ("1mo", "30m", 7)}
-TF_NAME = {"1G": "Son 1 gün", "1H": "Son 1 hafta", "1A": "Son 1 ay", "3A": "Son 3 ay", "1Y": "Son 1 yıl",
-           "5Y": "Son 5 yıl"}
+# Zaman aralıkları tek yerde tanımlı: chart.py. 1G/1H/4S gün içi, Hf haftalık mumlar.
+TF_BARS = ch.TF_BARS
+INTRA = ch.INTRA
+TF_LIST = ["1G", "1H", "4S", "1A", "3A", "1Y", "5Y", "Hf"]
+TF_NAME = {"1G": "Son 1 gün", "1H": "Son 1 hafta", "4S": "4 saatlik", "1A": "Son 1 ay", "3A": "Son 3 ay",
+           "1Y": "Son 1 yıl", "5Y": "Son 5 yıl", "Hf": "Haftalık"}
+TF_LABEL = {"4S": "4s", "Hf": "Hafta"}   # şeritte görünen kısa ad
 CUR = {"USD": "$", "TRY": "₺", "EUR": "€", "GBP": "£", "JPY": "¥"}
 CHART_CFG = {"displayModeBar": True, "displaylogo": False, "modeBarButtonsToRemove": ["select2d", "lasso2d"]}
 LOGO_SVG = ('<svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" '
@@ -497,7 +499,30 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .wlr .nm b{font-size:12.5px}
 .wlr .nm div{color:#8D96A5;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wlr .px{text-align:right;font-family:ui-monospace,monospace;line-height:1.25}
-.srstrip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.srstrip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;padding-bottom:4px}
+.srstrip .tile{padding:9px 10px;line-height:1.3}
+.srcap{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* A–Z notu */
+.grade{display:flex;align-items:center;gap:14px;margin:4px 0 2px 0}
+.gletter{width:64px;height:64px;border-radius:16px;display:flex;align-items:center;justify-content:center;
+ font-size:34px;font-weight:800;letter-spacing:-.03em;flex:none;font-family:ui-monospace,monospace}
+.gact{font-size:19px;font-weight:800;letter-spacing:-.02em;line-height:1.2}
+.gsc{font-family:ui-monospace,monospace;font-size:12px;color:#8D96A5;margin-top:2px}
+.gscale{height:8px;border-radius:999px;position:relative;margin:12px 0 3px 0;
+ background:linear-gradient(90deg,#34D399 0%,#A3D977 26%,#F5B544 52%,#F08A6A 74%,#F87171 100%)}
+.gscale i{position:absolute;top:-4px;width:4px;height:16px;border-radius:2px;background:#ECEEF1;
+ box-shadow:0 0 0 2px #0A0B0D;transform:translateX(-2px)}
+.gax{display:flex;justify-content:space-between;font-size:10.5px;color:#6B7383;margin-bottom:8px}
+.grow{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:12px}
+.grow .gn{color:#C4CAD4;width:116px;flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grow .gw{color:#6B7383;font-size:10.5px;width:26px;flex:none;text-align:right}
+.grow .gb{flex:1;height:6px;border-radius:999px;background:#1A1D23;overflow:hidden;min-width:20px}
+.grow .gb i{display:block;height:6px;border-radius:999px}
+.grow .gv{width:26px;text-align:right;font-family:ui-monospace,monospace;color:#8D96A5;flex:none}
+.gtext{font-size:12.5px;line-height:1.68;color:#C4CAD4;margin-top:11px;padding-top:11px;
+ border-top:1px solid #1C1F25}
+.gtext b{color:#ECEEF1}
+.greason{font-size:11.5px;color:#8D96A5;line-height:1.6;padding:3px 0 3px 10px;border-left:2px solid #22262D}
 /* ısı haritası */
 .heatgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .heat{min-height:78px;height:100%;border-radius:12px;padding:10px 12px;box-sizing:border-box;display:flex;
@@ -682,7 +707,9 @@ def render_big_chart(sym, tf, height=600):
 
 def candle_label(tf, intraday):
     if intraday:
-        return {"1G": "5 dk mumlar", "1H": "30 dk mumlar"}.get(tf, "gün içi mumlar")
+        return {"1G": "5 dk mumlar", "1H": "30 dk mumlar", "4S": "4 saatlik mumlar"}.get(tf, "gün içi mumlar")
+    if tf == "Hf":
+        return "haftalık mumlar"
     return "gün içi veri yok · günlük mumlar" if tf in INTRA else "günlük mumlar"
 
 
@@ -883,7 +910,7 @@ def render_chart_panel(sym):
         H(f'<div class="panel-title">{esc(sym)}</div><div class="muted" style="margin:10px 0 16px 0">Bu sembol için '
           f'veri alınamadı. Yahoo Finance sembolünü kontrol et (ör. BIST için <span class="mono">THYAO.IS</span>, '
           f'parite için <span class="mono">EURUSD=X</span>) ya da birkaç dakika sonra tekrar dene.</div>')
-        return None
+        return None, "1A", None
     cur = d.get("currency") or "USD"
     dec = pdec(sym, d["last"])
     h1, h2 = st.columns([2.3, 1.45], vertical_alignment="top")
@@ -897,7 +924,7 @@ def render_chart_panel(sym):
           f'{chg(d["change_abs"], dec)} ({pct(d["change_pct"])})</span>'
           f'<span class="muted">Günlük · {esc(cur)}</span></div>')
     with h2:
-        tf = seg("Zaman aralığı", list(TF_BARS), "w_tf", "1A")
+        tf = seg("Zaman aralığı", TF_LIST, "w_tf", "1A", fmt=lambda t: TF_LABEL.get(t, t))
         in_wl = sym in ss.watchlist
         if button("★ İzleniyor — listeden çıkar" if in_wl else "☆ İzleme listesine ekle", key="wl_toggle"):
             if in_wl:
@@ -929,8 +956,8 @@ def render_chart_panel(sym):
       f'<span class="muted">Düşük <span class="mono" style="color:{TXT}">{tr(df["Low"].min(), dec)}</span></span>'
       f'<span class="muted">Kapanış <span class="mono" style="color:{TXT}">{tr(df["Close"].iloc[-1], dec)}</span></span>'
       f'<span class="muted">{TF_NAME[tf]} · {candle_label(tf, intr)}</span><span style="flex:1"></span>'
-      f'<span class="muted small">çift tık / tekerlek: yakınlaştır · sürükle: kaydır · '
-      f'soldaki araçlarla çiz</span></div>')
+      f'<span class="muted small">tekerlek / çift tık: yakınlaştır · sağ tık ya da ＋− düğmeleri: uzaklaştır · '
+      f'sürükle: kaydır · çizime tıkla: renk · “Tam ekran”</span></div>')
     render_big_chart(sym, tf, height=620)
     fired = ch.check_alerts(ss.alerts.get(sym, []), daily)
     for a in fired:
@@ -946,22 +973,85 @@ def render_chart_panel(sym):
         for i, (k, v) in enumerate(items):
             with g[i % 4]:
                 H(f'<div class="stat-row"><span class="lbl">{esc(k)}</span><span class="mono">{esc(v)}</span></div>')
-    return daily
+    return daily, tf, full
 
 
-def render_tech(df):
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+GRADE_TONE = {"bull": UP, "flat": NEU, "bear": DOWN}
+
+
+def grade_color(score):
+    """0–100 skoru yeşil→sarı→kırmızı bandına oturtur."""
+    if score >= 72:
+        return UP
+    if score >= 58:
+        return "#A3D977"
+    if score >= 44:
+        return WARN
+    if score >= 30:
+        return "#F08A6A"
+    return DOWN
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _grade_cached(sym, tf, token, _df):
+    return en.grade(_df, tf_name=TF_NAME.get(tf, "günlük").lower())
+
+
+def render_tech(df, tf="1A", sym=""):
+    """Teknik Özet: A–Z notu, grup kırılımı, kural tabanlı yorum ve klasik gösterge listesi."""
+    H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+      f'<span class="panel-title">Teknik Özet</span>'
+      f'<span class="muted small srcap">{esc(TF_NAME.get(tf, "Günlük"))} · {esc(candle_label(tf, tf in INTRA))}'
+      f'</span></div>')
+    g = None
+    try:
+        g = _grade_cached(sym, tf, ch.data_token(sym, tf) if sym else str(len(df)), df)
+    except Exception:
+        g = None
+    if g:
+        c = grade_color(g["score"])
+        H(f'<div class="grade"><div class="gletter" style="color:{c};background:{c}1F;border:1px solid {c}55">'
+          f'{g["letter"]}</div><div style="min-width:0">'
+          f'<div class="gact" style="color:{GRADE_TONE.get(g["tone"], NEU)}">{esc(g["action"])}</div>'
+          f'<div class="gsc">{tr(g["score"], 0)} / 100 · A en güçlü alım, Z en güçlü satım</div></div></div>'
+          f'<div class="gscale"><i style="left:{100 - g["score"]:.1f}%"></i></div>'
+          f'<div class="gax"><span>A · al</span><span>M–N · nötr</span><span>Z · sat</span></div>')
+        rows = ""
+        for grp in g["groups"]:
+            gc = grade_color(grp["score"])
+            rows += (f'<div class="grow"><span class="gn">{esc(grp["name"])}</span>'
+                     f'<span class="gw">%{grp["weight"]}</span>'
+                     f'<span class="gb"><i style="width:{max(2, grp["score"]):.0f}%;background:{gc}"></i></span>'
+                     f'<span class="gv">{tr(grp["score"], 0)}</span></div>')
+        H(rows)
+        H(f'<div class="gtext">{_BOLD.sub(r"<b>\1</b>", esc(g["text"]))}</div>')
+        with st.expander("Notun gerekçesi — her grup neye baktı"):
+            for grp in g["groups"]:
+                items = "".join(f"<div>• {esc(r)}</div>" for r in grp["reasons"]) or \
+                    '<div class="muted">—</div>'
+                H(f'<div style="margin-bottom:9px"><div style="font-size:12px;font-weight:700;color:{SOFT}">'
+                  f'{esc(grp["name"])} <span class="muted">· {tr(grp["score"], 0)}/100 · '
+                  f'{tr(grp["points"], 1)} puan katkı</span></div>'
+                  f'<div class="greason">{items}</div></div>')
+            if g["patterns"]:
+                pr = "".join(f'<div>• {esc(p["name"])} — {esc(p.get("note") or "")} '
+                             f'<span class="muted">(güven %{tr(p["conf"] * 100, 0)})</span></div>'
+                             for p in g["patterns"])
+                H(f'<div style="font-size:12px;font-weight:700;color:{SOFT}">Bulunan formasyonlar</div>'
+                  f'<div class="greason">{pr}</div>')
+            H('<div class="muted small" style="margin-top:8px">Not kural tabanlı üretilir: her grup '
+              'gerçek indikatör değerlerinden puanlanır, ağırlıklar momentum %25, formasyon %20, hacim %20, '
+              'risk/ödül %20, trend %10, volatilite %5. Yatırım tavsiyesi değildir.</div>')
+    else:
+        H('<div class="muted" style="margin:8px 0">Bu zaman diliminde not için yeterli bar yok '
+          '(en az 30 mum gerekiyor).</div>')
     t = compute_tech(df)
-    H(f'<div style="display:flex;justify-content:space-between;align-items:center">'
-      f'<span class="panel-title">Teknik Özet</span><span class="muted">Günlük</span></div>')
-    plot(gauge((t["score"] + 6) / 12 * 100, [{"range": [0, 40], "color": DOWN},
-                                             {"range": [40, 60], "color": "#2A2F37"},
-                                             {"range": [60, 100], "color": UP}], 128), key="tech_gauge")
-    H(f'<div style="text-align:center;font-size:24px;font-weight:800;letter-spacing:-.02em;color:{t["color"]};'
-      f'margin-top:-16px">{t["label"]}</div>')
+    H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin:12px 0 2px 0">Göstergeler</div>')
     tiles = "".join(f'<div class="tile" style="align-items:center"><span class="k">{k}</span>'
-                    f'<span class="v" style="font-size:18px;color:{c}">{v}</span></div>'
+                    f'<span class="v" style="font-size:17px;color:{c}">{v}</span></div>'
                     for k, v, c in [("Sat", t["sell"], DOWN), ("Nötr", t["neutral"], NEU), ("Al", t["buy"], UP)])
-    H(f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0 6px 0">{tiles}</div>')
+    H(f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:6px 0 4px 0">{tiles}</div>')
     rows = ""
     for name, val, v in t["signals"]:
         lab, fg, bg = ("Al", UP, UP_BG) if v > 0 else ("Sat", DOWN, DOWN_BG) if v < 0 else ("Nötr", NEU, NEU_BG)
@@ -969,6 +1059,7 @@ def render_tech(df):
                  f'{val}</span><span class="badge" style="color:{fg};background:{bg};width:44px;text-align:center">'
                  f'{lab}</span></div>')
     H(rows)
+    H('<div style="height:4px"></div>')
 
 
 def render_sr(df, sym):
@@ -978,8 +1069,10 @@ def render_sr(df, sym):
                     f'<span class="v">{tr(v, dec)}</span><span class="mono" style="font-size:11px;color:{MUT}">'
                     f'{pct((v / price - 1) * 100)}</span></div>' for k, v, fg in levels)
     H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">'
-      f'<span class="panel-title">Destek &amp; Direnç</span><span class="muted small">Klasik pivot · son 5 gün · '
-      f'son fiyat {tr(price, dec)}</span></div><div class="srstrip">{cells}</div>')
+      f'<span class="panel-title">Destek &amp; Direnç</span>'
+      f'<span class="muted small srcap">Klasik pivot · günlük · son fiyat {tr(price, dec)}</span></div>'
+      f'<div class="srstrip">{cells}</div>')
+    H('<div style="height:6px"></div>')   # kutunun alt kenarına değmesin
 
 
 def render_watchlist_compact():
@@ -1006,7 +1099,7 @@ def render_watchlist_compact():
     H(f'<div class="wll">{rows}</div>')
 
 
-def treemap(cons):
+def treemap(cons, height=380):
     fig = go.Figure(go.Treemap(
         labels=[c["ticker"] for c in cons], parents=[""] * len(cons), values=[c["weight"] for c in cons],
         text=[f'{c["name"]}<br>{pct(c["change_pct"])}' for c in cons], textinfo="label+text",
@@ -1014,7 +1107,7 @@ def treemap(cons):
                     colorscale=[[0, "#B92D37"], [0.5, "#2A2F37"], [1, "#107A57"]], line=dict(width=2, color=BG)),
         hovertemplate="<b>%{label}</b><br>%{text}<extra></extra>", textfont=dict(color="#FFFFFF", size=13),
         tiling=dict(pad=2)))
-    fig.update_layout(height=380, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
 
@@ -1037,15 +1130,28 @@ def render_sector_block():
                     f'</b><span>{pct(s["change_pct"])}</span></div></a>' for s in secs)
     H(f'<div class="heatgrid">{tiles}</div>')
     if SECTOR:
-        sec = md.sector_by_etf(SECTOR)
-        cons = md.get_sector_constituents(SECTOR)
-        up = sum(1 for c in cons if c["change_pct"] >= 0)
-        H(f'<div class="sec-head" style="margin-top:16px;flex-wrap:wrap"><h3>{esc(sec[0])} · şirket ısı haritası</h3>'
+        H(f'<div class="muted small" style="margin-top:10px">Şirket ısı haritası aşağıda tam genişlikte açıldı '
+          f'— <a class="lnk" target="_self" href="{link(sector=None, f="sector")}">✕ kapat</a></div>')
+
+
+def render_sector_map():
+    """Seçili sektörün şirket ısı haritası — sayfanın tamamını kaplar."""
+    if not SECTOR:
+        return
+    anchor("sectormap")
+    sec = md.sector_by_etf(SECTOR)
+    if not sec:
+        return
+    cons = md.get_sector_constituents(SECTOR)
+    up = sum(1 for c in cons if c["change_pct"] >= 0)
+    with st.container(border=True):
+        H(f'<div class="sec-head" style="flex-wrap:wrap"><h3>{esc(sec[0])} · şirket ısı haritası</h3>'
           f'<span class="muted">{SECTOR} bileşenleri · kutu büyüklüğü ≈ ETF ağırlığı · {up} yükselen / '
-          f'{len(cons) - up} düşen</span><a class="lnk small" style="margin-left:auto" target="_self" '
+          f'{len(cons) - up} düşen · haritanın sağ üstündeki ⛶ ile tam ekran</span>'
+          f'<a class="lnk small" style="margin-left:auto" target="_self" '
           f'href="{link(sector=None, f="sector")}">✕ Kapat</a></div>')
         if cons:
-            plot(treemap(cons), key=f"tm_{SECTOR}")
+            plot(treemap(cons, height=560), key=f"tm_{SECTOR}")
             cells = "".join(f'<a class="plain" target="_self" href="{link(sec="Piyasalar", sym=c["ticker"])}">'
                             f'<div class="heat" style="background:{heat_color(c["change_pct"], 3)}"><b>{esc(c["ticker"])}'
                             f' <span style="font-size:10px;opacity:.75;font-family:inherit">{esc(c["name"])}</span></b>'
@@ -1053,6 +1159,8 @@ def render_sector_block():
                             for c in sorted(cons, key=lambda c: -c["change_pct"]))
             H(f'<div class="muted small" style="margin:10px 0 6px 0">Günlük performansa göre sıralı — '
               f'şirkete tıkla → grafiği açılır</div><div class="cgrid">{cells}</div>')
+        else:
+            H('<div class="muted">Bu sektör için bileşen verisi alınamadı.</div>')
 
 
 def render_movers():
@@ -1097,14 +1205,15 @@ def render_piyasalar():
     left, right = st.columns([2.15, 1], gap="medium")
     with left:
         with st.container(border=True):
-            daily = render_chart_panel(ACTIVE)
+            daily, tf_sel, tf_df = render_chart_panel(ACTIVE)
         if daily is not None:
             with st.container(border=True):
                 render_sr(daily, ACTIVE)
     with right:
         if daily is not None:
             with st.container(border=True):
-                render_tech(daily)
+                render_tech(tf_df if tf_df is not None and len(tf_df) >= 30 else daily,
+                            tf_sel if tf_df is not None and len(tf_df) >= 30 else "1A", ACTIVE)
         with st.container(border=True):
             render_watchlist_compact()
     b1, b2 = st.columns([2.15, 1], gap="medium")
@@ -1114,6 +1223,7 @@ def render_piyasalar():
     with b2:
         with st.container(border=True):
             render_movers()
+    render_sector_map()        # tam genişlik — dar sütunun altında sıkışmasın
     c1, c2 = st.columns([2.15, 1], gap="medium")
     with c1:
         with st.container(border=True):
@@ -1167,6 +1277,7 @@ def render_longterm():
                   f'{h["value"]}</span></div>')
     with st.container(border=True):
         render_sector_block()
+    render_sector_map()
     with st.container(border=True):
         vs = md.get_value_stocks()
         H(f'<div class="sec-head"><h3>Ucuz Şirketler (PEG / Forward PE)</h3><span class="muted">Yahoo '
@@ -1489,7 +1600,12 @@ def render_short():
             with st.container(border=True):
                 H('<div class="muted">Seçili fırsat yok.</div>')
 
-    # ---- Açık işlemlerim ----
+    # ---- Açık işlemlerim: swing fırsatlarının hemen altında, pozisyon büyüklüğünün yanında ----
+    with left:
+        render_journal(hist)
+
+
+def render_journal(hist):
     anchor("journal")
     if ss.journal is None:
         ss.journal = _seed_journal(hist)
@@ -1974,7 +2090,7 @@ def render_forex():
                       f'<span class="mono" style="color:{col(last - prev)};font-weight:600;font-size:13px">'
                       f'{chg(last - prev, dec)} ({pct((last / prev - 1) * 100)})</span></div>')
                 with h2:
-                    tf = seg("Zaman", list(TF_BARS), "w_fxtf", "1A")
+                    tf = seg("Zaman", TF_LIST, "w_fxtf", "1A", fmt=lambda t: TF_LABEL.get(t, t))
                 full, bars, intr = chart_data(meta["symbol"], tf)
                 d = full.tail(bars)
                 H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;margin:10px 0 6px 0">'
@@ -1982,7 +2098,7 @@ def render_forex():
                   f'</span><span class="muted">Düşük <span class="mono" style="color:{TXT}">{tr(d["Low"].min(), dec)}'
                   f'</span></span><span class="muted">{TF_NAME[tf]} · {candle_label(tf, intr)}</span>'
                   f'<span style="flex:1"></span><span class="muted small">çift tık: yakınlaştır · '
-                  f'soldaki araçlarla çiz</span></div>')
+                  f'sağ tık: uzaklaştır · soldaki araçlarla çiz</span></div>')
                 render_big_chart(meta["symbol"], tf, height=520)
                 for a in ch.check_alerts(ss.alerts.get(meta["symbol"], []), daily):
                     st.toast(f"🔔 {FX}: {ch.alert_text(a)} — tetiklendi")
