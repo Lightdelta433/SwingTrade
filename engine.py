@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.0"
+ENGINE_VERSION = "3.1"
 NAN = float("nan")
 
 
@@ -930,3 +930,584 @@ def ranked_sr_zones(df, lookback=300, left=8, right=8, merge_pct=0.6, max_zones=
                     "label": ("Zayıf " + base) if weak else base})
     out.sort(key=lambda z: -z["pct"])
     return out[:int(max_zones)]
+
+
+# ======================================================================
+# v3.1 — ek göstergeler (Supertrend, VIDYA, Bollinger, Volatility Stop,
+#        Stokastik, ADX) · tamamı gerçek OHLCV üzerinden hesaplanır
+# ======================================================================
+def bollinger(close, n=20, k=2.0):
+    """Bollinger bantları: (üst, orta, alt)."""
+    n, k = int(n), float(k)
+    m = sma(close, n)
+    sd = close.rolling(n, min_periods=n).std()
+    return m + k * sd, m, m - k * sd
+
+
+def stoch(df, k=14, d=3, smooth=3):
+    """Stokastik osilatör: (%K yumuşatılmış, %D)."""
+    k, d, smooth = int(k), int(d), int(smooth)
+    lo = df["Low"].rolling(k, min_periods=k).min()
+    hi = df["High"].rolling(k, min_periods=k).max()
+    raw = (df["Close"] - lo) / (hi - lo).replace(0, np.nan) * 100
+    kk = raw.rolling(smooth, min_periods=smooth).mean() if smooth > 1 else raw
+    return kk, kk.rolling(d, min_periods=d).mean()
+
+
+def adx(df, n=14):
+    """Wilder ADX: (adx, +DI, −DI). Trendin gücü — yönü değil."""
+    n = int(n)
+    up = df["High"].diff()
+    dn = -df["Low"].diff()
+    plus = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
+    minus = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index)
+    a = atr(df, n)
+    pdi = 100 * plus.ewm(alpha=1 / n, adjust=False, min_periods=n).mean() / a.replace(0, np.nan)
+    mdi = 100 * minus.ewm(alpha=1 / n, adjust=False, min_periods=n).mean() / a.replace(0, np.nan)
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+    return dx.ewm(alpha=1 / n, adjust=False, min_periods=n).mean(), pdi, mdi
+
+
+def supertrend(df, n=10, mult=3.0):
+    """Supertrend: (çizgi, yön). Yön +1 yükseliş (çizgi altta), −1 düşüş."""
+    n, mult = int(n), float(mult)
+    a = atr(df, n).to_numpy(float)
+    hl2 = ((df["High"] + df["Low"]) / 2).to_numpy(float)
+    c = df["Close"].to_numpy(float)
+    up, lo = hl2 + mult * a, hl2 - mult * a
+    line = np.full(len(c), np.nan)
+    dirn = np.ones(len(c), dtype=int)
+    fu, fl = np.nan, np.nan
+    for i in range(len(c)):
+        if not np.isfinite(a[i]):
+            continue
+        pc = c[i - 1] if i else c[i]
+        fu = up[i] if not np.isfinite(fu) or up[i] < fu or pc > fu else fu
+        fl = lo[i] if not np.isfinite(fl) or lo[i] > fl or pc < fl else fl
+        prev = dirn[i - 1] if i else 1
+        if prev == 1:
+            dirn[i] = -1 if c[i] < fl else 1
+        else:
+            dirn[i] = 1 if c[i] > fu else -1
+        if dirn[i] != prev:
+            fu, fl = up[i], lo[i]
+        line[i] = fl if dirn[i] == 1 else fu
+    return pd.Series(line, index=df.index), pd.Series(dirn, index=df.index)
+
+
+def vidya(df, length=10, mom=20, mult=2.0):
+    """Volumatic VIDYA — Chande değişken ortalaması + trend dönüşünde sabitlenen ATR bandı.
+    Döner: (vidya, üst bant, alt bant, yön, dönüş noktaları)."""
+    length, mom, mult = int(length), int(mom), float(mult)
+    close = df["Close"]
+    d = close.diff()
+    gain = d.clip(lower=0).rolling(mom, min_periods=mom).sum()
+    loss = (-d.clip(upper=0)).rolling(mom, min_periods=mom).sum()
+    cmo = ((gain - loss) / (gain + loss).replace(0, np.nan)).abs()
+    c = close.to_numpy(float)
+    k = cmo.to_numpy(float)
+    a = atr(df, 14).to_numpy(float)
+    alpha = 2.0 / (length + 1)
+    v = np.full(len(c), np.nan)
+    ub = np.full(len(c), np.nan)
+    lb = np.full(len(c), np.nan)
+    dirn = np.zeros(len(c), dtype=int)
+    flips = []
+    prev = np.nan
+    cur_dir = 0
+    for i in range(len(c)):
+        if not np.isfinite(k[i]):
+            continue
+        prev = c[i] if not np.isfinite(prev) else c[i] * alpha * k[i] + prev * (1 - alpha * k[i])
+        v[i] = prev
+        nd = 1 if c[i] > prev else -1
+        if cur_dir == 0:
+            cur_dir = nd
+        elif nd != cur_dir:
+            cur_dir = nd
+            band = a[i] if np.isfinite(a[i]) else abs(c[i]) * 0.02
+            ub[i], lb[i] = prev + mult * band, prev - mult * band
+            flips.append({"i": int(i), "dir": int(nd), "p": float(prev)})
+        dirn[i] = cur_dir
+        if i and not np.isfinite(ub[i]):
+            ub[i], lb[i] = ub[i - 1], lb[i - 1]
+    idx = close.index
+    return (pd.Series(v, index=idx), pd.Series(ub, index=idx), pd.Series(lb, index=idx),
+            pd.Series(dirn, index=idx), flips[-40:])
+
+
+def volatility_stop(df, n=20, mult=2.0):
+    """ATR iz süren stop: (stop çizgisi, yön). Yön +1 long, −1 short."""
+    n, mult = int(n), float(mult)
+    a = atr(df, n).to_numpy(float)
+    c = df["Close"].to_numpy(float)
+    stop = np.full(len(c), np.nan)
+    dirn = np.ones(len(c), dtype=int)
+    cur, d0 = np.nan, 1
+    for i in range(len(c)):
+        if not np.isfinite(a[i]):
+            continue
+        off = mult * a[i]
+        if not np.isfinite(cur):
+            cur, d0 = c[i] - off, 1
+        elif d0 == 1:
+            if c[i] < cur:
+                d0, cur = -1, c[i] + off
+            else:
+                cur = max(cur, c[i] - off)
+        else:
+            if c[i] > cur:
+                d0, cur = 1, c[i] - off
+            else:
+                cur = min(cur, c[i] + off)
+        stop[i], dirn[i] = cur, d0
+    return pd.Series(stop, index=df.index), pd.Series(dirn, index=df.index)
+
+
+def obv(df):
+    """On-Balance Volume."""
+    sign = np.sign(df["Close"].diff().fillna(0.0))
+    return (sign * df["Volume"].astype(float)).cumsum()
+
+
+# ======================================================================
+# Formasyon tespiti — klasik grafik formasyonları
+# ======================================================================
+def _slope(xs, ys):
+    if len(xs) < 2:
+        return 0.0
+    x = np.asarray(xs, float)
+    y = np.asarray(ys, float)
+    den = ((x - x.mean()) ** 2).sum()
+    return float(((x - x.mean()) * (y - y.mean())).sum() / den) if den else 0.0
+
+
+def chart_patterns(df, left=4, right=4, lookback=180, tol=0.035, limit=4):
+    """Son barlarda klasik formasyonlar: çift dip/tepe, OBO, ters OBO, üçgen, bayrak.
+    Döner: [{"name","kind","conf","i","note"}] — kind: bull | bear | neutral."""
+    if df is None or len(df) < 40:
+        return []
+    d = df.tail(int(lookback))
+    n = len(d)
+    hi_i, _ = pivot_points(d["High"], left, right)
+    _, lo_i = pivot_points(d["Low"], left, right)
+    H = d["High"].to_numpy(float)
+    L = d["Low"].to_numpy(float)
+    C = d["Close"].to_numpy(float)
+    px = float(C[-1])
+    out = []
+
+    def rel(a, b):
+        return abs(a - b) / max(abs(b), 1e-9)
+
+    # ---- çift dip / çift tepe
+    if len(lo_i) >= 2:
+        i1, i2 = lo_i[-2], lo_i[-1]
+        gap = i2 - i1
+        if 5 <= gap <= 90 and rel(L[i1], L[i2]) <= tol:
+            mid = [j for j in hi_i if i1 < j < i2]
+            neck = float(H[max(mid, key=lambda j: H[j])]) if mid else float(H[i1:i2 + 1].max())
+            if neck > max(L[i1], L[i2]):
+                conf = 0.55 + 0.25 * (1 - rel(L[i1], L[i2]) / tol) + (0.2 if px > neck else 0.0)
+                out.append({"name": "Çift dip", "kind": "bull", "conf": float(round(min(1.0, conf), 2)),
+                            "i": int(i2) + (len(df) - n),
+                            "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px > neck else " henüz kırılmadı")})
+    if len(hi_i) >= 2:
+        i1, i2 = hi_i[-2], hi_i[-1]
+        gap = i2 - i1
+        if 5 <= gap <= 90 and rel(H[i1], H[i2]) <= tol:
+            mid = [j for j in lo_i if i1 < j < i2]
+            neck = float(L[min(mid, key=lambda j: L[j])]) if mid else float(L[i1:i2 + 1].min())
+            if neck < min(H[i1], H[i2]):
+                conf = 0.55 + 0.25 * (1 - rel(H[i1], H[i2]) / tol) + (0.2 if px < neck else 0.0)
+                out.append({"name": "Çift tepe", "kind": "bear", "conf": float(round(min(1.0, conf), 2)),
+                            "i": int(i2) + (len(df) - n),
+                            "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px < neck else " henüz kırılmadı")})
+    # ---- omuz-baş-omuz / ters OBO
+    if len(hi_i) >= 3:
+        a, b, c = hi_i[-3], hi_i[-2], hi_i[-1]
+        if H[b] > H[a] and H[b] > H[c] and rel(H[a], H[c]) <= tol * 1.8 and (c - a) <= 140:
+            mids = [j for j in lo_i if a < j < c]
+            neck = float(np.mean([L[j] for j in mids])) if mids else float(L[a:c + 1].min())
+            out.append({"name": "Omuz-baş-omuz", "kind": "bear", "conf": 0.72,
+                        "i": int(c) + (len(df) - n),
+                        "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px < neck else "")})
+    if len(lo_i) >= 3:
+        a, b, c = lo_i[-3], lo_i[-2], lo_i[-1]
+        if L[b] < L[a] and L[b] < L[c] and rel(L[a], L[c]) <= tol * 1.8 and (c - a) <= 140:
+            mids = [j for j in hi_i if a < j < c]
+            neck = float(np.mean([H[j] for j in mids])) if mids else float(H[a:c + 1].max())
+            out.append({"name": "Ters omuz-baş-omuz", "kind": "bull", "conf": 0.72,
+                        "i": int(c) + (len(df) - n),
+                        "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px > neck else "")})
+    # ---- üçgen (son 3 tepe / 3 dip eğimi)
+    if len(hi_i) >= 3 and len(lo_i) >= 3:
+        hs = _slope(hi_i[-3:], [H[j] for j in hi_i[-3:]]) / max(px, 1e-9) * 100
+        ls = _slope(lo_i[-3:], [L[j] for j in lo_i[-3:]]) / max(px, 1e-9) * 100
+        flat = 0.035
+        if hs < -flat and ls > flat:
+            out.append({"name": "Simetrik üçgen", "kind": "neutral", "conf": 0.6,
+                        "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n), "note": "sıkışma — kırılım bekleniyor"})
+        elif abs(hs) <= flat and ls > flat:
+            out.append({"name": "Yükselen üçgen", "kind": "bull", "conf": 0.68,
+                        "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n),
+                        "note": "yatay direnç %s" % fmt_num(float(np.mean([H[j] for j in hi_i[-3:]])), 2)})
+        elif hs < -flat and abs(ls) <= flat:
+            out.append({"name": "Alçalan üçgen", "kind": "bear", "conf": 0.68,
+                        "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n),
+                        "note": "yatay destek %s" % fmt_num(float(np.mean([L[j] for j in lo_i[-3:]])), 2)})
+    # ---- bayrak / flama (sert hareket + sıkışma)
+    if n >= 45:
+        imp = (C[-20] / C[-40] - 1) * 100 if C[-40] else 0.0
+        rng = (H[-15:].max() - L[-15:].min()) / max(px, 1e-9) * 100
+        if abs(imp) >= 8 and rng <= max(4.0, abs(imp) * 0.45):
+            out.append({"name": "Boğa bayrağı" if imp > 0 else "Ayı bayrağı",
+                        "kind": "bull" if imp > 0 else "bear", "conf": 0.6,
+                        "i": len(df) - 1,
+                        "note": "%%%s'lik hareket sonrası %%%s bantta sıkışma"
+                                % (fmt_num(abs(imp), 1), fmt_num(rng, 1))})
+    out.sort(key=lambda p: (-p["conf"], -p["i"]))
+    return out[:int(limit)]
+
+
+# ======================================================================
+# A–Z notu — altı grup, kural tabanlı puanlama ve Türkçe yorum
+#   A = en güçlü alım · M/N = nötr · Z = en güçlü satım
+# ======================================================================
+GRADE_GROUPS = [("mom", "Momentum", 25), ("form", "Formasyon & uyumsuzluk", 20),
+                ("vol", "Hacim", 20), ("rr", "Risk / Ödül", 20),
+                ("trend", "Trend & ortalamalar", 10), ("volat", "Volatilite & konum", 5)]
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _f(v, dec=2):
+    return fmt_num(v, dec)
+
+
+def _g_momentum(df):
+    close = df["Close"]
+    why, parts = [], []
+    r_s = rsi(close, 14)
+    r, r5 = _last(r_s), _last(r_s.shift(5))
+    if _ok(r):
+        dr = (r - r5) if _ok(r5) else 0.0
+        if r >= 70:
+            s, t = 68, "RSI %s — güçlü ama aşırı alım bölgesinde, geri çekilme riski var" % _f(r, 1)
+        elif r >= 58:
+            s, t = 90, "RSI %s — momentum alıcıda" % _f(r, 1)
+        elif r >= 50:
+            s, t = 66, "RSI %s — 50'nin hafif üstünde" % _f(r, 1)
+        elif r >= 42:
+            s, t = 40, "RSI %s — 50'nin altında, momentum zayıf" % _f(r, 1)
+        elif r > 30:
+            s, t = 24, "RSI %s — satıcı baskın" % _f(r, 1)
+        else:
+            s, t = 38, "RSI %s — aşırı satım, tepki yükselişi olabilir" % _f(r, 1)
+        s = min(100, max(0, s + (6 if dr > 4 else -6 if dr < -4 else 0)))
+        parts.append((s, 1.1))
+        why.append(t + (" ve son 5 barda yükseliyor" if dr > 4 else " ve son 5 barda zayıflıyor" if dr < -4 else ""))
+    line, sig, hist = macd(close)
+    h, hp = _last(hist), _last(hist.shift(1))
+    if _ok(h):
+        rising = _ok(hp) and h > hp
+        hv = hist.to_numpy(float)
+        cross = next((k for k in range(1, min(40, len(hv))) if _ok(hv[-k]) and _ok(hv[-k - 1])
+                      and np.sign(hv[-k]) != np.sign(hv[-k - 1])), None)
+        if h > 0:
+            s = 92 if rising else 68
+            t = "MACD histogramı pozitif ve %s" % ("genişliyor" if rising else "daralıyor")
+        else:
+            s = 34 if rising else 10
+            t = "MACD histogramı negatif ve %s" % ("toparlıyor" if rising else "derinleşiyor")
+        if cross is not None and cross <= 5:
+            t += " · %d bar önce yön değiştirdi" % cross
+            s = min(100, s + 6) if h > 0 else max(0, s - 6)
+        parts.append((s, 1.2))
+        why.append(t)
+    k_s, d_s = stoch(df)
+    kk, dd = _last(k_s), _last(d_s)
+    if _ok(kk) and _ok(dd):
+        if kk > 80:
+            s, t = 48, "Stokastik %s — aşırı alım" % _f(kk, 0)
+        elif kk < 20:
+            s, t = 52, "Stokastik %s — aşırı satım" % _f(kk, 0)
+        elif kk > dd:
+            s, t = 82, "Stokastik %s, sinyalin üstünde" % _f(kk, 0)
+        else:
+            s, t = 28, "Stokastik %s, sinyalin altında" % _f(kk, 0)
+        parts.append((s, 0.8))
+        why.append(t)
+    if not parts:
+        return 50.0, ["Momentum için yeterli bar yok"]
+    tot = sum(w for _, w in parts)
+    return sum(s * w for s, w in parts) / tot, why
+
+
+def _g_form(df, patterns=None, div_list=None):
+    pats = chart_patterns(df) if patterns is None else patterns
+    if div_list is None:
+        div_list = divergences(df, rsi(df["Close"], 14), limit=6)
+    n = len(df)
+    bull = bear = 0.0
+    why = []
+    for p in pats:
+        w = float(p.get("conf", 0.6))
+        if p["kind"] == "bull":
+            bull += w
+        elif p["kind"] == "bear":
+            bear += w
+        why.append("%s (%s)" % (p["name"], p.get("note", "")) if p.get("note") else p["name"])
+    fresh = [d for d in div_list if n - 1 - int(d.get("i2", 0)) <= 12]
+    for d in fresh:
+        kind = DIV_KINDS.get(d.get("kind"), ("", ""))[1]
+        label = DIV_KINDS.get(d.get("kind"), ("Uyumsuzluk", ""))[0]
+        if kind == "bull":
+            bull += 0.55
+        elif kind == "bear":
+            bear += 0.55
+        why.append("%s — RSI ile fiyat ayrışıyor" % label)
+    if not pats and not fresh:
+        return 50.0, ["Belirgin formasyon ya da uyumsuzluk yok"]
+    net = (bull - bear) / max(1.0, bull + bear)
+    return 50 + net * 46, why
+
+
+def _g_volume(df):
+    why, parts = [], []
+    rv = _last(relvol(df, 20))
+    up = _last(df["Close"].diff()) or 0.0
+    if _ok(rv):
+        if rv >= 1.5:
+            s = 90 if up >= 0 else 14
+            why.append("Hacim ortalamanın %sx üstünde ve bar %s" % (_f(rv, 1), "yükseliş" if up >= 0 else "düşüş"))
+        elif rv >= 1.0:
+            s = 68 if up >= 0 else 34
+            why.append("Hacim ortalamanın hafif üstünde (%sx)" % _f(rv, 1))
+        else:
+            s = 44
+            why.append("Hacim ortalamanın altında (%sx) — hareketin teyidi zayıf" % _f(rv, 1))
+        parts.append((s, 1.2))
+    m = _last(mfi(df, 14))
+    if _ok(m):
+        s = 88 if m >= 60 else 68 if m >= 50 else 34 if m >= 40 else 16
+        parts.append((s, 1.0))
+        why.append("Para akışı (MFI) %s" % _f(m, 0))
+    o = obv(df)
+    if len(o) > 25:
+        ov = o.to_numpy(float)[-21:]
+        sl = _slope(range(len(ov)), ov)
+        base = abs(float(df["Volume"].tail(21).mean())) or 1.0
+        rr = sl / base
+        s = 86 if rr > 0.25 else 64 if rr > 0.02 else 36 if rr > -0.25 else 14
+        parts.append((s, 0.9))
+        why.append("OBV son 20 barda %s" % ("yükseliyor" if rr > 0.02 else "düşüyor" if rr < -0.02 else "yatay"))
+    if not parts:
+        return 50.0, ["Hacim verisi yok"]
+    tot = sum(w for _, w in parts)
+    return sum(s * w for s, w in parts) / tot, why
+
+
+def _g_rr(df, zones=None):
+    px = float(df["Close"].iloc[-1])
+    a = _last(atr(df, 14)) or px * 0.02
+    if zones is None:
+        zones = ranked_sr_zones(df)
+    levels_up, levels_dn = [], []
+    for z in zones or []:
+        mid = (z["lo"] + z["hi"]) / 2
+        (levels_up if mid > px else levels_dn).append((mid, z.get("pct", 50), z.get("label", "bant")))
+    for p in (50, 200):
+        v = _last(sma(df["Close"], p))
+        if _ok(v):
+            (levels_up if v > px else levels_dn).append((v, 55, "SMA %d" % p))
+    why, notes = [], []
+    if not levels_up:
+        hh = float(df["High"].tail(252).max())
+        if hh > px * 1.004:
+            levels_up.append((hh, 50, "52 haftalık zirve"))
+            notes.append("Üstte pivot bandı kalmadı; hedef 52 haftalık zirve")
+        else:
+            levels_up.append((px + 2.5 * a, 50, "ATR hedefi"))
+            notes.append("Fiyat zirvede, üstte engel yok — hedef 2,5×ATR")
+    if not levels_dn:
+        levels_dn.append((px - 2.0 * a, 50, "ATR stopu"))
+        notes.append("Altta kayıtlı destek yok — stop 2×ATR")
+    res = min(levels_up, key=lambda x: x[0])
+    sup = max(levels_dn, key=lambda x: x[0])
+    rew = max(0.0, (res[0] - px) / px * 100)
+    raw_risk = max(0.0, (px - sup[0]) / px * 100)
+    atr_pct = a / px * 100
+    # Stop 0,5×ATR'den dar olamaz: gürültü stopu düşürmesin, R/R şişmesin
+    risk = max(raw_risk, 0.5 * atr_pct)
+    rr = min(10.0, rew / risk) if risk > 0.02 else 0.0
+    why.append("Üstte %s %s (+%%%s), altta %s %s (−%%%s)"
+               % (res[2], _f(res[0]), _f(rew, 1), sup[2], _f(sup[0]), _f(raw_risk, 1)))
+    if risk > raw_risk + 0.01:
+        notes.append("Destek %s%% uzakta; stop gürültüye takılmasın diye 0,5×ATR (%%%s) tabanına çekildi"
+                     % (_f(raw_risk, 1), _f(risk, 1)))
+    if rr >= 2.5:
+        s = 95
+    elif rr >= 2:
+        s = 86
+    elif rr >= 1.5:
+        s = 72
+    elif rr >= 1:
+        s = 55
+    elif rr >= 0.6:
+        s = 34
+    else:
+        s = 14
+    why.append("Risk/ödül 1 : %s%s" % (_f(rr, 2), "+" if rr >= 10 else ""))
+    return float(s), why + notes
+
+
+def _g_trend(df):
+    close = df["Close"]
+    px = float(close.iloc[-1])
+    why, parts = [], []
+    ms = {p: _last(sma(close, p)) for p in (20, 50, 100, 200)}
+    have = [p for p in (20, 50, 100, 200) if _ok(ms[p])]
+    if have:
+        above = sum(1 for p in have if px > ms[p])
+        s = above / len(have) * 100
+        order = all(ms[have[i]] >= ms[have[i + 1]] for i in range(len(have) - 1))
+        rev = all(ms[have[i]] <= ms[have[i + 1]] for i in range(len(have) - 1))
+        if order and len(have) >= 3:
+            s = min(100, s + 12)
+            why.append("Ortalamalar mükemmel dizilişte (20>50>100>200)")
+        elif rev and len(have) >= 3:
+            s = max(0, s - 12)
+            why.append("Ortalamalar düşüş dizilişinde (20<50<100<200)")
+        why.append("Fiyat %d/%d hareketli ortalamanın üstünde" % (above, len(have)))
+        parts.append((s, 1.3))
+    try:
+        _, sd = supertrend(df, 10, 3.0)
+        v = int(sd.iloc[-1])
+        parts.append((84 if v > 0 else 16, 1.0))
+        why.append("Supertrend %s" % ("yukarı" if v > 0 else "aşağı"))
+    except Exception:
+        pass
+    ax, pdi, mdi = adx(df, 14)
+    av = _last(ax)
+    if _ok(av):
+        why.append("ADX %s — trend %s" % (_f(av, 0), "güçlü" if av >= 25 else "zayıf/yatay"))
+        if av < 18 and parts:
+            parts = [(50 + (s - 50) * 0.55, w) for s, w in parts]
+    if not parts:
+        return 50.0, ["Trend için yeterli bar yok"]
+    tot = sum(w for _, w in parts)
+    return sum(s * w for s, w in parts) / tot, why
+
+
+def _g_volat(df):
+    close = df["Close"]
+    px = float(close.iloc[-1])
+    why, parts = [], []
+    b = _last(boll_pctb(close, 20, 2.0))
+    if _ok(b):
+        if b > 1:
+            s, t = 38, "Bollinger üst bandının dışında — aşırı uzama"
+        elif b >= 0.55:
+            s, t = 82, "Bollinger bandının üst yarısında (%%B %s)" % _f(b * 100, 0)
+        elif b >= 0.45:
+            s, t = 58, "Bollinger ortasında"
+        elif b >= 0:
+            s, t = 34, "Bollinger bandının alt yarısında (%%B %s)" % _f(b * 100, 0)
+        else:
+            s, t = 46, "Bollinger alt bandının dışında — tepki gelebilir"
+        parts.append((s, 1.0))
+        why.append(t)
+    a = _last(atr(df, 14))
+    s20 = _last(sma(close, 20))
+    if _ok(a) and _ok(s20) and a > 0:
+        ext = (px - s20) / a
+        if abs(ext) > 3:
+            parts.append((40 if ext > 0 else 50, 0.8))
+            why.append("Fiyat 20 günlük ortalamadan %s ATR uzakta — geri çekilme olası" % _f(abs(ext), 1))
+        else:
+            parts.append((70 if ext > 0 else 46, 0.8))
+    if len(df) > 60:
+        lo, hi = float(df["Low"].tail(252).min()), float(df["High"].tail(252).max())
+        if hi > lo:
+            pos = (px - lo) / (hi - lo) * 100
+            why.append("Son 1 yıllık aralığın %%%s seviyesinde" % _f(pos, 0))
+            parts.append((min(100, max(0, pos * 0.8 + 10)), 0.7))
+    if not parts:
+        return 50.0, []
+    tot = sum(w for _, w in parts)
+    return sum(s * w for s, w in parts) / tot, why
+
+
+def grade(df, zones=None, tf_name="günlük"):
+    """Altı grubu puanlar, 0–100 skoru A–Z harfine çevirir ve Türkçe yorum üretir."""
+    if df is None or len(df) < 30:
+        return None
+    pats = chart_patterns(df)
+    divs = divergences(df, rsi(df["Close"], 14), limit=6)
+    fns = {"mom": lambda: _g_momentum(df), "form": lambda: _g_form(df, pats, divs),
+           "vol": lambda: _g_volume(df), "rr": lambda: _g_rr(df, zones),
+           "trend": lambda: _g_trend(df), "volat": lambda: _g_volat(df)}
+    groups, total = [], 0.0
+    for key, name, w in GRADE_GROUPS:
+        try:
+            s, why = fns[key]()
+        except Exception:
+            s, why = 50.0, []
+        s = float(min(100.0, max(0.0, s)))
+        total += s * w / 100.0
+        groups.append({"key": key, "name": name, "weight": w, "score": round(s, 1),
+                       "points": round(s * w / 100.0, 1), "reasons": why})
+    score = float(min(100.0, max(0.0, total)))
+    li = int(round((100 - score) / 4.0))
+    li = min(25, max(0, li))
+    letter = LETTERS[li]
+    if li <= 3:
+        action, tone = "Güçlü Al", "bull"
+    elif li <= 8:
+        action, tone = "Al", "bull"
+    elif li <= 11:
+        action, tone = "Zayıf Al", "bull"
+    elif li <= 14:
+        action, tone = "Nötr", "flat"
+    elif li <= 17:
+        action, tone = "Zayıf Sat", "bear"
+    elif li <= 22:
+        action, tone = "Sat", "bear"
+    else:
+        action, tone = "Güçlü Sat", "bear"
+    return {"score": round(score, 1), "letter": letter, "action": action, "tone": tone,
+            "groups": groups, "patterns": pats, "tf": tf_name,
+            "text": _grade_text(df, groups, letter, action, score, tf_name, pats)}
+
+
+def _grade_text(df, groups, letter, action, score, tf_name, pats):
+    """Puanlardan doğal dilde Türkçe yorum kurar — uydurma yok, hepsi hesaplanan değerlerden."""
+    gd = {g["key"]: g for g in groups}
+    px = float(df["Close"].iloc[-1])
+    out = []
+    top = max(groups, key=lambda g: g["score"])
+    bot = min(groups, key=lambda g: g["score"])
+    out.append("%s zaman diliminde %s puanla **%s** notu veriyorum — %s."
+               % (tf_name.capitalize(), _f(score, 0), letter, action.lower()))
+    mom, trend = gd["mom"], gd["trend"]
+    lead = []
+    if mom["reasons"]:
+        lead.append(mom["reasons"][0])
+    if trend["reasons"]:
+        lead.append(trend["reasons"][-1] if len(trend["reasons"]) > 1 else trend["reasons"][0])
+    if lead:
+        out.append("Tabloyu kuran şey: " + "; ".join(lead) + ".")
+    if gd["form"]["reasons"] and pats:
+        bits = [p["name"].lower() + ((" (" + p["note"] + ")") if p.get("note") else "") for p in pats[:2]]
+        out.append("Formasyon tarafında " + ", ".join(bits) + " görünüyor.")
+    elif gd["form"]["reasons"]:
+        out.append(gd["form"]["reasons"][0] + ".")
+    if gd["vol"]["reasons"]:
+        out.append(gd["vol"]["reasons"][0] + ".")
+    if gd["rr"]["reasons"]:
+        out.append(" ".join(r.rstrip(".") + "." for r in gd["rr"]["reasons"][:2]))
+    out.append("En güçlü taraf %s (%s/100), en zayıf taraf %s (%s/100). Son fiyat %s."
+               % (top["name"].lower(), _f(top["score"], 0), bot["name"].lower(), _f(bot["score"], 0), _f(px)))
+    if gd["volat"]["reasons"]:
+        out.append("Risk notu: " + gd["volat"]["reasons"][0] + ".")
+    return " ".join(out)
