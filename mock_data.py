@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.0"
+DATA_VERSION = "3.1"
 
 try:
     import yfinance as yf
@@ -478,7 +478,7 @@ def get_ohlc(t, days=180):
 
 
 _INTRA_MIN = {"1m": 1, "2m": 2, "5m": 5, "15m": 15, "30m": 30, "60m": 60, "1h": 60, "90m": 90}
-_PERIOD_DAYS = {"1d": 1, "2d": 2, "5d": 5, "1mo": 22}
+_PERIOD_DAYS = {"1d": 1, "2d": 2, "5d": 5, "1mo": 22, "3mo": 66, "6mo": 126, "1y": 252, "2y": 504}
 
 
 def _synth_intraday(t, period="5d", interval="5m"):
