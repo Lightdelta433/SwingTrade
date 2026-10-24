@@ -64,6 +64,16 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:cro
 .pop .it.on .ic{color:#5B8CFF}
 .pop .sub{font-size:11px;color:#6B7383;margin-left:auto;padding-left:14px}
 .pop .div{height:1px;background:#22262D;margin:5px 2px}
+.swgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;padding:1px 9px 6px}
+.swt{width:17px;height:17px;border-radius:4px;border:1px solid rgba(255,255,255,.16);cursor:pointer;padding:0}
+.swt:hover{transform:scale(1.14)}
+.swt.on{outline:2px solid #ECEEF1;outline-offset:1px}
+.pop.style .it{padding:5px 9px;font-size:12px;gap:7px}
+.pop.style{min-width:172px}
+.pop.style input[type=color]{width:30px;height:24px}
+.pop.style select{height:27px;font-size:12px;padding:0 6px}
+.srch{display:flex;align-items:center;gap:8px;padding:0 0 4px 0}
+.srch input{flex:1;height:34px}
 /* ---------- diyalog ---------- */
 #mask{position:absolute;inset:0;background:rgba(5,6,8,.55);z-index:50;display:none}
 #mask.show{display:block}
@@ -142,9 +152,13 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
     <button class="tb" id="btnFit" title="Tümünü sığdır">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5"/></svg></button>
-    <button class="tb" id="btnBig" title="Büyüt">
+    <button class="tb" id="btnBig" title="Paneli büyüt / küçült">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-        stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V3h6M21 15v6h-6M21 9V3h-6M3 15v6h6"/></svg></button>
+        stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4"/></svg></button>
+    <button class="tb" id="btnFull" title="Tam ekran (F)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+        stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V3h6M21 15v6h-6M21 9V3h-6M3 15v6h6"/></svg>
+      <span id="fullLbl">Tam ekran</span></button>
   </div>
   <div id="body">
     <div id="tools"></div>
@@ -153,6 +167,9 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
       <div id="legend"></div>
       <div id="hint"></div>
       <div id="ctl">
+        <button class="cb" id="cbIn" title="Yakınlaştır (+)">＋</button>
+        <button class="cb" id="cbOut" title="Uzaklaştır (−)">−</button>
+        <button class="cb" id="cbReset" title="Görünümü sıfırla">⟲</button>
         <button class="cb" id="cbAuto" title="Otomatik ölçek">A</button>
         <button class="cb" id="cbLog" title="Logaritmik ölçek">L</button>
       </div>
@@ -287,10 +304,15 @@ function buildPanes(){
   const c=S.cfg, p=[{id:"price",w:1}];
   if(c.vol&&c.vol.on) p.push({id:"vol",w:.22,name:"Hacim"});
   if(c.rsi&&c.rsi.on) p.push({id:"rsi",w:.3,name:"RSI ("+(c.rsi.len||14)+")"});
+  if(c.stoch&&c.stoch.on) p.push({id:"stoch",w:.3,name:"Stokastik"});
   if(c.macd&&c.macd.on) p.push({id:"macd",w:.3,name:"MACD ("+c.macd.f+", "+c.macd.s+", "+c.macd.sig+")"});
   if(c.wt&&c.wt.on) p.push({id:"wt",w:.3,name:"WaveTrend ("+c.wt.n1+", "+c.wt.n2+")"});
+  if(c.atr&&c.atr.on) p.push({id:"atr",w:.24,name:"ATR"});
   S.panes=p;
 }
+/* cfg'den renk oku (geçersizse varsayılan) */
+function CC(k,f,d){ const c=S.cfg[k], v=c&&c[f];
+  return (typeof v==="string"&&/^#[0-9a-fA-F]{6}$/.test(v))?v:d; }
 function layout(){
   const plotH=H-TS;
   let sub=0;
@@ -346,9 +368,10 @@ function autoScale(){
     } else if(p.id==="vol"){
       mn=0; for(let i=i0;i<=i1;i++){ const b=S.bars[i]; if(b&&b.v>mx)mx=b.v; }
       if(!isFinite(mx)||mx<=0)mx=1;
-    } else if(p.id==="rsi"){ mn=0;mx=100; }
+    } else if(p.id==="rsi"||p.id==="stoch"){ mn=0;mx=100; }
     else {
-      const ks = p.id==="macd" ? ["macd","macd_sig","macd_hist"] : ["wt1","wt2"];
+      const ks = p.id==="macd" ? ["macd","macd_sig","macd_hist"]
+               : p.id==="atr" ? ["atr"] : ["wt1","wt2"];
       for(const k of ks){ const s=S.ind[k]; if(!s)continue;
         for(let i=i0;i<=i1;i++){ const v=s[i]; if(v==null||!isFinite(v))continue;
           if(v<mn)mn=v; if(v>mx)mx=v; } }
@@ -364,6 +387,10 @@ function overlaySeries(){
   const out=[], c=S.cfg;
   if(c.sma&&c.sma.on) for(const n of (c.sma.ps||[])){ const s=S.ind["sma"+n]; if(s)out.push(s); }
   if(c.nw&&c.nw.on){ for(const k of ["nw_up","nw_lo"]){ const s=S.ind[k]; if(s)out.push(s); } }
+  if(c.boll&&c.boll.on){ for(const k of ["bb_up","bb_lo"]){ const s=S.ind[k]; if(s)out.push(s); } }
+  if(c.sup&&c.sup.on&&S.ind.sup) out.push(S.ind.sup);
+  if(c.vstop&&c.vstop.on&&S.ind.vstop) out.push(S.ind.vstop);
+  if(c.vidya&&c.vidya.on){ for(const k of ["vid","vid_up","vid_lo"]){ const s=S.ind[k]; if(s)out.push(s); } }
   return out;
 }
 function niceStep(range,target){
@@ -420,8 +447,10 @@ function draw(){
     if(p.id==="price"){ drawZones(p); drawPrice(p); drawOverlays(p); drawDivPrice(p); }
     else if(p.id==="vol") drawVol(p);
     else if(p.id==="rsi") drawRSI(p);
+    else if(p.id==="stoch") drawStoch(p);
     else if(p.id==="macd") drawMACD(p);
     else if(p.id==="wt") drawWT(p);
+    else if(p.id==="atr") drawATR(p);
     if(p.id!=="price") drawPaneTitle(p);
     ctx.restore();
   }
@@ -498,9 +527,9 @@ function drawScales(){
   ctx.moveTo(S.plotW+0.5,0); ctx.lineTo(S.plotW+0.5,H-TS); ctx.stroke();
   ctx.font="11px sans-serif"; ctx.textAlign="left"; ctx.textBaseline="middle";
   for(const p of S.panes){
-    if(p.id==="rsi"){   // RSI'da sabit seviyeler daha okunur
-      const c=S.cfg.rsi||{};
-      for(const v of [c.ob||70,50,c.os||30]){
+    if(p.id==="rsi"||p.id==="stoch"){   // sabit seviyeler daha okunur
+      const c=(p.id==="rsi"?S.cfg.rsi:S.cfg.stoch)||{};
+      for(const v of [c.ob||(p.id==="rsi"?70:80),50,c.os||(p.id==="rsi"?30:20)]){
         const y=Y(p,v); if(y<p.top+7||y>p.top+p.h-5) continue;
         ctx.fillStyle=MUT; ctx.fillText(String(v),S.plotW+7,y);
       }
@@ -546,14 +575,23 @@ function drawPaneTitle(p){
   let parts=[];
   if(p.id==="vol") parts=[["Hacim",MUT],[volLab(S.bars[i]?S.bars[i].v:0),SOFT]];
   else if(p.id==="rsi"){ const v=S.ind.rsi?S.ind.rsi[i]:null;
-    parts=[["RSI "+((c.rsi&&c.rsi.len)||14),MUT],[v==null?"—":fmt(v,2),VIOLET]]; }
+    parts=[["RSI "+((c.rsi&&c.rsi.len)||14),MUT],[v==null?"—":fmt(v,2),CC("rsi","c",VIOLET)]]; }
   else if(p.id==="macd"){ const m=S.ind.macd,s=S.ind.macd_sig,g=S.ind.macd_hist;
     parts=[["MACD "+c.macd.f+" "+c.macd.s+" "+c.macd.sig,MUT],
-           [m&&m[i]!=null?fmt(m[i],3):"—",ACC],[s&&s[i]!=null?fmt(s[i],3):"—",WARN],
+           [m&&m[i]!=null?fmt(m[i],3):"—",CC("macd","c",ACC)],
+           [s&&s[i]!=null?fmt(s[i],3):"—",CC("macd","cs",WARN)],
            [g&&g[i]!=null?fmt(g[i],3):"—",g&&g[i]>=0?UP:DOWN]]; }
   else if(p.id==="wt"){ const a=S.ind.wt1,b=S.ind.wt2;
     parts=[["WaveTrend "+c.wt.n1+" "+c.wt.n2,MUT],
-           [a&&a[i]!=null?fmt(a[i],2):"—","#22D3EE"],[b&&b[i]!=null?fmt(b[i],2):"—",WARN]]; }
+           [a&&a[i]!=null?fmt(a[i],2):"—",CC("wt","c","#22D3EE")],
+           [b&&b[i]!=null?fmt(b[i],2):"—",CC("wt","cs",WARN)]]; }
+  else if(p.id==="stoch"){ const a=S.ind.stoch_k,b=S.ind.stoch_d, sc=c.stoch||{};
+    parts=[["Stokastik "+(sc.k||14)+" "+(sc.d||3)+" "+(sc.smooth||3),MUT],
+           [a&&a[i]!=null?fmt(a[i],2):"—",CC("stoch","c",ACC)],
+           [b&&b[i]!=null?fmt(b[i],2):"—",CC("stoch","cs",WARN)]]; }
+  else if(p.id==="atr"){ const a=S.ind.atr;
+    parts=[["ATR "+((c.atr&&c.atr.n)||14),MUT],
+           [a&&a[i]!=null?fmt(a[i],S.dec):"—",CC("atr","c",WARN)]]; }
   if(!parts.length) return;
   ctx.save(); ctx.font="11px sans-serif"; ctx.textAlign="left"; ctx.textBaseline="middle";
   let x=8; const y=p.top+11;
@@ -615,7 +653,7 @@ function drawVol(p){
   for(let i=i0;i<=i1;i++){
     const b=S.bars[i]; if(!b)continue;
     const up=b.c>=b.o, y=Y(p,b.v), y0=Y(p,0);
-    ctx.fillStyle=up?"rgba(38,166,154,.45)":"rgba(239,83,80,.45)";
+    ctx.fillStyle=hexa(up?CC("vol","cu",UP):CC("vol","cd",DOWN),.45);
     ctx.fillRect(X(i+.5)-bwd/2,y,bwd,Math.max(1,y0-y));
   }
 }
@@ -634,9 +672,75 @@ function lineSeries(p,key,color,width,dash){
   ctx.stroke(); ctx.restore();
 }
 const SMACOL={20:"#5B8CFF",50:"#F5B544",100:"#C4B5FD",200:"#EF5350"};
+function smaColor(n,i){
+  const cols=(S.cfg.sma&&S.cfg.sma.cols)||[];
+  const v=cols[i];
+  if(typeof v==="string"&&/^#[0-9a-fA-F]{6}$/.test(v)) return v;
+  return SMACOL[n]||"#9AA4B2";
+}
+/* yöne göre renk değiştiren çizgi (Supertrend, VIDYA, Volatility Stop) */
+function dirSeries(p,key,dirKey,cUp,cDn,width,dash){
+  const s=S.ind[key], dr=S.ind[dirKey];
+  if(!s) return;
+  const [i0,i1]=visRange();
+  ctx.save(); if(dash)ctx.setLineDash(dash);
+  ctx.lineWidth=width||1.6; ctx.lineJoin="round"; ctx.lineCap="round";
+  let started=false, curCol=null;
+  for(let i=i0;i<=i1;i++){
+    const v=s[i];
+    const col=(dr&&dr[i]!=null?(dr[i]>0?cUp:cDn):cUp);
+    if(v==null||!isFinite(v)){ if(started){ctx.stroke();started=false;} continue; }
+    const x=X(i+.5), y=Y(p,v);
+    if(!started||col!==curCol){
+      if(started) ctx.stroke();
+      ctx.beginPath(); ctx.strokeStyle=col; curCol=col;
+      ctx.moveTo(x,y); started=true;
+    } else ctx.lineTo(x,y);
+  }
+  if(started) ctx.stroke();
+  ctx.restore();
+}
+function bandFill(p,kUp,kLo,fill){
+  const up=S.ind[kUp], lo=S.ind[kLo];
+  if(!up||!lo) return;
+  const [i0,i1]=visRange();
+  ctx.save(); ctx.beginPath(); let st=false;
+  for(let i=i0;i<=i1;i++){ const v=up[i]; if(v==null||!isFinite(v))continue;
+    const x=X(i+.5),y=Y(p,v); st?ctx.lineTo(x,y):(ctx.moveTo(x,y),st=true); }
+  if(!st){ ctx.restore(); return; }
+  for(let i=i1;i>=i0;i--){ const v=lo[i]; if(v==null||!isFinite(v))continue; ctx.lineTo(X(i+.5),Y(p,v)); }
+  ctx.closePath(); ctx.fillStyle=fill; ctx.fill(); ctx.restore();
+}
 function drawOverlays(p){
   const c=S.cfg;
-  if(c.sma&&c.sma.on) for(const n of (c.sma.ps||[])) lineSeries(p,"sma"+n,SMACOL[n]||"#9AA4B2",1.4);
+  if(c.sma&&c.sma.on) (c.sma.ps||[]).forEach(function(n,i){ lineSeries(p,"sma"+n,smaColor(n,i),1.4); });
+  if(c.boll&&c.boll.on){
+    const col=CC("boll","c","#9AA4B2");
+    bandFill(p,"bb_up","bb_lo",hexa(col,.05));
+    lineSeries(p,"bb_up",col,1.25);
+    lineSeries(p,"bb_lo",col,1.25);
+    lineSeries(p,"bb_mid",hexa(col,.6),1,[4,4]);
+  }
+  if(c.sup&&c.sup.on) dirSeries(p,"sup","sup_dir",CC("sup","cu",UP),CC("sup","cd",DOWN),2.0);
+  if(c.vstop&&c.vstop.on)
+    dirSeries(p,"vstop","vstop_dir",CC("vstop","cu",UP),CC("vstop","cd",DOWN),1.5,[5,3]);
+  if(c.vidya&&c.vidya.on){
+    const cu=CC("vidya","cu",UP), cd=CC("vidya","cd",DOWN);
+    const dr=S.ind.vid_dir;
+    const last=dr?dr[dr.length-1]:1;
+    bandFill(p,"vid_up","vid_lo",hexa(last>0?cu:cd,.055));
+    lineSeries(p,"vid_up",hexa(cu,.45),1);
+    lineSeries(p,"vid_lo",hexa(cd,.45),1);
+    dirSeries(p,"vid","vid_dir",cu,cd,2.0);
+    for(const f of (S.ind.vid_flips||[])){
+      const x=X(f[0]+.5), y=Y(p,f[2]);
+      if(x<-20||x>S.plotW+20||!isFinite(y)) continue;
+      ctx.beginPath();
+      if(f[1]>0){ ctx.moveTo(x,y-7); ctx.lineTo(x-5,y+2); ctx.lineTo(x+5,y+2); }
+      else { ctx.moveTo(x,y+7); ctx.lineTo(x-5,y-2); ctx.lineTo(x+5,y-2); }
+      ctx.closePath(); ctx.fillStyle=f[1]>0?cu:cd; ctx.fill();
+    }
+  }
   if(c.nw&&c.nw.on){
     const up=S.ind.nw_up, lo=S.ind.nw_lo;
     if(up&&lo){
@@ -645,39 +749,66 @@ function drawOverlays(p){
       for(let i=i0;i<=i1;i++){ const v=up[i]; if(v==null)continue;
         const x=X(i+.5),y=Y(p,v); st?ctx.lineTo(x,y):(ctx.moveTo(x,y),st=true); }
       for(let i=i1;i>=i0;i--){ const v=lo[i]; if(v==null)continue; ctx.lineTo(X(i+.5),Y(p,v)); }
-      ctx.closePath(); ctx.fillStyle="rgba(196,181,253,.07)"; ctx.fill(); ctx.restore();
+      ctx.closePath(); ctx.fillStyle=hexa(CC("nw","c","#C4B5FD"),.07); ctx.fill(); ctx.restore();
     }
-    lineSeries(p,"nw_up","#C4B5FD",1.3);
-    lineSeries(p,"nw_lo","#C4B5FD",1.3);
-    lineSeries(p,"nw_mid","rgba(196,181,253,.55)",1,[4,4]);
+    const nc=CC("nw","c","#C4B5FD");
+    lineSeries(p,"nw_up",nc,1.3);
+    lineSeries(p,"nw_lo",nc,1.3);
+    lineSeries(p,"nw_mid",hexa(nc,.55),1,[4,4]);
   }
+}
+/* ---- Stokastik ve ATR panelleri ---- */
+function drawStoch(p){
+  const c=S.cfg.stoch||{};
+  const ob=c.ob==null?80:c.ob, os=c.os==null?20:c.os;
+  const yT=Y(p,ob), yB=Y(p,os);
+  ctx.fillStyle="rgba(91,140,255,.05)"; ctx.fillRect(0,yT,S.plotW,yB-yT);
+  ctx.save(); ctx.setLineDash([4,4]); ctx.strokeStyle="#3A404A"; ctx.lineWidth=1; ctx.beginPath();
+  ctx.moveTo(0,yT);ctx.lineTo(S.plotW,yT); ctx.moveTo(0,yB);ctx.lineTo(S.plotW,yB);
+  ctx.stroke(); ctx.restore();
+  lineSeries(p,"stoch_k",CC("stoch","c",ACC),1.6);
+  lineSeries(p,"stoch_d",CC("stoch","cs",WARN),1.3);
+}
+function drawATR(p){
+  const col=CC("atr","c",WARN);
+  const s=S.ind.atr;
+  if(s){
+    const [i0,i1]=visRange();
+    ctx.save(); ctx.beginPath(); let st=false;
+    for(let i=i0;i<=i1;i++){ const v=s[i]; if(v==null||!isFinite(v))continue;
+      const x=X(i+.5),y=Y(p,v); st?ctx.lineTo(x,y):(ctx.moveTo(x,y),st=true); }
+    if(st){ ctx.lineTo(X(i1+.5),p.top+p.h); ctx.lineTo(X(i0+.5),p.top+p.h); ctx.closePath();
+      ctx.fillStyle=hexa(col,.10); ctx.fill(); }
+    ctx.restore();
+  }
+  lineSeries(p,"atr",col,1.5);
 }
 function drawZones(p){
   if(!(S.cfg.zones&&S.cfg.zones.on)) return;
   ctx.font="10px sans-serif"; ctx.textBaseline="middle";
-  const usedY=[];
+  const usedY=[], cRes=CC("zones","cr",DOWN), cSup=CC("zones","cs",UP);
   for(const z of S.zones){
     const y1=Y(p,z.hi), y2=Y(p,z.lo);
     if(Math.max(y1,y2)<p.top-30||Math.min(y1,y2)>p.top+p.h+30) continue;
     const x0=Math.max(0,X(z.start)), h=Math.max(9,Math.abs(y2-y1)), top=Math.min(y1,y2);
-    const res=z.kind==="res";
+    const res=z.kind==="res", base=res?cRes:cSup;
     const a=z.weak?0.10:0.17;
-    ctx.fillStyle=res?"rgba(239,83,80,"+a+")":"rgba(38,166,154,"+a+")";
+    ctx.fillStyle=hexa(base,a);
     ctx.fillRect(x0,top,S.plotW-x0,h);
-    ctx.strokeStyle=res?"rgba(239,83,80,.5)":"rgba(38,166,154,.5)";
+    ctx.strokeStyle=hexa(base,.5);
     ctx.lineWidth=1; ctx.beginPath();
     ctx.moveTo(x0,Math.round(top)+0.5); ctx.lineTo(S.plotW,Math.round(top)+0.5);
     ctx.moveTo(x0,Math.round(top+h)-0.5); ctx.lineTo(S.plotW,Math.round(top+h)-0.5); ctx.stroke();
     // güç çubuğu + etiket
     const bwid=Math.min(170,(S.plotW-x0)*0.5)*z.pct/100;
-    ctx.fillStyle=res?"rgba(239,83,80,.42)":"rgba(38,166,154,.42)";
+    ctx.fillStyle=hexa(base,.42);
     ctx.fillRect(x0,top,bwid,Math.min(h,13));
     ctx.fillStyle="#FFFFFF"; ctx.textAlign="left";
     if(bwid>28) ctx.fillText("%"+z.pct,x0+5,top+Math.min(h,13)/2);
     const ly=top+h/2;
     if(!usedY.some(function(y){return Math.abs(y-ly)<13;})){
       usedY.push(ly);
-      ctx.fillStyle=res?"#F98D8A":"#6EE7B7"; ctx.textAlign="right"; ctx.font="bold 10.5px sans-serif";
+      ctx.fillStyle=base; ctx.textAlign="right"; ctx.font="bold 10.5px sans-serif";
       ctx.fillText(z.label,S.plotW-6,ly);
     }
     ctx.font="10px sans-serif";
@@ -691,7 +822,7 @@ function drawRSI(p){
   ctx.save(); ctx.setLineDash([4,4]); ctx.strokeStyle="#3A404A"; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,yTop);ctx.lineTo(S.plotW,yTop);
   ctx.moveTo(0,yBot);ctx.lineTo(S.plotW,yBot); ctx.stroke(); ctx.restore();
-  lineSeries(p,"rsi",VIOLET,1.6);
+  lineSeries(p,"rsi",CC("rsi","c",VIOLET),1.6);
   drawDivPane(p,"rsi");
 }
 function drawMACD(p){
@@ -704,8 +835,8 @@ function drawMACD(p){
       const y=Y(p,v); ctx.fillRect(X(i+.5)-bwd/2,Math.min(y,y0),bwd,Math.max(1,Math.abs(y0-y))); } }
   ctx.save(); ctx.strokeStyle="#3A404A"; ctx.lineWidth=1; ctx.beginPath();
   ctx.moveTo(0,Math.round(Y(p,0))+0.5); ctx.lineTo(S.plotW,Math.round(Y(p,0))+0.5); ctx.stroke(); ctx.restore();
-  lineSeries(p,"macd",ACC,1.5);
-  lineSeries(p,"macd_sig",WARN,1.4);
+  lineSeries(p,"macd",CC("macd","c",ACC),1.5);
+  lineSeries(p,"macd_sig",CC("macd","cs",WARN),1.4);
   drawDivPane(p,"macd");
 }
 function drawWT(p){
@@ -722,8 +853,8 @@ function drawWT(p){
     for(let i=i1;i>=i0;i--){ const v=w2[i]; if(v==null)continue; ctx.lineTo(X(i+.5),Y(p,v)); }
     ctx.closePath(); ctx.fillStyle="rgba(91,140,255,.14)"; ctx.fill();
   }
-  lineSeries(p,"wt1","#22D3EE",1.5);
-  lineSeries(p,"wt2","#F5B544",1.3);
+  lineSeries(p,"wt1",CC("wt","c","#22D3EE"),1.5);
+  lineSeries(p,"wt2",CC("wt","cs","#F5B544"),1.3);
   if(w1&&w2){ const [i0,i1]=visRange();
     for(let i=Math.max(1,i0);i<=i1;i++){
       const a1=w1[i-1],b1=w2[i-1],a2=w1[i],b2=w2[i];
@@ -807,13 +938,28 @@ function updateLegend(){
   h+='<div class="r v" style="color:'+col+'">O '+fmtP(b.o)+'  Y '+fmtP(b.h)+'  D '+fmtP(b.l)+'  K '+fmtP(b.c)+
      '  <span>'+(ch>=0?"+":"−")+fmt(Math.abs(ch),S.dec)+" ("+pct(chp)+')</span></div>';
   if(c.sma&&c.sma.on){
-    const parts=(c.sma.ps||[]).map(function(n){ const s=S.ind["sma"+n], v=s?s[i]:null;
-      return '<span style="color:'+(SMACOL[n]||"#9AA4B2")+'">SMA'+n+" "+(v==null?"—":fmtP(v))+"</span>"; });
+    const parts=(c.sma.ps||[]).map(function(n,k){ const s=S.ind["sma"+n], v=s?s[i]:null;
+      return '<span style="color:'+smaColor(n,k)+'">SMA'+n+" "+(v==null?"—":fmtP(v))+"</span>"; });
     h+='<div class="r v">'+parts.join("  ")+"</div>";
   }
   if(c.nw&&c.nw.on){ const u=S.ind.nw_up,l=S.ind.nw_lo;
-    h+='<div class="r v" style="color:#C4B5FD">Nadaraya-Watson '+
+    h+='<div class="r v" style="color:'+CC("nw","c","#C4B5FD")+'">Nadaraya-Watson '+
        (u&&u[i]!=null?fmtP(l[i])+" – "+fmtP(u[i]):"—")+"</div>"; }
+  if(c.boll&&c.boll.on){ const u=S.ind.bb_up,l=S.ind.bb_lo;
+    h+='<div class="r v" style="color:'+CC("boll","c","#9AA4B2")+'">Bollinger '+(c.boll.n||20)+", "+
+       (c.boll.k||2)+"  "+(u&&u[i]!=null?fmtP(l[i])+" – "+fmtP(u[i]):"—")+"</div>"; }
+  const dirLine=function(key,dk,lbl,ck){
+    const s=S.ind[key]; if(!s) return "";
+    const v=s[i], dr=S.ind[dk], up=dr&&dr[i]!=null?dr[i]>0:true;
+    const col=up?CC(ck,"cu",UP):CC(ck,"cd",DOWN);
+    return '<span style="color:'+col+'">'+lbl+" "+(v==null?"—":fmtP(v))+
+           " "+(up?"▲":"▼")+"</span>";
+  };
+  const trendRow=[];
+  if(c.sup&&c.sup.on) trendRow.push(dirLine("sup","sup_dir","Supertrend","sup"));
+  if(c.vidya&&c.vidya.on) trendRow.push(dirLine("vid","vid_dir","VIDYA","vidya"));
+  if(c.vstop&&c.vstop.on) trendRow.push(dirLine("vstop","vstop_dir","Vol. Stop","vstop"));
+  if(trendRow.filter(Boolean).length) h+='<div class="r v">'+trendRow.filter(Boolean).join("  ")+"</div>";
   const extra=[];
   if(c.zones&&c.zones.on) extra.push("Ranked S/R · "+S.zones.length);
   if(c.div&&c.div.on) extra.push("Divergence "+(c.div.src||"rsi").toUpperCase()+" · "+S.divs.length);
@@ -998,22 +1144,24 @@ function geom(d){
   else if(t==="pricerange"&&B){
     const x0=Math.min(A.x,B.x),x1=Math.max(A.x,B.x),y0=Math.min(A.y,B.y),y1=Math.max(A.y,B.y);
     const dp=d.pts[1].p-d.pts[0].p, up=dp>=0;
-    g.rects.push({x:x0,y:y0,w:x1-x0,h:y1-y0,fill:up?"rgba(38,166,154,.12)":"rgba(239,83,80,.12)",
-      color:up?UP:DOWN});
+    g.rects.push({x:x0,y:y0,w:Math.max(1,x1-x0),h:Math.max(1,y1-y0),
+      fill:up?"rgba(38,166,154,.055)":"rgba(239,83,80,.055)",
+      color:up?hexa(UP,.75):hexa(DOWN,.75),lw:1.2,dash:[5,4]});
     g.texts.push({x:(x0+x1)/2,y:(y0+y1)/2,s:(dp>=0?"+":"−")+fmt(Math.abs(dp),S.dec)+
       "  ("+pct(d.pts[0].p?dp/d.pts[0].p*100:0)+")",color:up?UP:DOWN,align:"center",bg:true});
   }
   else if(t==="daterange"&&B){
     const x0=Math.min(A.x,B.x),x1=Math.max(A.x,B.x);
     const P=S.panes[0];
-    g.rects.push({x:x0,y:P.top+6,w:x1-x0,h:P.h-12,fill:"rgba(91,140,255,.10)",color:ACC});
+    g.rects.push({x:x0,y:P.top+6,w:Math.max(1,x1-x0),h:Math.max(1,P.h-12),
+      fill:"rgba(91,140,255,.05)",color:hexa(ACC,.7),lw:1.2,dash:[5,4]});
     g.texts.push({x:(x0+x1)/2,y:P.top+18,s:Math.abs(barsBetween(d))+" bar · "+
       Math.abs(daysBetween(d))+" gün",color:ACC,align:"center",bg:true});
   }
   else if(t==="forecast"&&C){
     g.lines.push({a:A,b:B,color:c,w:w});
     g.lines.push({a:B,b:C,color:c,w:w,dash:[6,4]});
-    g.polys.push({pts:[[B.x,B.y],[C.x,C.y],[C.x,B.y]],fill:hexa(c,.08)});
+    g.polys.push({pts:[[B.x,B.y],[C.x,C.y],[C.x,B.y]],fill:hexa(c,.045)});
     const dp=d.pts[2].p-d.pts[1].p;
     g.texts.push({x:C.x+6,y:C.y-10,s:(dp>=0?"▲":"▼")+" "+pct(d.pts[1].p?dp/d.pts[1].p*100:0)+
       " · "+Math.abs(Math.round(iOfT(d.pts[2].t)-iOfT(d.pts[1].t)))+" bar",color:dp>=0?UP:DOWN,bg:true});
@@ -1024,8 +1172,10 @@ function geom(d){
     const entry=d.pts[0].p, target=d.pts[1].p, stop=d.pts[2].p;
     const x0=A.x, x1=Math.max(A.x+40,q[2].x);
     const ye=Y(P,entry), yt=Y(P,target), ys=Y(P,stop);
-    g.rects.push({x:x0,y:Math.min(ye,yt),w:x1-x0,h:Math.abs(yt-ye),fill:"rgba(38,166,154,.14)",color:"rgba(38,166,154,.6)"});
-    g.rects.push({x:x0,y:Math.min(ye,ys),w:x1-x0,h:Math.abs(ys-ye),fill:"rgba(239,83,80,.14)",color:"rgba(239,83,80,.6)"});
+    g.rects.push({x:x0,y:Math.min(ye,yt),w:Math.max(1,x1-x0),h:Math.max(1,Math.abs(yt-ye)),
+      fill:"rgba(38,166,154,.07)",color:"rgba(38,166,154,.55)",lw:1.1});
+    g.rects.push({x:x0,y:Math.min(ye,ys),w:Math.max(1,x1-x0),h:Math.max(1,Math.abs(ys-ye)),
+      fill:"rgba(239,83,80,.07)",color:"rgba(239,83,80,.55)",lw:1.1});
     g.lines.push({a:{x:x0,y:ye},b:{x:x1,y:ye},color:ACC,w:1.4});
     const risk=Math.abs(entry-stop), rew=Math.abs(target-entry);
     const rr=risk?rew/risk:0;
@@ -1039,7 +1189,7 @@ function geom(d){
   }
   else if(t==="rect"&&B){
     const x0=Math.min(A.x,B.x),x1=Math.max(A.x,B.x),y0=Math.min(A.y,B.y),y1=Math.max(A.y,B.y);
-    g.rects.push({x:x0,y:y0,w:x1-x0,h:y1-y0,fill:hexa(c,.10),color:c,w:w});
+    g.rects.push({x:x0,y:y0,w:Math.max(1,x1-x0),h:Math.max(1,y1-y0),fill:hexa(c,.10),color:c,lw:w});
   }
   else if(t==="ellipse"&&B){
     g.ells.push({cx:(A.x+B.x)/2,cy:(A.y+B.y)/2,rx:Math.abs(B.x-A.x)/2,ry:Math.abs(B.y-A.y)/2,
@@ -1109,7 +1259,8 @@ function drawDrawings(){
     }
     for(const r of g.rects){
       if(r.fill){ ctx.fillStyle=r.fill; ctx.fillRect(r.x,r.y,r.w,r.h); }
-      if(r.color){ ctx.strokeStyle=r.color; ctx.lineWidth=r.w||1.2; ctx.strokeRect(r.x,r.y,r.w,r.h); }
+      if(r.color){ ctx.save(); ctx.setLineDash(r.dash||[]);
+        ctx.strokeStyle=r.color; ctx.lineWidth=r.lw||1.2; ctx.strokeRect(r.x,r.y,r.w,r.h); ctx.restore(); }
     }
     for(const e of g.ells){
       ctx.beginPath(); ctx.ellipse(e.cx,e.cy,Math.max(1,e.rx),Math.max(1,e.ry),0,0,Math.PI*2);
@@ -1131,7 +1282,7 @@ function drawDrawings(){
       if(tx.bg){
         const m=ctx.measureText(tx.s).width, pad=4;
         let x=tx.x-(tx.align==="center"?m/2:tx.align==="right"?m:0);
-        ctx.fillStyle="rgba(10,11,13,.78)";
+        ctx.fillStyle="rgba(10,11,13,.58)";
         ctx.fillRect(x-pad,tx.y-8,m+pad*2,16);
       }
       ctx.fillStyle=tx.color||TXT; ctx.fillText(tx.s,tx.x,tx.y);
@@ -1200,6 +1351,8 @@ function pos(e){
   return {x:e.clientX-r.left, y:e.clientY-r.top};
 }
 wrap.addEventListener("pointerdown",function(e){
+  // #ctl içindeki butonlar: pointer capture tıklamayı yutmasın (click #wrap'a kayıyordu)
+  if(e.target&&e.target.closest&&e.target.closest("#ctl")) return;
   pointers.set(e.pointerId,pos(e));
   try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
   const p=pos(e);
@@ -1266,12 +1419,11 @@ wrap.addEventListener("pointermove",function(e){
     clampView();
   }
   if(S.pend&&S.pend.pts.length){
-    const P=S.panes[0];
-    const need=TOOLS[S.pend.type].n;
+    const P=S.panes[0], py=clampPy(p.y);
     const prev=S.pend.pts.slice(0,S.pendFixed);
-    S.pend.pts=prev.concat([{t:tOfI(I(p.x)-.5),p:PR(P,p.y)}]);
-    if(S.pend.type==="brush"&&S.brushing){ S.pend.pts=prev.concat([{t:tOfI(I(p.x)-.5),p:PR(P,p.y)}]);
-      S.pend.pts=prev; S.pend.pts.push({t:tOfI(I(p.x)-.5),p:PR(P,p.y)}); S.pendFixed=S.pend.pts.length; }
+    S.pend.pts=prev.concat([{t:tOfI(I(p.x)-.5),p:PR(P,py)}]);
+    if(S.pend.type==="brush"&&S.brushing){
+      S.pend.pts=prev; S.pend.pts.push({t:tOfI(I(p.x)-.5),p:PR(P,py)}); S.pendFixed=S.pend.pts.length; }
   }
   draw();
 });
@@ -1298,14 +1450,21 @@ wrap.addEventListener("dblclick",function(e){
   const p=pos(e);
   if(p.x>S.plotW){ S.yAuto=true; S.yMan=null; draw(); return; }
   if(S.pend&&TOOLS[S.pend.type].n===-1){ commitPending(true); return; }
-  zoomAt(p.x,0.5);
+  // Shift / Alt ile çift tık: aynı noktadan uzaklaştır
+  zoomAt(p.x, (e.shiftKey||e.altKey) ? 1.9 : 0.5);
 });
-// tablet: çift dokunuşla yakınlaştır
+// sağ tık: o noktadan uzaklaştır (tarayıcı menüsü açılmaz)
+wrap.addEventListener("contextmenu",function(e){
+  e.preventDefault();
+  const p=pos(e);
+  if(p.x<=S.plotW) zoomAt(p.x,1.6);
+});
+// tablet: tek parmak çift dokunuş yakınlaştırır, iki parmak çift dokunuş uzaklaştırır
 wrap.addEventListener("touchend",function(e){
   const now=Date.now();
-  if(e.changedTouches.length===1&&now-lastTap<300&&!moved){
+  if(now-lastTap<320&&!moved){
     const r=cv.getBoundingClientRect(), x=e.changedTouches[0].clientX-r.left;
-    if(x<=S.plotW) zoomAt(x,0.55);
+    if(x<=S.plotW) zoomAt(x, e.changedTouches.length>=2?1.8:0.55);
   }
   lastTap=now;
 },{passive:true});
@@ -1321,10 +1480,12 @@ window.addEventListener("keydown",function(e){
   else if(e.key==="ArrowRight"){ const s=(S.view.b-S.view.a)*0.1; S.view.a+=s;S.view.b+=s;clampView();draw(); }
   else if(e.key==="+"||e.key==="="){ zoomAt(S.plotW/2,0.85); }
   else if(e.key==="-"){ zoomAt(S.plotW/2,1.18); }
+  else if(e.key==="f"||e.key==="F"){ toggleFull(); }
 });
 
 /* ---------------------------------------------------------------- araç akışı */
 function startTool(type){
+  hidePop();            // stil çubuğu bir sonraki tıklamayı engellemesin
   S.tool=type; S.sel=null;
   S.pend={id:uid(),type:type,pts:[],style:Object.assign({},DEFSTYLE)};
   S.pendFixed=0;
@@ -1334,8 +1495,13 @@ function startTool(type){
 }
 function cancelTool(){ S.tool=null; S.pend=null; S.pendFixed=0; S.brushing=false;
   hideHint(); renderTools(); draw(); }
+/* çizim noktaları fiyat panelinin dışına taşmasın (alt panele tıklayınca saçma fiyat çıkıyordu) */
+function clampPy(y){
+  const P=S.panes[0];
+  return clamp(y,P.top+1,P.top+P.h-1);
+}
 function addPoint(p){
-  const P=S.panes[0], t=TOOLS[S.tool], pt={t:tOfI(I(p.x)-.5),p:PR(P,p.y)};
+  const P=S.panes[0], t=TOOLS[S.tool], pt={t:tOfI(I(p.x)-.5),p:PR(P,clampPy(p.y))};
   if(t.n===-1){ S.brushing=true; S.pend.pts=[pt]; S.pendFixed=1; draw(); return; }
   S.pend.pts=S.pend.pts.slice(0,S.pendFixed);
   S.pend.pts.push(pt); S.pendFixed=S.pend.pts.length;
@@ -1351,6 +1517,7 @@ function commitPending(force){
   const d=S.pend; S.pend=null; S.pendFixed=0;
   S.draws.push(d); S.sel=d.id; S.tool=null; S.brushing=false;
   hideHint(); renderTools(); draw(); pushDraws();
+  showStyleBar(d);   // renk/kalınlık hemen seçilebilsin
 }
 
 /* ==================================================================================
@@ -1397,6 +1564,8 @@ function openToolMenu(g,anchor){
   showPop(p,anchor,"right");
 }
 function showPop(p,anchor,side){
+  markPop();
+  p.classList.remove("style");
   p.classList.add("show");
   const r=anchor.getBoundingClientRect();
   p.style.visibility="hidden";
@@ -1411,8 +1580,12 @@ function showPop(p,anchor,side){
   });
 }
 function hidePop(){ document.getElementById("pop").classList.remove("show"); }
+/* menüyü açan tıklamanın kendisi menüyü hemen kapatmasın */
+let popOpenedAt=0;
+function markPop(){ popOpenedAt=Date.now(); }
 document.addEventListener("click",function(e){
   const p=document.getElementById("pop");
+  if(Date.now()-popOpenedAt<260) return;
   if(p.classList.contains("show")&&!p.contains(e.target)) hidePop();
 });
 function showHint(s){ const h=document.getElementById("hint"); h.textContent=s; h.style.display="block"; }
@@ -1445,13 +1618,47 @@ document.getElementById("btnType").onclick=function(e){
 document.getElementById("btnUndo").onclick=undo;
 document.getElementById("btnRedo").onclick=redo;
 document.getElementById("btnFit").onclick=fitAll;
+function bigH(){ return Math.max(560,(window.screen&&window.screen.height||900)*0.82); }
 document.getElementById("btnBig").onclick=function(){
   S.big=!S.big;
-  setFrameHeight(S.big?Math.max(560,window.screen.height*0.82):S.height);
+  setFrameHeight(S.big?bigH():S.height);
   setTimeout(resize,60);
 };
+/* tam ekran: önce tarayıcının tam ekran API'si, izin yoksa paneli ekran boyuna büyüt */
+function fsOn(){ return !!(document.fullscreenElement||document.webkitFullscreenElement); }
+function toggleFull(){
+  const el0=document.documentElement;
+  if(fsOn()){
+    (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document);
+    return;
+  }
+  const req=el0.requestFullscreen||el0.webkitRequestFullscreen;
+  if(req){
+    try{
+      const r=req.call(el0);
+      if(r&&r.catch) r.catch(function(){ fullFallback(); });
+      return;
+    }catch(err){}
+  }
+  fullFallback();
+}
+function fullFallback(){
+  if(!S.big){ S.big=true; setFrameHeight(bigH()); setTimeout(resize,60); syncTop();
+    toast("Tarayıcı tam ekrana izin vermedi — panel büyütüldü"); }
+}
+document.getElementById("btnFull").onclick=toggleFull;
+document.addEventListener("fullscreenchange",function(){
+  document.getElementById("fullLbl").textContent=fsOn()?"Çık":"Tam ekran";
+  document.getElementById("btnFull").classList.toggle("on",fsOn());
+  if(fsOn()) setFrameHeight(Math.max(S.height,window.innerHeight));
+  else setFrameHeight(S.big?bigH():S.height);
+  setTimeout(resize,80);
+});
 document.getElementById("cbAuto").onclick=function(){ S.yAuto=true;S.yMan=null;syncTop();draw(); };
 document.getElementById("cbLog").onclick=function(){ S.yLog=!S.yLog;syncTop();draw(); };
+document.getElementById("cbIn").onclick=function(){ zoomAt(S.plotW/2,0.72); };
+document.getElementById("cbOut").onclick=function(){ zoomAt(S.plotW/2,1.38); };
+document.getElementById("cbReset").onclick=function(){ fitView(); draw(); syncTop(); };
 
 /* --------- diyalog altyapısı --------- */
 function openModal(html){
@@ -1469,44 +1676,106 @@ document.getElementById("mask").onclick=closeModal;
 /* --------- indikatör diyaloğu --------- */
 const IND_DEFS=[
  {k:"sma",n:"SMA (20 · 50 · 100 · 200)",d:"Basit hareketli ortalamalar — fiyat panelinde",
-  f:[{k:"ps",t:"list",l:"Periyotlar"}]},
+  g:"Trend",t:"sma simple moving average hareketli ortalama ma 20 50 100 200",
+  f:[{k:"ps",t:"list",l:"Periyotlar"},{k:"cols",t:"cols",l:"Renkler"}]},
+ {k:"boll",n:"Bollinger Bands",d:"Hareketli ortalama ± standart sapma bandı",
+  g:"Volatilite",t:"bollinger bands bant bb standart sapma volatilite",
+  f:[{k:"n",t:"num",l:"Periyot",min:2,max:200,step:1},
+     {k:"k",t:"num",l:"Standart sapma",min:0.5,max:5,step:0.1},
+     {k:"c",t:"col",l:"Renk"}]},
+ {k:"sup",n:"Supertrend",d:"ATR tabanlı trend takip çizgisi — yön değişince rengi değişir",
+  g:"Trend",t:"supertrend super trend atr takip",
+  f:[{k:"n",t:"num",l:"ATR periyodu",min:2,max:100,step:1},
+     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1},
+     {k:"cu",t:"col",l:"Yükseliş rengi"},{k:"cd",t:"col",l:"Düşüş rengi"}]},
+ {k:"vidya",n:"Volumatic VIDYA",d:"Chande değişken ortalaması + trend dönüşünde sabitlenen ATR bandı",
+  g:"Trend",t:"vidya volumatic variable index dynamic average chande cmo",
+  f:[{k:"len",t:"num",l:"VIDYA uzunluğu",min:2,max:100,step:1},
+     {k:"mom",t:"num",l:"Momentum (CMO)",min:2,max:200,step:1},
+     {k:"mult",t:"num",l:"Bant çarpanı",min:0.5,max:10,step:0.1},
+     {k:"cu",t:"col",l:"Yükseliş rengi"},{k:"cd",t:"col",l:"Düşüş rengi"}]},
+ {k:"vstop",n:"Volatility Stop",d:"ATR iz süren stop çizgisi — yön değişince taraf değiştirir",
+  g:"Volatilite",t:"volatility stop atr trailing iz suren chandelier",
+  f:[{k:"n",t:"num",l:"ATR periyodu",min:2,max:100,step:1},
+     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1},
+     {k:"cu",t:"col",l:"Long rengi"},{k:"cd",t:"col",l:"Short rengi"}]},
  {k:"nw",n:"Nadaraya-Watson Envelope",d:"Gauss çekirdekli tahminci + MAE bandı",
+  g:"Trend",t:"nadaraya watson envelope zarf gauss kernel regresyon",
   f:[{k:"h",t:"num",l:"Bant genişliği (h)",min:1,max:100,step:0.5},
-     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1}]},
+     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1},
+     {k:"c",t:"col",l:"Renk"}]},
  {k:"zones",n:"Ranked S/R Zones",d:"Pivot kümeleri; temas, hacim ve yakınlığa göre %100 üzerinden puan",
+  g:"Seviyeler",t:"ranked support resistance zones destek direnc bant seviye pivot",
   f:[{k:"lookback",t:"num",l:"Geriye bakış (bar)",min:60,max:1200,step:10},
      {k:"left",t:"num",l:"Pivot sol",min:2,max:30,step:1},
      {k:"right",t:"num",l:"Pivot sağ",min:2,max:30,step:1},
      {k:"merge",t:"num",l:"Birleştirme %",min:0.1,max:5,step:0.1},
-     {k:"max",t:"num",l:"En çok bant",min:2,max:20,step:1}]},
- {k:"vol",n:"Hacim",d:"Alt panelde hacim çubukları",f:[]},
+     {k:"max",t:"num",l:"En çok bant",min:2,max:20,step:1},
+     {k:"cs",t:"col",l:"Destek rengi"},{k:"cr",t:"col",l:"Direnç rengi"}]},
+ {k:"vol",n:"Hacim",d:"Alt panelde hacim çubukları",
+  g:"Hacim",t:"hacim volume bar",
+  f:[{k:"cu",t:"col",l:"Yükseliş rengi"},{k:"cd",t:"col",l:"Düşüş rengi"}]},
  {k:"rsi",n:"RSI",d:"Göreceli güç endeksi — alt panel",
+  g:"Momentum",t:"rsi relative strength index goreceli guc",
   f:[{k:"len",t:"num",l:"Periyot",min:2,max:100,step:1},
      {k:"ob",t:"num",l:"Aşırı alım",min:50,max:95,step:1},
-     {k:"os",t:"num",l:"Aşırı satım",min:5,max:50,step:1}]},
+     {k:"os",t:"num",l:"Aşırı satım",min:5,max:50,step:1},
+     {k:"c",t:"col",l:"Renk"}]},
+ {k:"stoch",n:"Stokastik",d:"%K / %D osilatörü — alt panel",
+  g:"Momentum",t:"stokastik stochastic stoch k d osilator",
+  f:[{k:"k",t:"num",l:"%K periyodu",min:2,max:100,step:1},
+     {k:"smooth",t:"num",l:"%K yumuşatma",min:1,max:20,step:1},
+     {k:"d",t:"num",l:"%D periyodu",min:1,max:50,step:1},
+     {k:"ob",t:"num",l:"Aşırı alım",min:50,max:95,step:1},
+     {k:"os",t:"num",l:"Aşırı satım",min:5,max:50,step:1},
+     {k:"c",t:"col",l:"%K rengi"},{k:"cs",t:"col",l:"%D rengi"}]},
  {k:"macd",n:"MACD",d:"Hızlı/yavaş EMA farkı + sinyal — alt panel",
+  g:"Momentum",t:"macd moving average convergence divergence sinyal histogram",
   f:[{k:"f",t:"num",l:"Hızlı",min:2,max:100,step:1},
      {k:"s",t:"num",l:"Yavaş",min:3,max:200,step:1},
-     {k:"sig",t:"num",l:"Sinyal",min:2,max:50,step:1}]},
+     {k:"sig",t:"num",l:"Sinyal",min:2,max:50,step:1},
+     {k:"c",t:"col",l:"MACD rengi"},{k:"cs",t:"col",l:"Sinyal rengi"}]},
  {k:"wt",n:"WaveTrend",d:"LazyBear WaveTrend osilatörü — alt panel",
+  g:"Momentum",t:"wavetrend wave trend lazybear osilator",
   f:[{k:"n1",t:"num",l:"Kanal uzunluğu",min:2,max:50,step:1},
      {k:"n2",t:"num",l:"Ortalama",min:2,max:100,step:1},
      {k:"ob",t:"num",l:"Aşırı alım",min:10,max:120,step:5},
-     {k:"os",t:"num",l:"Aşırı satım",min:-120,max:-10,step:5}]},
+     {k:"os",t:"num",l:"Aşırı satım",min:-120,max:-10,step:5},
+     {k:"c",t:"col",l:"WT1 rengi"},{k:"cs",t:"col",l:"WT2 rengi"}]},
+ {k:"atr",n:"ATR",d:"Ortalama gerçek aralık — oynaklık, alt panel",
+  g:"Volatilite",t:"atr average true range oynaklik volatilite",
+  f:[{k:"n",t:"num",l:"Periyot",min:2,max:100,step:1},{k:"c",t:"col",l:"Renk"}]},
  {k:"div",n:"Divergence",d:"Fiyat–osilatör uyumsuzlukları (klasik ve gizli)",
+  g:"Momentum",t:"divergence uyumsuzluk ayrisma gizli hidden",
   f:[{k:"src",t:"sel",l:"Kaynak",o:[["rsi","RSI"],["macd","MACD"],["wt","WaveTrend"]]},
      {k:"left",t:"num",l:"Pivot sol",min:1,max:20,step:1},
      {k:"right",t:"num",l:"Pivot sağ",min:1,max:20,step:1},
      {k:"hidden",t:"bool",l:"Gizli uyumsuzluklar"}]}
 ];
+function indFilter(q){
+  const s=String(q||"").toLowerCase().trim();
+  let shown=0;
+  document.querySelectorAll("#indBody .card").forEach(function(card){
+    const hit=!s||(card.getAttribute("data-s")||"").indexOf(s)>=0;
+    card.style.display=hit?"":"none";
+    if(hit) shown++;
+  });
+  const e=document.getElementById("indEmpty");
+  if(e) e.style.display=shown?"none":"block";
+}
 document.getElementById("btnInd").onclick=function(){
   let h='<div class="mh"><b>Indicators</b><span class="muted">gerçek fiyat verisiyle hesaplanır</span>'+
-        '<button class="x">✕</button></div><div class="mb" id="indBody">';
+        '<button class="x">✕</button></div><div class="mb">'+
+        '<div class="srch"><span style="color:#6B7383">🔍</span>'+
+        '<input type="text" id="indSearch" placeholder="İndikatör ara — supertrend, rsi, bollinger…" '+
+        'autocomplete="off"></div><div id="indBody" style="display:flex;flex-direction:column;gap:10px">';
   for(const d of IND_DEFS){
     const c=S.cfg[d.k]||{};
-    h+='<div class="card"><div class="ch"><span class="sw'+(c.on?" on":"")+'" data-sw="'+d.k+'"><i></i></span>'+
-       "<b>"+esc(d.n)+"</b></div>"+'<div class="muted" style="margin-bottom:'+(d.f.length?"8px":"0")+'">'+
-       esc(d.d)+"</div>";
+    const key=(d.n+" "+d.d+" "+(d.t||"")+" "+(d.g||"")+" "+d.k).toLowerCase();
+    h+='<div class="card" data-s="'+esc(key)+'"><div class="ch"><span class="sw'+(c.on?" on":"")+
+       '" data-sw="'+d.k+'"><i></i></span>'+"<b>"+esc(d.n)+"</b>"+
+       (d.g?'<span class="tag" style="color:#8D96A5;background:#1A1D23;margin-left:auto">'+esc(d.g)+"</span>":"")+
+       "</div>"+'<div class="muted" style="margin-bottom:'+(d.f.length?"8px":"0")+'">'+esc(d.d)+"</div>";
     for(const f of d.f){
       const v=c[f.k];
       h+='<div class="row"><span class="lbl">'+esc(f.l)+"</span>";
@@ -1514,6 +1783,14 @@ document.getElementById("btnInd").onclick=function(){
         (v==null?"":v)+'" min="'+f.min+'" max="'+f.max+'" step="'+f.step+'">';
       else if(f.t==="list") h+='<input type="text" data-k="'+d.k+'" data-f="'+f.k+
         '" value="'+((v||[]).join(", "))+'" style="width:190px">';
+      else if(f.t==="col") h+='<input type="color" data-kc="'+d.k+'" data-f="'+f.k+'" value="'+
+        esc(v||"#5B8CFF")+'">';
+      else if(f.t==="cols"){
+        h+='<span style="display:flex;gap:5px;flex-wrap:wrap">';
+        for(let q=0;q<6;q++) h+='<input type="color" data-kl="'+d.k+'" data-f="'+f.k+'" data-i="'+q+
+          '" value="'+esc((v||[])[q]||"#5B8CFF")+'">';
+        h+="</span>";
+      }
       else if(f.t==="sel"){ h+='<select data-k="'+d.k+'" data-f="'+f.k+'">'+
         f.o.map(function(o){return '<option value="'+o[0]+'"'+(v===o[0]?" selected":"")+">"+o[1]+"</option>";}).join("")+
         "</select>"; }
@@ -1522,16 +1799,25 @@ document.getElementById("btnInd").onclick=function(){
     }
     h+="</div>";
   }
-  h+='</div><div class="mf"><button class="btn" id="indCancel">Vazgeç</button>'+
+  h+='</div><div class="muted" id="indEmpty" style="display:none;padding:10px 2px">Eşleşen indikatör yok.</div>'+
+     '</div><div class="mf"><button class="btn" id="indNone">Hepsini kapat</button>'+
+     '<button class="btn" id="indCancel">Vazgeç</button>'+
      '<button class="btn pri" id="indApply">Uygula</button></div>';
   openModal(h);
   const m=document.getElementById("modal");
+  const sb=document.getElementById("indSearch");
+  sb.oninput=function(){ indFilter(sb.value); };
+  sb.onkeydown=function(e){ if(e.key==="Escape"){ sb.value=""; indFilter(""); e.stopPropagation(); } };
+  setTimeout(function(){ try{ sb.focus(); }catch(err){} },60);
   m.querySelectorAll("[data-sw]").forEach(function(s){
     s.onclick=function(){ s.classList.toggle("on"); };
   });
   m.querySelectorAll("[data-sw2]").forEach(function(s){
     s.onclick=function(){ s.classList.toggle("on"); };
   });
+  document.getElementById("indNone").onclick=function(){
+    m.querySelectorAll("[data-sw]").forEach(function(s){ s.classList.remove("on"); });
+  };
   document.getElementById("indCancel").onclick=closeModal;
   document.getElementById("indApply").onclick=function(){
     const cfg=JSON.parse(JSON.stringify(S.cfg));
@@ -1549,6 +1835,13 @@ document.getElementById("btnInd").onclick=function(){
       else cfg[k][f]=inp.value.split(/[,\s]+/).map(function(x){return parseInt(x,10);})
         .filter(function(x){return x>0&&x<1000;}).slice(0,6);
     });
+    m.querySelectorAll("input[data-kc]").forEach(function(inp){
+      const k=inp.getAttribute("data-kc"); cfg[k]=cfg[k]||{};
+      cfg[k][inp.getAttribute("data-f")]=inp.value; });
+    m.querySelectorAll("input[data-kl]").forEach(function(inp){
+      const k=inp.getAttribute("data-kl"), f=inp.getAttribute("data-f");
+      cfg[k]=cfg[k]||{}; cfg[k][f]=(cfg[k][f]||[]).slice();
+      cfg[k][f][parseInt(inp.getAttribute("data-i"),10)]=inp.value; });
     S.cfg=cfg; buildPanes(); closeModal(); draw();
     send("cfg",{cfg:cfg});
     toast("İndikatörler güncelleniyor…");
@@ -1602,29 +1895,65 @@ function renderAlerts(){
     box.appendChild(r);
   });
 }
-/* --------- seçili çizim stil çubuğu --------- */
+/* --------- seçili çizim stil çubuğu — renk paleti, kalınlık, çizgi tipi --------- */
+const PALETTE=["#5B8CFF","#22D3EE","#26A69A","#9CCC65","#F5B544","#FF9800",
+               "#EF5350","#F472B6","#C4B5FD","#ECEEF1","#8D96A5","#111317"];
 function showStyleBar(d){
-  const p=document.getElementById("pop"); p.innerHTML="";
-  p.appendChild(el("div","h",TOOLS[d.type].name));
-  const row=el("div","it");
-  row.style.cursor="default";
-  row.innerHTML='<input type="color" value="'+(d.style.c||"#5B8CFF")+'" id="stC">'+
-    '<select id="stW" style="width:70px"><option value="1">ince</option>'+
+  const p=document.getElementById("pop"); p.innerHTML=""; p.classList.add("style");
+  p.appendChild(el("div","h",TOOLS[d.type]?TOOLS[d.type].name:"Çizim"));
+  const cur=d.style.c||DEFSTYLE.c;
+  const grid=el("div","swgrid");
+  PALETTE.forEach(function(col){
+    const b=el("button","swt"+(col.toLowerCase()===String(cur).toLowerCase()?" on":""));
+    b.style.background=col; b.title=col;
+    b.onclick=function(){ d.style.c=col; draw(); pushDraws(); showStyleBar(d); };
+    grid.appendChild(b);
+  });
+  p.appendChild(grid);
+  const row=el("div","it"); row.style.cursor="default";
+  row.innerHTML='<span class="ic">🎨</span><input type="color" value="'+esc(cur)+'" id="stC" title="Özel renk">'+
+    '<select id="stW" style="width:68px"><option value="1">ince</option>'+
     '<option value="1.6">orta</option><option value="2.6">kalın</option></select>'+
-    '<select id="stD" style="width:84px"><option value="0">düz</option><option value="1">kesik</option></select>';
+    '<select id="stD" style="width:80px"><option value="0">düz</option><option value="1">kesik</option></select>';
   p.appendChild(row);
+  const front=el("div","it"); front.innerHTML='<span class="ic">⬆</span>Öne getir';
+  front.onclick=function(){ pushUndo(); S.draws=S.draws.filter(function(x){return x.id!==d.id;});
+    S.draws.push(d); draw(); pushDraws(); };
+  p.appendChild(front);
+  const dup=el("div","it"); dup.innerHTML='<span class="ic">⧉</span>Kopyala';
+  dup.onclick=function(){ pushUndo();
+    const n=JSON.parse(JSON.stringify(d)); n.id=uid();
+    const sh=(S.view.b-S.view.a)*0.04;
+    n.pts=n.pts.map(function(q){ return {t:tOfI(iOfT(q.t)+sh),p:q.p}; });
+    S.draws.push(n); S.sel=n.id; draw(); pushDraws(); showStyleBar(n); };
+  p.appendChild(dup);
   const del=el("div","it"); del.innerHTML='<span class="ic">🗑</span>Sil';
   del.onclick=function(){ pushUndo(); S.draws=S.draws.filter(function(x){return x.id!==d.id;});
     S.sel=null; hidePop(); draw(); pushDraws(); };
   p.appendChild(del);
-  const wrapEl=document.getElementById("wrap");
-  const r=wrapEl.getBoundingClientRect();
-  p.classList.add("show");
-  p.style.left=(r.left+12)+"px"; p.style.top=(r.top+44)+"px";
+  // çizimin yanına yerleştir, ekran dışına taşma
+  const r=document.getElementById("wrap").getBoundingClientRect();
+  markPop();
+  p.classList.add("show"); p.style.visibility="hidden";
+  requestAnimationFrame(function(){
+    const q=scrPts(d);
+    let ax=r.left+12, ay=r.top+44;
+    if(q.length){
+      const xs=q.map(function(z){return z.x;}), ys=q.map(function(z){return z.y;});
+      ax=r.left+Math.max.apply(null,xs)+14;
+      ay=r.top+Math.min.apply(null,ys);
+    }
+    const pr=p.getBoundingClientRect();
+    if(ax+pr.width>window.innerWidth-8) ax=Math.max(8,r.left+Math.min.apply(null,
+      (q.length?q.map(function(z){return z.x;}):[0]))-pr.width-14);
+    ay=Math.min(ay,Math.max(8,window.innerHeight-pr.height-8));
+    p.style.left=Math.max(6,ax)+"px"; p.style.top=Math.max(6,ay)+"px";
+    p.style.visibility="visible";
+  });
   const c=document.getElementById("stC"), w=document.getElementById("stW"), ds=document.getElementById("stD");
   w.value=String(d.style.w||1.6); ds.value=String(d.style.dash?1:0);
   c.oninput=function(){ d.style.c=c.value; draw(); };
-  c.onchange=function(){ pushDraws(); };
+  c.onchange=function(){ pushDraws(); showStyleBar(d); };
   w.onchange=function(){ d.style.w=parseFloat(w.value); draw(); pushDraws(); };
   ds.onchange=function(){ d.style.dash=parseInt(ds.value,10); draw(); pushDraws(); };
 }
