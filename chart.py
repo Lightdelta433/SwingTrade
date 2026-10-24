@@ -17,6 +17,7 @@ aynı yerde olması gerekir.
 
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -26,27 +27,45 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "3.0"
+CHART_VERSION = "3.1"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
 # Zaman aralığı → (yfinance periyodu, mum aralığı, gösterilecek gün)  ya da None = günlük
-INTRA = {"1G": ("5d", "5m", 1), "1H": ("1mo", "30m", 7)}
-TF_BARS = {"1G": 10, "1H": 22, "1A": 22, "3A": 66, "1Y": 252, "5Y": 1260}
+# "4S" saatlik barlardan gün içinde 4'erli toplanır, "Hf" günlükten haftalığa çevrilir.
+INTRA = {"1G": ("5d", "5m", 1), "1H": ("1mo", "30m", 7), "4S": ("6mo", "1h", 45)}
+TF_BARS = {"1G": 10, "1H": 22, "4S": 70, "1A": 22, "3A": 66, "1Y": 252, "5Y": 1260, "Hf": 160}
+AGG4 = "4S"       # saatlik → 4 saatlik
+WEEKLY = "Hf"     # günlük → haftalık
 
 # İndikatör varsayılanları — TradingView standartları, arayüzden değiştirilebilir
 DEFAULT_CFG = {
-    "sma": {"on": True, "ps": [20, 50, 100, 200]},
-    "nw": {"on": False, "h": 8.0, "mult": 3.0},
-    "zones": {"on": True, "lookback": 300, "left": 8, "right": 8, "merge": 0.6, "max": 8},
-    "vol": {"on": True},
-    "rsi": {"on": True, "len": 14, "ob": 70, "os": 30},
-    "macd": {"on": False, "f": 12, "s": 26, "sig": 9},
-    "wt": {"on": False, "n1": 10, "n2": 21, "ob": 60, "os": -60},
+    "sma": {"on": True, "ps": [20, 50, 100, 200],
+            "cols": ["#5B8CFF", "#F5B544", "#C4B5FD", "#EF5350", "#22D3EE", "#F472B6"]},
+    "nw": {"on": False, "h": 8.0, "mult": 3.0, "c": "#22D3EE"},
+    "boll": {"on": False, "n": 20, "k": 2.0, "c": "#9AA4B2"},
+    "sup": {"on": False, "n": 10, "mult": 3.0, "cu": "#26A69A", "cd": "#EF5350"},
+    "vidya": {"on": False, "len": 10, "mom": 20, "mult": 2.0, "cu": "#26A69A", "cd": "#EF5350"},
+    "vstop": {"on": False, "n": 20, "mult": 2.0, "cu": "#26A69A", "cd": "#EF5350"},
+    "zones": {"on": True, "lookback": 300, "left": 8, "right": 8, "merge": 0.6, "max": 8,
+              "cs": "#26A69A", "cr": "#EF5350"},
+    "vol": {"on": True, "cu": "#26A69A", "cd": "#EF5350"},
+    "rsi": {"on": True, "len": 14, "ob": 70, "os": 30, "c": "#C4B5FD"},
+    "macd": {"on": False, "f": 12, "s": 26, "sig": 9, "c": "#5B8CFF", "cs": "#F5B544"},
+    "wt": {"on": False, "n1": 10, "n2": 21, "ob": 60, "os": -60, "c": "#22D3EE", "cs": "#F5B544"},
+    "stoch": {"on": False, "k": 14, "d": 3, "smooth": 3, "ob": 80, "os": 20,
+              "c": "#5B8CFF", "cs": "#F5B544"},
+    "atr": {"on": False, "n": 14, "c": "#F5B544"},
     "div": {"on": False, "src": "rsi", "left": 5, "right": 5, "hidden": True},
 }
 CONDS = {"cross": "keserse", "above": "üstüne çıkarsa", "below": "altına inerse",
          "cross_up": "yukarı keserse", "cross_dn": "aşağı keserse"}
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _color(v, fallback):
+    v = str(v or "")
+    return v if _HEX.match(v) else fallback
 
 
 def merge_cfg(user):
@@ -63,6 +82,13 @@ def merge_cfg(user):
                     v = [int(x) for x in v if 1 < int(x) < 1000][:6] or d["ps"]
                 except (TypeError, ValueError):
                     v = d["ps"]
+            elif f == "cols":
+                try:
+                    v = [_color(x, d["cols"][i % len(d["cols"])]) for i, x in enumerate(list(v)[:6])] or d["cols"]
+                except TypeError:
+                    v = d["cols"]
+            elif isinstance(d[f], str) and d[f].startswith("#"):
+                v = _color(v, d[f])
             elif isinstance(d[f], bool):
                 v = bool(v)
             elif isinstance(d[f], (int, float)):
@@ -80,18 +106,65 @@ def merge_cfg(user):
     out["zones"]["lookback"] = int(min(1200, max(60, out["zones"]["lookback"])))
     out["zones"]["max"] = int(min(20, max(2, out["zones"]["max"])))
     out["nw"]["h"] = float(min(100.0, max(1.0, out["nw"]["h"])))
+    out["boll"]["n"] = int(min(200, max(2, out["boll"]["n"])))
+    out["stoch"]["k"] = int(min(100, max(2, out["stoch"]["k"])))
+    out["atr"]["n"] = int(min(100, max(2, out["atr"]["n"])))
+    out["sup"]["n"] = int(min(100, max(2, out["sup"]["n"])))
+    out["vstop"]["n"] = int(min(100, max(2, out["vstop"]["n"])))
+    out["vidya"]["len"] = int(min(100, max(2, out["vidya"]["len"])))
+    out["vidya"]["mom"] = int(min(200, max(2, out["vidya"]["mom"])))
+    return out
+
+
+_OHLC_AGG = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+
+
+def _to_4h(df, k=4):
+    """Saatlik barları gün içinde k'şarlı gruplayıp 4 saatlik mum üretir (TradingView gibi
+    seans başından sayar; yarım kalan son grup kendi mumu olur)."""
+    if df is None or df.empty:
+        return df
+    idx = pd.DatetimeIndex(df.index)
+    day = idx.normalize().to_numpy()
+    gid = np.zeros(len(df), dtype=np.int64)
+    g, cnt = 0, 0
+    for i in range(len(df)):
+        if i and (day[i] != day[i - 1] or cnt >= k):
+            g += 1
+            cnt = 0
+        gid[i] = g
+        cnt += 1
+    out = df.groupby(gid).agg(**{c: (c, f) for c, f in _OHLC_AGG.items()})
+    out.index = pd.DatetimeIndex(idx[np.searchsorted(gid, out.index.to_numpy())], name="Date")
+    out.attrs["src"] = df.attrs.get("src", "real")
+    return out
+
+
+def _to_weekly(df):
+    """Günlük barları haftalığa çevirir (hafta kapanışı etiketi)."""
+    if df is None or df.empty:
+        return df
+    out = df.resample("W-FRI").agg(_OHLC_AGG).dropna(subset=["Close"])
+    out.attrs["src"] = df.attrs.get("src", "real")
     return out
 
 
 def chart_data(sym, tf):
-    """(veri, gösterilecek mum sayısı, gün içi mi). 1G/1H gün içi mumlarla çizilir."""
+    """(veri, gösterilecek mum sayısı, gün içi mi). 1G/1H/4S gün içi mumlarla çizilir."""
     if tf in INTRA:
         period, interval, days = INTRA[tf]
         full = md.get_intraday(sym, period, interval)
         if len(full) > 10:
+            if tf == AGG4:
+                full = _to_4h(full)
+                return full, min(len(full), TF_BARS[AGG4]), True
             cutoff = full.index[-1] - pd.Timedelta(days=days)
             return full, max(2, int((full.index > cutoff).sum())), True
-    return md.get_history(sym), TF_BARS.get(tf, 22), False
+    daily = md.get_history(sym)
+    if tf == WEEKLY and not daily.empty:
+        wk = _to_weekly(daily)
+        return wk, min(len(wk), TF_BARS[WEEKLY]), False
+    return daily, TF_BARS.get(tf, 22), False
 
 
 def _ser(s, dec=6):
@@ -123,6 +196,26 @@ def build_payload(sym, tf, cfg_json, data_token, max_bars=900):
     if cfg["nw"]["on"]:
         up, lo, mid = en.nadaraya_watson(df["Close"], cfg["nw"]["h"], cfg["nw"]["mult"])
         ind["nw_up"], ind["nw_lo"], ind["nw_mid"] = _ser(up), _ser(lo), _ser(mid)
+    if cfg["boll"]["on"]:
+        bu, bm, bl = en.bollinger(full["Close"], cfg["boll"]["n"], cfg["boll"]["k"])
+        ind["bb_up"], ind["bb_mid"], ind["bb_lo"] = _ser(bu.tail(keep)), _ser(bm.tail(keep)), _ser(bl.tail(keep))
+    if cfg["sup"]["on"]:
+        sl, sd = en.supertrend(full, cfg["sup"]["n"], cfg["sup"]["mult"])
+        ind["sup"], ind["sup_dir"] = _ser(sl.tail(keep)), _ser(sd.tail(keep), 0)
+    if cfg["vidya"]["on"]:
+        vv, vu, vl, vd, flips = en.vidya(full, cfg["vidya"]["len"], cfg["vidya"]["mom"], cfg["vidya"]["mult"])
+        ind["vid"], ind["vid_up"], ind["vid_lo"] = _ser(vv.tail(keep)), _ser(vu.tail(keep)), _ser(vl.tail(keep))
+        ind["vid_dir"] = _ser(vd.tail(keep), 0)
+        off = len(full) - keep
+        ind["vid_flips"] = [[f["i"] - off, f["dir"], round(f["p"], 6)] for f in flips if f["i"] >= off]
+    if cfg["vstop"]["on"]:
+        vs, vsd = en.volatility_stop(full, cfg["vstop"]["n"], cfg["vstop"]["mult"])
+        ind["vstop"], ind["vstop_dir"] = _ser(vs.tail(keep)), _ser(vsd.tail(keep), 0)
+    if cfg["stoch"]["on"]:
+        sk, sd2 = en.stoch(full, cfg["stoch"]["k"], cfg["stoch"]["d"], cfg["stoch"]["smooth"])
+        ind["stoch_k"], ind["stoch_d"] = _ser(sk.tail(keep)), _ser(sd2.tail(keep))
+    if cfg["atr"]["on"]:
+        ind["atr"] = _ser(en.atr(full, cfg["atr"]["n"]).tail(keep))
     rsi = macd_line = wt1 = None
     if cfg["rsi"]["on"] or (cfg["div"]["on"] and cfg["div"]["src"] == "rsi"):
         rsi = en.rsi(full["Close"], cfg["rsi"]["len"]).tail(keep)
