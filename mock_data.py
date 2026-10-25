@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.2"
+DATA_VERSION = "3.3"
 
 try:
     import yfinance as yf
@@ -268,7 +268,7 @@ _FX_LIST = [
     ("XAU/USD", "GC=F", "Altın / ABD Doları", "Metal", 4128.40, 2),
     ("XAG/USD", "SI=F", "Gümüş / ABD Doları", "Metal", 49.880, 3),
 ]
-FX_CATEGORIES = ["Tümü", "Majör", "Çapraz", "Egzotik", "Metal"]
+FX_CATEGORIES = ["Tümü", "Majör", "Çapraz", "Egzotik", "Metal", "Makro"]
 
 _MACRO = [
     ("Dolar Endeksi", "DXY", "DX-Y.NYB", 98.42, 2),
@@ -813,44 +813,21 @@ def _parse_news_item(it, ticker=None):
             "link": link, "thumb": thumb, "summary": summary, "related": related, "src": "real"}
 
 
-_NEWS_TEMPLATES = [
-    ("{name} için analistler fiyat hedefini yükseltti", "Reuters", "Yükseliş"),
-    ("{name} çeyreklik kazançları piyasa beklentilerini aştı", "Bloomberg", "Yükseliş"),
-    ("{name} hissesinde kâr realizasyonu satışı görüldü", "MarketWatch", "Düşüş"),
-    ("{name}, tedarik zinciri maliyetleri konusunda uyardı", "CNBC", "Düşüş"),
-    ("{name} CEO'su büyüme stratejisini yatırımcılara anlattı", "Yahoo Finance", "Nötr"),
-    ("{name} hisse geri alım programını genişletti", "Reuters", "Yükseliş"),
-]
-
-
-def _mock_company_news(t, n=6):
-    rng = np.random.default_rng(_seed(t) + 555)
-    name = company_name(t)
-    idxs = rng.choice(len(_NEWS_TEMPLATES), size=min(n, len(_NEWS_TEMPLATES)), replace=False)
-    hrs = sorted(int(h) for h in rng.integers(1, 96, size=len(idxs)))
-    out = []
-    for i, h in zip(idxs, hrs):
-        tt, src, sent = _NEWS_TEMPLATES[i]
-        out.append({"ticker": t, "title": tt.format(name=name) + " (örnek)", "source": src,
-                    "when": f"{h} sa önce" if h < 24 else f"{h // 24} gün önce",
-                    "when_short": f"{h} sa" if h < 24 else f"{h // 24} g", "age_min": h * 60,
-                    "hours_ago": h, "sentiment": sent, "link": None, "thumb": None, "summary": "",
-                    "related": [t], "src": "mock"})
-    return out
-
-
-@_ttl_cache(900, fail_ttl=120)
+@_ttl_cache(900, fail_ttl=180)
 def get_company_news(t, n=6):
+    """Yalnızca gerçek kaynaklar: yfinance → Yahoo RSS → Google News RSS."""
+    items = []
     if _HAS_YF:
         try:
             raw = yf.Ticker(t).news or []
-            parsed = [p for p in (_parse_news_item(x, t) for x in raw) if p]
-            if parsed:
-                parsed.sort(key=lambda x: x["age_min"])
-                return parsed[:n]
+            items = [p for p in (_parse_news_item(x, t) for x in raw) if p]
         except Exception:
-            pass
-    return _mock_company_news(t, n) if t in KNOWN else []
+            items = []
+    if len(items) < n:
+        items = items + _yahoo_rss(t, n * 2)
+    if len(items) < n:
+        items = items + _google_rss(f'"{company_name(t)}" OR {t} stock', n * 2, t)
+    return _dedupe_news(items, n)
 
 
 def get_watchlist_news(tickers, per_ticker=3, max_tickers=5):
@@ -866,15 +843,19 @@ def get_watchlist_news(tickers, per_ticker=3, max_tickers=5):
     return uniq
 
 
-@_ttl_cache(900, fail_ttl=120)
+@_ttl_cache(900, fail_ttl=180)
 def _search_news(query, n=10):
-    if not _HAS_YF:
-        return []
-    try:
-        raw = yf.Search(query, max_results=1, news_count=n).news or []
-    except Exception:
-        return []
-    return [p for p in (_parse_news_item(x) for x in raw) if p]
+    """Konu bazlı haber: yfinance araması → Google News RSS."""
+    out = []
+    if _HAS_YF:
+        try:
+            raw = yf.Search(query, max_results=1, news_count=n).news or []
+            out = [p for p in (_parse_news_item(x) for x in raw) if p]
+        except Exception:
+            out = []
+    if len(out) < max(3, n // 2):
+        out = out + _google_rss(query, n)
+    return out
 
 
 NEWS_CATEGORIES = ["Tümü", "Forex", "Merkez Bankaları", "Emtia", "Türkiye"]
@@ -885,32 +866,6 @@ _YF2PAIR = {"EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY",
             "USDTRY=X": "USD/TRY", "TRY=X": "USD/TRY", "GC=F": "XAU/USD", "SI=F": "XAG/USD",
             "CL=F": "WTI", "BZ=F": "UKOIL", "DX-Y.NYB": "DXY", "BTC-USD": "BTC/USD"}
 _CAT_SYM = {"Forex": "EURUSD=X", "Merkez Bankaları": "DX-Y.NYB", "Emtia": "GC=F", "Türkiye": "USDTRY=X"}
-
-_FX_NEWS_MOCK = [
-    ("Dolar endeksi istihdam verisi öncesi geriliyor", "DXY", "Düşüş", "Forex", 32),
-    ("BoJ yetkilileri yendeki hızlı hareketlere karşı uyardı", "USD/JPY", "Düşüş", "Merkez Bankaları", 47),
-    ("Altın güvenli liman talebiyle zirveyi yeniden test ediyor", "XAU/USD", "Yükseliş", "Emtia", 60),
-    ("TCMB kararı öncesi TL'de oynaklık beklentisi arttı", "USD/TRY", "Nötr", "Türkiye", 120),
-    ("Sterlin zayıf hizmet PMI verisi sonrası baskı altında", "GBP/USD", "Düşüş", "Forex", 240),
-    ("Euro Bölgesi PMI beklentiyi aştı, euro toparlandı", "EUR/USD", "Yükseliş", "Forex", 360),
-]
-
-
-def _mock_forex_news(category):
-    items = []
-    for title, pair, sent, cat, mins in _FX_NEWS_MOCK:
-        if category != "Tümü" and cat != category:
-            continue
-        rng = np.random.default_rng(_seed(title))
-        items.append({"title": title + " (örnek)", "pair": pair, "sentiment": sent, "category": cat,
-                      "when": f"{mins} dk" if mins < 60 else f"{mins // 60} sa", "source": "örnek",
-                      "spark": (100 * np.cumprod(1 + rng.normal(0, 0.012, 24))).tolist(), "link": None})
-    feat = {"title": "ECB toplantısı öncesi euro dar bantta (örnek)",
-            "summary": "Gerçek haber kaynağına ulaşılamadığı için örnek içerik gösteriliyor.",
-            "category": "Merkez Bankaları", "sentiment": "Nötr", "source": "örnek", "when": "—",
-            "tags": ["EUR/USD", "DXY"], "link": None, "thumb": None}
-    return {"featured": feat, "items": items, "src": "mock"}
-
 
 @_ttl_cache(900, fail_ttl=120)
 def get_forex_news(category="Tümü"):
@@ -929,7 +884,7 @@ def get_forex_news(category="Tümü"):
             seen.add(k)
             uniq.append(p)
     if not uniq:
-        return _mock_forex_news(category)
+        return {"featured": None, "items": [], "src": "none"}
     for p in uniq:
         sym = next((r for r in p.get("related", []) if r in _YF2PAIR), None) or _CAT_SYM.get(p["category"])
         p["pair"], p["spark_sym"] = _YF2PAIR.get(sym, sym or p["category"]), sym
@@ -1069,25 +1024,47 @@ def get_macro_strip():
         qq = q.get(sym) or {"last": base, "change_pct": 0.0, "src": "none"}
         out.append({"name": name, "code": code, "symbol": sym, "value": qq["last"],
                     "change_pct": qq["change_pct"], "series": _series_or_synth(hist, sym), "dec": dec,
-                    "src": qq["src"]})
+                    "src": qq["src"], "pair": fx_pair_for_symbol(sym) or code})
     return out
 
 
+# Makro şeritte görünen ama parite listesinde olmayan semboller — grafikte açılabilsin diye
+_FX_EXTRA = [
+    ("DXY", "DX-Y.NYB", "ABD Dolar Endeksi", "Makro", 98.42, 2),
+    ("US10Y", "^TNX", "ABD 10 Yıllık Tahvil Faizi", "Makro", 4.38, 3),
+    ("UKOIL", "BZ=F", "Brent Petrol (vadeli)", "Makro", 64.85, 2),
+    ("BTC/USD", "BTC-USD", "Bitcoin / ABD Doları", "Makro", 108420.0, 0),
+]
+
+
+def fx_all():
+    return _FX_LIST + _FX_EXTRA
+
+
+def fx_pairs():
+    return [p for p, *_ in fx_all()]
+
+
+def fx_pair_for_symbol(sym):
+    """yfinance sembolünden parite kodu (önce ana listeye bakar)."""
+    return next((p for p, s, *_ in fx_all() if s == sym), None)
+
+
 def fx_symbol(pair):
-    return next((sym for p, sym, *_ in _FX_LIST if p == pair), "EURUSD=X")
+    return next((sym for p, sym, *_ in fx_all() if p == pair), "EURUSD=X")
 
 
 def fx_meta(pair):
-    for p, sym, n, c, b, d in _FX_LIST:
+    for p, sym, n, c, b, d in fx_all():
         if p == pair:
             return {"pair": p, "symbol": sym, "name": n, "category": c, "base": b, "dec": d}
     return {"pair": pair, "symbol": "EURUSD=X", "name": "", "category": "Majör", "base": 1.0, "dec": 5}
 
 
 def get_fx_list(category="Tümü"):
-    q = get_quotes(tuple(sorted(sym for _, sym, *_ in _FX_LIST)))
+    q = get_quotes(tuple(sorted(sym for _, sym, *_ in fx_all())))
     out = []
-    for p, sym, name, cat, base, dec in _FX_LIST:
+    for p, sym, name, cat, base, dec in fx_all():
         if category != "Tümü" and cat != category:
             continue
         qq = q.get(sym) or {"last": base, "change_pct": 0.0, "src": "none"}
@@ -1613,3 +1590,251 @@ def get_intraday_batch(tickers, period="5d", interval="15m"):
             df.attrs["src"] = "mock"
             out[t] = df
     return out
+
+
+# ======================================================================
+# v3.3 — Haberler yalnızca gerçek kaynaklardan
+#   yfinance → Yahoo Finance RSS → Google News RSS. Üçü de boşsa haber yok;
+#   uydurma başlık üretilmez.
+# ======================================================================
+_YF_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline"
+_GN_RSS = "https://news.google.com/rss/search"
+
+
+def _rss_fetch(url, params=None):
+    if not _HAS_REQ:
+        return []
+    r = requests.get(url, params=params, headers=_HEADERS, timeout=12)
+    if r.status_code != 200 or not r.content:
+        return []
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(r.content)
+    out = []
+    for it in root.iter("item"):
+        def _t(tag):
+            e = it.find(tag)
+            return (e.text or "").strip() if e is not None and e.text else ""
+        src = it.find("source")
+        out.append({"title": _t("title"), "link": _t("link"), "pub": _t("pubDate"),
+                    "desc": _t("description"),
+                    "source": (src.text.strip() if src is not None and src.text else "")})
+    return out
+
+
+def _rss_to_items(raw, ticker=None, default_src="Yahoo Finance", limit=12):
+    out = []
+    for r in raw[:limit]:
+        title = re.sub(r"\s+", " ", r.get("title") or "").strip()
+        if not title:
+            continue
+        ts = None
+        if r.get("pub"):
+            try:
+                ts = pd.Timestamp(r["pub"]).timestamp()
+            except (ValueError, TypeError):
+                ts = None
+        mins, when, short = _age(ts)
+        # Google News başlıkları "Başlık - Kaynak" biçiminde gelir
+        src = r.get("source") or ""
+        if not src and " - " in title:
+            title, src = title.rsplit(" - ", 1)
+        summary = re.sub(r"<[^>]+>", " ", r.get("desc") or "")
+        summary = re.sub(r"\s+", " ", summary).strip()[:280]
+        out.append({"ticker": ticker or "", "title": title.strip(), "source": src.strip() or default_src,
+                    "when": when, "when_short": short, "age_min": mins,
+                    "hours_ago": max(1, mins // 60),
+                    "sentiment": _sentiment(title + " " + summary), "link": r.get("link") or None,
+                    "thumb": None, "summary": summary, "related": [ticker] if ticker else [], "src": "real"})
+    return out
+
+
+@_ttl_cache(900, fail_ttl=180)
+def _yahoo_rss(t, n=10):
+    try:
+        return _rss_to_items(_rss_fetch(_YF_RSS, {"s": t, "region": "US", "lang": "en-US"}), t,
+                             "Yahoo Finance", n)
+    except Exception:
+        return []
+
+
+@_ttl_cache(900, fail_ttl=180)
+def _google_rss(query, n=10, ticker=None):
+    try:
+        return _rss_to_items(_rss_fetch(_GN_RSS, {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}),
+                             ticker, "Google News", n)
+    except Exception:
+        return []
+
+
+def _dedupe_news(items, n):
+    seen, out = set(), []
+    for p in sorted(items, key=lambda x: x.get("age_min", 10 ** 9)):
+        k = re.sub(r"[^a-z0-9]+", "", (p.get("title") or "").lower())[:70]
+        if k and k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out[:n]
+
+
+# ======================================================================
+# v3.3 — Finansal tablolar, analist tahminleri ve rakip listesi
+# ======================================================================
+def _clean_stmt(df, keep=5):
+    """yfinance tablosu → sütunlar eskiden yeniye, son `keep` dönem."""
+    if df is None or not hasattr(df, "empty") or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    try:
+        out = out.loc[:, sorted(out.columns)]
+    except TypeError:
+        pass
+    if out.shape[1] > keep:
+        out = out.iloc[:, -keep:]
+    out = out.dropna(how="all")
+    return out
+
+
+@_ttl_cache(10800, fail_ttl=600)
+def get_statements(t):
+    """Yıllık gelir tablosu, bilanço ve nakit akışı tablosu (gerçek veri)."""
+    out = {"income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame(), "src": "none"}
+    if not _HAS_YF:
+        return out
+    try:
+        tk = yf.Ticker(t)
+        inc = _clean_stmt(getattr(tk, "income_stmt", None))
+        bal = _clean_stmt(getattr(tk, "balance_sheet", None))
+        cfl = _clean_stmt(getattr(tk, "cashflow", None))
+    except Exception:
+        return out
+    if inc is None or inc.empty:
+        return out
+    out.update({"income": inc, "balance": bal if bal is not None else pd.DataFrame(),
+                "cashflow": cfl if cfl is not None else pd.DataFrame(), "src": "real"})
+    return out
+
+
+@_ttl_cache(10800, fail_ttl=600)
+def get_analyst(t):
+    """Analist büyüme tahminleri ve hedef fiyat dağılımı — bulunabildiği kadarıyla."""
+    out = {"growth_next_y": float("nan"), "growth_5y": float("nan"), "eps_next_y": float("nan"),
+           "target_mean": float("nan"), "target_high": float("nan"), "target_low": float("nan"),
+           "n": 0, "src": "none"}
+    if not _HAS_YF:
+        return out
+    tk = yf.Ticker(t)
+    try:
+        info = tk.get_info() or {}
+    except Exception:
+        info = {}
+    for k, keys in (("target_mean", ("targetMeanPrice",)), ("target_high", ("targetHighPrice",)),
+                    ("target_low", ("targetLowPrice",))):
+        v = _num(_g(info, *keys))
+        if v is not None:
+            out[k] = float(v)
+    out["n"] = int(_num(_g(info, "numberOfAnalystOpinions")) or 0)
+    g = _num(_g(info, "earningsGrowth"))
+    if g is not None:
+        out["growth_next_y"] = float(g) * 100
+    try:
+        ge = getattr(tk, "growth_estimates", None)
+        if ge is not None and hasattr(ge, "empty") and not ge.empty:
+            col = ge.columns[0]
+            for idx, key in (("+1y", "growth_next_y"), ("+5y", "growth_5y")):
+                if idx in ge.index:
+                    v = _num(ge.loc[idx, col])
+                    if v is not None:
+                        out[key] = float(v) * (100 if abs(float(v)) < 5 else 1)
+    except Exception:
+        pass
+    try:
+        ee = getattr(tk, "earnings_estimate", None)
+        if ee is not None and hasattr(ee, "empty") and not ee.empty and "avg" in ee.columns:
+            if "+1y" in ee.index:
+                v = _num(ee.loc["+1y", "avg"])
+                if v is not None:
+                    out["eps_next_y"] = float(v)
+    except Exception:
+        pass
+    if out["n"] or out["target_mean"] == out["target_mean"] or out["growth_next_y"] == out["growth_next_y"]:
+        out["src"] = "real"
+    return out
+
+
+def peer_universe(t):
+    """Aynı sektördeki şirketler (ETF bileşen listelerinden)."""
+    for _, _, cons in SECTORS:
+        syms = [c[0] for c in cons]
+        if t in syms:
+            return [s for s in syms if s != t]
+    sec = company_sector(t)
+    if sec:
+        return [x for x, c in COMPANIES.items() if c.get("sector") == sec and x != t][:24]
+    return []
+
+
+@_ttl_cache(1800, fail_ttl=300)
+def get_peers(t, n=5):
+    """Piyasa değeri en yakın rakipler — karşılaştırma tablosu için."""
+    cand = peer_universe(t)
+    if not cand:
+        return []
+    snap = get_market_snapshot()
+    caps = {}
+    if snap is not None and len(snap):
+        caps = dict(zip(snap["ticker"], snap["market_cap"]))
+    me = caps.get(t)
+    if me is None or me != me:
+        d = get_company_detail(t) or {}
+        me = d.get("market_cap")
+    scored = []
+    for s in cand:
+        c = caps.get(s)
+        if c is None or c != c:
+            scored.append((9e18, s))
+            continue
+        scored.append((abs(np.log(max(c, 1.0)) - np.log(max(me or c, 1.0))), s))
+    scored.sort()
+    return [s for _, s in scored[:int(n)]]
+
+
+@_ttl_cache(1800, fail_ttl=300)
+def get_valuation(t):
+    """Karşılaştırma tablosu için çarpanlar — tek info çağrısı, önbellekli."""
+    nan = float("nan")
+    out = {"ticker": t, "name": company_name(t), "market_cap": nan, "pe": nan, "fwd_pe": nan,
+           "peg": nan, "ev_ebitda": nan, "growth": nan, "net_margin": nan, "src": "none"}
+    if not _HAS_YF:
+        return out
+    try:
+        info = yf.Ticker(t).get_info() or {}
+    except Exception:
+        return out
+    if not info:
+        return out
+    def _f(*keys):
+        v = _num(_g(info, *keys))
+        return float(v) if v is not None else nan
+    out["name"] = _g(info, "shortName", "longName") or company_name(t)
+    out["market_cap"] = _f("marketCap")
+    out["pe"] = _f("trailingPE")
+    out["fwd_pe"] = _f("forwardPE")
+    out["peg"] = _f("trailingPegRatio", "pegRatio")
+    out["ev_ebitda"] = _f("enterpriseToEbitda")
+    g = _f("earningsGrowth")
+    if g != g:
+        g = _f("revenueGrowth")
+    out["growth"] = g * 100 if g == g else nan
+    m = _f("profitMargins")
+    out["net_margin"] = m * 100 if m == m else nan
+    if out["peg"] != out["peg"] and out["fwd_pe"] == out["fwd_pe"] and out["growth"] == out["growth"] \
+            and out["growth"] > 0:
+        out["peg"] = out["fwd_pe"] / out["growth"]
+    out["src"] = "real"
+    return out
+
+
+def get_valuations(tickers):
+    """Birden çok sembol için çarpanlar (paralel)."""
+    ticks = [t for t in dict.fromkeys(tickers) if t]
+    return {v["ticker"]: v for v in _pmap(get_valuation, ticks, workers=4)}
