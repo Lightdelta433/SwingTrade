@@ -27,7 +27,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "3.2"
+CHART_VERSION = "3.3"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
