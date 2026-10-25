@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.1"
+DATA_VERSION = "3.2"
 
 try:
     import yfinance as yf
@@ -553,14 +553,16 @@ def get_quotes(tickers):
         df = data.get(t)
         if df is not None and len(df) >= 2:
             last, prev, src = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2]), "real"
+            vol = float(df["Volume"].iloc[-1]) if "Volume" in df else 0.0
         elif t in KNOWN:
             s = _synth(t)
             last, prev, src = float(s["Close"].iloc[-1]), float(s["Close"].iloc[-2]), "mock"
+            vol = float(s["Volume"].iloc[-1])
         else:
             continue
         name, sector = NAMES.get(t, (t, ""))
         out[t] = {"ticker": t, "name": name, "sector": sector, "last": last, "prev": prev,
-                  "change_pct": (last / prev - 1) * 100 if prev else 0.0, "src": src}
+                  "volume": vol, "change_pct": (last / prev - 1) * 100 if prev else 0.0, "src": src}
     return out
 
 
@@ -1479,3 +1481,135 @@ def get_data_health():
     cal = _calendar_all()
     h["cal_ok"] = bool(cal) and cal[0].get("src") == "real"
     return h
+
+
+# ======================================================================
+# v3.2 — Piyasa anlık görüntüsü (Nasdaq tarayıcı servisi)
+#   Tek istekte NASDAQ + NYSE'nin tamamı: fiyat, günlük değişim, hacim,
+#   piyasa değeri, sektör. S&P 500'ün tamamı bunun içindedir.
+# ======================================================================
+_NQ_SCREENER = "https://api.nasdaq.com/api/screener/stocks"
+_SYM_OK = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
+
+
+def _num_money(v):
+    """'$123.45' · '1,234,567' · '1.23%' → float (boşsa nan)."""
+    if v is None:
+        return float("nan")
+    s = str(v).strip().replace("$", "").replace(",", "").replace("%", "")
+    if s in ("", "--", "N/A", "n/a", "NA"):
+        return float("nan")
+    neg = s.startswith("(") and s.endswith(")")
+    s = s.strip("()")
+    try:
+        f = float(s)
+    except ValueError:
+        return float("nan")
+    return -f if neg else f
+
+
+def _nasdaq_screener(exchange):
+    if not _HAS_REQ:
+        return []
+    r = requests.get(_NQ_SCREENER, headers=_HEADERS, timeout=25,
+                     params={"tableonly": "true", "limit": "10000", "offset": "0",
+                             "download": "true", "exchange": exchange})
+    if r.status_code != 200:
+        return []
+    data = (r.json() or {}).get("data") or {}
+    rows = data.get("rows")
+    if rows is None:
+        rows = (data.get("table") or {}).get("rows") or []
+    return rows or []
+
+
+def _snapshot_fallback():
+    """Tarayıcı servisi kapalıysa: bilinen evrenin canlı kotasyonları (piyasa değeri yok)."""
+    ticks = sorted(set(SCAN_UNIVERSE) | {t for _, _, cs in SECTORS for t, _, _ in cs} | set(DEFAULT_WATCHLIST))
+    q = get_quotes(ticks)
+    rows = []
+    for t in ticks:
+        qq = q.get(t)
+        if not qq:
+            continue
+        rows.append({"ticker": t, "name": company_name(t), "last": qq["last"],
+                     "change_pct": qq["change_pct"], "volume": float(qq.get("volume") or 0.0),
+                     "market_cap": float("nan"), "exchange": "—",
+                     "sector": company_sector(t) or ""})
+    df = pd.DataFrame(rows)
+    df.attrs["src"] = "mock" if (not rows or any(q.get(t, {}).get("src") == "mock" for t in ticks[:5])) else "real"
+    df.attrs["capless"] = True
+    return df
+
+
+@_ttl_cache(600, fail_ttl=120)
+def get_market_snapshot():
+    """NASDAQ + NYSE'deki tüm hisseler: ticker, ad, fiyat, günlük %, hacim, piyasa değeri."""
+    rows, got = [], False
+    for ex in ("NASDAQ", "NYSE"):
+        try:
+            raw = _nasdaq_screener(ex)
+        except Exception:
+            raw = []
+        if not raw:
+            continue
+        got = True
+        for r in raw:
+            t = str(r.get("symbol") or "").strip().upper()
+            if not _SYM_OK.match(t):
+                continue
+            rows.append({"ticker": t, "name": str(r.get("name") or t)[:60],
+                         "last": _num_money(r.get("lastsale")),
+                         "change_pct": _num_money(r.get("pctchange")),
+                         "volume": _num_money(r.get("volume")),
+                         "market_cap": _num_money(r.get("marketCap")),
+                         "exchange": ex, "sector": str(r.get("sector") or "")})
+    if not got or len(rows) < 100:
+        return _snapshot_fallback()
+    df = pd.DataFrame(rows).drop_duplicates(subset=["ticker"]).reset_index(drop=True)
+    df = df[df["last"] == df["last"]]
+    df.attrs["src"] = "real"
+    df.attrs["capless"] = False
+    return df
+
+
+@_ttl_cache(300, fail_ttl=120)
+def get_daily_batch(tickers, period="1y"):
+    """Çok sembollü günlük OHLCV — tek toplu istek."""
+    ticks = tuple(sorted(set(tickers)))
+    if not ticks:
+        return {}
+    data = _download(ticks, period, "1d") if _HAS_YF else {}
+    out = {}
+    for t in ticks:
+        df = data.get(t)
+        if df is not None and len(df) > 60:
+            df = df.copy()
+            df.attrs["src"] = "real"
+            out[t] = df
+        elif t in KNOWN:
+            df = _synth(t).tail(300).copy()
+            df.attrs["src"] = "mock"
+            out[t] = df
+    return out
+
+
+@_ttl_cache(180, fail_ttl=60)
+def get_intraday_batch(tickers, period="5d", interval="15m"):
+    """Çok sembollü gün içi mumlar — 15 dakikalık teyit için."""
+    ticks = tuple(sorted(set(tickers)))
+    if not ticks:
+        return {}
+    data = _download(ticks, period, interval) if _HAS_YF else {}
+    out = {}
+    for t in ticks:
+        df = data.get(t)
+        if df is not None and len(df) > 10:
+            df = df.copy()
+            df.attrs["src"] = "real"
+            out[t] = df
+        elif t in KNOWN:
+            df = _synth_intraday(t, period, interval).copy()
+            df.attrs["src"] = "mock"
+            out[t] = df
+    return out
