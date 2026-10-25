@@ -129,6 +129,10 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
     <span class="sym" id="symName">—</span>
     <span class="srcchip real" id="srcChip">canlı veri</span>
     <span class="sep"></span>
+    <button class="tb" id="btnIv" title="Mum aralığı">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/></svg>
+      <span id="ivLbl">Gün</span><span style="color:#6B7383">▾</span></button>
     <button class="tb" id="btnType">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <path d="M7 4v16M7 8h3V16H7zM17 6v12M17 9h3v6h-3z" stroke-linejoin="round"/></svg>
@@ -221,7 +225,8 @@ const S={
   bars:[], ha:[], ind:{}, zones:[], divs:[], cfg:{}, alerts:[], draws:[],
   type:"candles", view:{a:0,b:50}, yAuto:true, yLog:false, yMan:null,
   panes:[], cross:null, tool:null, pend:null, sel:null, drag:null,
-  undo:[], redo:[], rev:-1, height:620, big:false, sentN:0, ready:false
+  undo:[], redo:[], rev:-1, height:620, big:false, sentN:0, ready:false,
+  ivList:[["1d","Günlük","Gün"]], ivName:"Günlük"
 };
 const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
 let W=0,H=0,DPR=1;
@@ -249,6 +254,8 @@ function applyArgs(a){
   S.bars=(a.bars||[]).map(function(b){return {t:b[0],o:b[1],h:b[2],l:b[3],c:b[4],v:b[5]};});
   S.ind=a.ind||{}; S.zones=a.zones||[]; S.divs=a.divs||[]; S.cfg=a.cfg||{};
   S.height=a.height||620;
+  if(a.intervals&&a.intervals.length) S.ivList=a.intervals;
+  S.ivName=a.intervalName||S.interval;
   if(a.type) S.type=a.type;
   // çizimler ve alarmlar: sembol değiştiyse ya da Python daha yeni bir sürüm gönderdiyse al
   if(symChanged || dataRev>S.rev){
@@ -933,8 +940,9 @@ function updateLegend(){
   const b=series()[i]; if(!b){ L.innerHTML=""; return; }
   const ch=b.c-b.o, chp=b.o?ch/b.o*100:0, col=ch>=0?UP:DOWN;
   const c=S.cfg;
-  let h='<div class="r"><span class="nm">'+esc(S.name)+'</span> <span style="color:#6B7383">'+esc(S.interval)+
-    ' · '+TYPEL[S.type]+'</span></div>';
+  const ivr=(S.ivList||[]).filter(function(x){return x[0]===S.interval;})[0];
+  let h='<div class="r"><span class="nm">'+esc(S.name)+'</span> <span style="color:#6B7383">'+
+    esc(ivr?ivr[2]:S.interval)+' · '+TYPEL[S.type]+'</span></div>';
   h+='<div class="r v" style="color:'+col+'">O '+fmtP(b.o)+'  Y '+fmtP(b.h)+'  D '+fmtP(b.l)+'  K '+fmtP(b.c)+
      '  <span>'+(ch>=0?"+":"−")+fmt(Math.abs(ch),S.dec)+" ("+pct(chp)+')</span></div>';
   if(c.sma&&c.sma.on){
@@ -1600,10 +1608,32 @@ function syncTop(){
   c.className="srcchip "+(S.src==="real"?"real":"mock");
   c.textContent=S.src==="real"?"canlı veri":"örnek veri";
   document.getElementById("typeLbl").textContent=TYPEL[S.type]||"Mumlar";
+  const iv=(S.ivList||[]).filter(function(x){return x[0]===S.interval;})[0];
+  document.getElementById("ivLbl").textContent=iv?iv[2]:(S.interval||"Gün");
+  document.getElementById("btnIv").title="Mum aralığı — "+(iv?iv[1]:S.ivName||"");
   document.getElementById("cbAuto").classList.toggle("on",S.yAuto);
   document.getElementById("cbLog").classList.toggle("on",S.yLog);
 }
 /* --------- üst bar menüleri --------- */
+document.getElementById("btnIv").onclick=function(e){
+  const p=document.getElementById("pop"); p.innerHTML="";
+  p.appendChild(el("div","h","Mum aralığı"));
+  (S.ivList||[]).forEach(function(x){
+    const on=S.interval===x[0];
+    const it=el("div","it"+(on?" on":""));
+    it.innerHTML='<span class="ic">'+(on?"●":"○")+"</span>"+esc(x[1])+
+      '<span class="sub">'+esc(x[2])+"</span>";
+    it.onclick=function(){
+      hidePop();
+      if(on) return;
+      S.interval=x[0]; S.ivName=x[1]; syncTop();
+      toast(x[1]+" mumlara geçiliyor…");
+      send("interval",{interval:x[0]});
+    };
+    p.appendChild(it);
+  });
+  showPop(p,this,"down"); e.stopPropagation();
+};
 document.getElementById("btnType").onclick=function(e){
   const p=document.getElementById("pop"); p.innerHTML="";
   p.appendChild(el("div","h","Grafik türü"));
