@@ -1,6 +1,7 @@
-# Pulse — Piyasa Paneli (Streamlit) · v3.2
+# Pulse — Piyasa Paneli (Streamlit) · v3.3
 
-Koyu temalı swing-trade paneli. Bölümler: **Piyasalar · Long Term · Short Term · Backtest · Forex & Haberler**.
+Koyu temalı swing-trade paneli. Bölümler: **Piyasalar · Değer Analizi · Long Term · Short Term ·
+Backtest · Forex & Haberler**.
 
 ## Dosyalar — hepsi birlikte yüklenmeli
 
@@ -66,6 +67,52 @@ Altındaki yorum da kural tabanlıdır: cümleler hesaplanan gerçek değerlerde
 dil modeli kullanılmaz. “Notun gerekçesi” bölümü her grubun neye baktığını ve kaç puan
 kattığını gösterir. Yatırım tavsiyesi değildir.
 
+## Değer Analizi
+
+Seçili sembolün değerlemesi; hepsi şirketin **yayımladığı finansal tablolardan** hesaplanır
+(yıllık gelir tablosu, bilanço, nakit akışı — Yahoo Finance). ETF, endeks ve pariteler için tablo
+yayımlanmadığından o sembollerde yalnızca fiyat tabanlı bölümler çalışır.
+
+**Değer Notu (A–Z).** Teknik Özet'teki mantığın değerleme hâli — A ucuz, Z pahalı:
+
+| Grup | Ağırlık | Nelere bakar |
+|------|---------|--------------|
+| Rakiplere göre çarpan | %25 | F/K, ileri F/K ve FD/FAVÖK'ün sektör medyanına primi |
+| Kendi geçmişine göre | %15 | Son yılların F/K dağılımında bugünkü konum (yüzdelik dilim) |
+| Büyüme | %20 | Ciro ve EPS bileşik büyümesi + analistin gelecek yıl beklentisi |
+| Bilanço & kalite | %20 | Piotroski F, Altman Z, süreklilik kontrolleri, borç/özkaynak |
+| Nakit üretimi | %20 | Serbest nakit akışı getirisi, nakit akışı/net kâr, hisse adedi değişimi |
+
+**01 Temel Veriler.** Yıl yıl çubuk grafikler: gelir tablosu, marjlar, nakit akışı, bilanço,
+büyüme oranları (ciro ve EPS, bir önceki yıla göre), borç ve nakit, hissedar getirisi (geri alım +
+temettü). Altında cari oran, net borç/FAVÖK, faiz karşılama, aktif kârlılığı, kazanç kalitesi.
+
+**02 Gelecek Yılların Adil Değeri.** EPS seçilen büyümeyle ilerletilir, hedef çarpanla çarpılır;
+kötümser / taban / iyimser üç senaryo beş yıl boyunca çizilir ve tablolanır (getiri + yıllık bileşik
+karşılığı). Yanında **duyarlılık ızgarası** (büyüme × çarpan) ve **nakit akışı iskontosu**:
+10 yıllık DCF (büyüme kademeli olarak uç değere iner) ile **ters DCF** — bugünkü fiyatın hangi
+nakit akışı büyümesini fiyatladığını çözüp şirketin gerçek büyümesiyle karşılaştırır.
+Ayrıca **EPS geçmişi ve projeksiyonu** (gerçekleşen çubuklar + üç senaryo çizgisi) ve
+**tarihsel F/K bandı** (fiyat ÷ o yılın EPS'i; alt %10, medyan, üst %90 çizgileriyle).
+
+**03 Rakiplere Göre Konum.** Aynı sektörden, piyasa değeri en yakın beş rakip.
+Büyüme / çarpan haritasında yatay eksen beklenen büyüme, dikey eksen 12 ay ileri F/K,
+daire büyüklüğü piyasa değeri; kesikli çizgi rakiplerin eğilimi — üstünde kalanlar büyümesine göre
+pahalı. Yanındaki tabloda F/K, ileri F/K, PEG, FD/FAVÖK, büyüme ve net marj sektör medyanına göre
+renklendirilir. Altında hissenin kendi tarihsel F/K bandındaki yeri, ileri F/K çubukları
+(küçükten büyüğe, kesikli çizgi medyan) ve büyüme / net marj karşılaştırması.
+
+**04 Döngüsellik.** Beta, düşüşte/yükselişte yakalama oranı (SPY referans), yıllık oynaklık,
+ciro ve EPS büyümesinin oynaklığı, son %15+ düşüş dönemleri ve toparlanma süreleri.
+Grafikler: hisse ile S&P 500'ün son 3 yılı (başlangıç = 100), zirveden uzaklık (hisse ve endeks
+yan yana) ve ay bazında ortalama getiri (mevsimsellik). Bunlardan "Savunmacı / Karma / Döngüsel / Yüksek döngüsel"
+etiketi çıkar.
+
+**05 Bilanço Sürekliliği.** Piotroski F-skoru (9 kontrol, tek tek sonuçlarıyla), Altman Z-skoru
+(bileşenleriyle) ve süreklilik listesi — ciro, net kâr, serbest nakit akışı ve özkaynak kaç yıl
+üst üste aynı yönde gitmiş. Grafikler: kârlılık eğilimi (özkaynak ve aktif kârlılığı, net marj)
+ve Altman Z'nin bileşen katkıları.
+
 ## Short Term — iki mod
 
 Üstteki anahtarla seçilir: **🤖 Yapay Zeka Fırsatları** (hazır strateji, her zaman orada) ya da
@@ -119,6 +166,13 @@ Koşulları satır satır kurarsın; filtreni adlandırıp **kaydedebilir**, lis
 yükleyebilir, silebilirsin. Kayıtlar oturumda tutulur — kalıcı olması için JSON olarak
 indirip "JSON'dan geri yükle" kutusundan geri verebilirsin.
 
+## Forex & Haberler
+
+Üstteki altı kartın (Dolar Endeksi, ABD 10Y, Altın, Brent, Dolar/TL, Bitcoin) ve sağdaki parite
+listesinin tamamı tıklanabilir: tıklayınca sayfa aşağıdaki **Forex Piyasası** grafiğine kayar ve o
+sembol açılır, seçili kart vurgulanır. Parite listesinde bu makro semboller için ayrıca bir
+**Makro** kategorisi var.
+
 ## Hesap, tema ve bildirimler
 
 Sağ üstteki **A** düğmesi hesap/ayar kutusunu açar: oturum bilgisi, **arka plan teması**
@@ -130,6 +184,9 @@ uygulama açıkken çalışır, kapalıyken tarama yapılmaz ve telefona bildiri
 
 ## Veri
 
+- **Haberler yalnızca gerçek kaynaklardan gelir.** Zincir: yfinance → Yahoo Finance RSS →
+  Google News RSS. Üçü de boş dönerse uydurma başlık üretilmez, "haber bulunamadı" yazar.
+  Habere tıklayınca kaynağın sitesi yeni sekmede açılır.
 - Her panelde kaynak etiketi var: **● canlı veri**, **örnek veri** ya da **veri yok**.
   Etiket yoksa veri gerçektir.
 - Gerçek veri gelmezse (ör. Yahoo geçici olarak yanıt vermiyorsa) kısa süre sonra yeniden denenir.
