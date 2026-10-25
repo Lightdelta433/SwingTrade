@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.1"
+ENGINE_VERSION = "3.2"
 NAN = float("nan")
 
 
@@ -1511,3 +1511,462 @@ def _grade_text(df, groups, letter, action, score, tf_name, pats):
     if gd["volat"]["reasons"]:
         out.append("Risk notu: " + gd["volat"]["reasons"][0] + ".")
     return " ".join(out)
+
+
+# ======================================================================
+# v3.2 — Kurulum formasyonları (günlük): üçgen · dikdörtgen · merdiven · kırılım
+#   Hepsi pivot noktaları üzerinden çalışır; her biri kırılacak SEVİYEYİ döndürür,
+#   böylece 15 dakikalık teyit ve stop/hedef planı aynı seviyeyi kullanabilir.
+# ======================================================================
+SETUP_NAMES = {"triangle_sym": "Simetrik üçgen", "triangle_asc": "Yükselen üçgen",
+               "triangle_desc": "Alçalan üçgen", "rectangle": "Dikdörtgen (yatay kanal)",
+               "ladder": "Merdiven (yükselen zirve/dip)", "breakout": "Kırılım",
+               "breakdown": "Aşağı kırılım"}
+
+
+def _fit(xs, ys):
+    """En küçük kareler doğrusu: (eğim, sabit)."""
+    x = np.asarray(xs, float)
+    y = np.asarray(ys, float)
+    if len(x) < 2:
+        return 0.0, float(y[0]) if len(y) else 0.0
+    den = ((x - x.mean()) ** 2).sum()
+    if den <= 0:
+        return 0.0, float(y.mean())
+    m = float(((x - x.mean()) * (y - y.mean())).sum() / den)
+    return m, float(y.mean() - m * x.mean())
+
+
+def _state(close, level, a, side):
+    """Fiyatın seviyeye göre durumu: kırılım / geri test / oluşum."""
+    if a <= 0:
+        a = max(abs(close) * 0.01, 1e-6)
+    d = (close - level) / a if side == "bull" else (level - close) / a
+    if d >= 0.25:
+        return "breakout"
+    if d >= -0.35:
+        return "retest"
+    return "forming"
+
+
+def _vol_x(df, n=20):
+    v = df["Volume"].astype(float)
+    base = v.iloc[-n - 1:-1].mean()
+    return float(v.iloc[-1] / base) if base and base == base and base > 0 else 1.0
+
+
+def _close_pos(df):
+    """Kapanışın günün aralığındaki yeri (1 = en tepe)."""
+    h, lo, c = float(df["High"].iloc[-1]), float(df["Low"].iloc[-1]), float(df["Close"].iloc[-1])
+    return (c - lo) / (h - lo) if h > lo else 0.5
+
+
+def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
+    """Günlük grafikte kurulum formasyonları. Döner: [{key,name,kind,level,lower,state,
+    bars_since,conf,vol_x,note,start}]  — en güçlüden zayıfa."""
+    if df is None or len(df) < 45:
+        return []
+    d = df.tail(int(lookback))
+    n = len(d)
+    H = d["High"].to_numpy(float)
+    L = d["Low"].to_numpy(float)
+    C = d["Close"].to_numpy(float)
+    px = float(C[-1])
+    a = _last(atr(d, 14)) or px * 0.02
+    hi_i, _ = pivot_points(d["High"], left, right)
+    _, lo_i = pivot_points(d["Low"], left, right)
+    vx = _vol_x(d)
+    cpos = _close_pos(d)
+    out = []
+
+    # ---------------- 1) ÜÇGEN -------------------------------------------------
+    # Son 3 tepeye ve son 3 dibe doğru uydurulur; bantların daralması aranır.
+    if len(hi_i) >= 3 and len(lo_i) >= 3:
+        hx, hy = hi_i[-3:], [H[j] for j in hi_i[-3:]]
+        lx, ly = lo_i[-3:], [L[j] for j in lo_i[-3:]]
+        span = max(hx[-1], lx[-1]) - min(hx[0], lx[0])
+        if 15 <= span <= 130:
+            sh, bh = _fit(hx, hy)
+            sl, bl = _fit(lx, ly)
+            x0 = min(hx[0], lx[0])
+            w0 = (sh * x0 + bh) - (sl * x0 + bl)
+            w1 = (sh * (n - 1) + bh) - (sl * (n - 1) + bl)
+            shp, slp = sh / px * 100, sl / px * 100      # %/bar
+            flat = 0.045
+            key = None
+            if w0 > 0 and w1 > 0:
+                if shp < -flat and slp > flat and w1 < w0 * 0.78:
+                    key, kind = "triangle_sym", "bull" if C[-1] > (C[-20] if n > 20 else C[0]) else "bear"
+                elif abs(shp) <= flat and slp > flat and w1 < w0 * 0.88:
+                    key, kind = "triangle_asc", "bull"
+                elif shp < -flat and abs(slp) <= flat and w1 < w0 * 0.88:
+                    key, kind = "triangle_desc", "bear"
+            if key:
+                up_line = sh * (n - 1) + bh
+                dn_line = sl * (n - 1) + bl
+                level = up_line if kind == "bull" else dn_line
+                st_ = _state(px, level, a, kind)
+                conf = 0.55 + (0.18 if w1 < w0 * 0.6 else 0.08) + (0.12 if st_ == "breakout" else 0.0)
+                out.append({"key": key, "name": SETUP_NAMES[key], "kind": kind,
+                            "level": float(level), "lower": float(dn_line if kind == "bull" else up_line),
+                            "state": st_, "bars_since": 0, "conf": round(min(1.0, conf), 2),
+                            "vol_x": round(vx, 2), "start": int(min(hx[0], lx[0])) + (len(df) - n),
+                            "note": "bant %s%% daraldı" % fmt_num((1 - w1 / w0) * 100, 0)})
+
+    # ---------------- 2) DİKDÖRTGEN -------------------------------------------
+    # Son tepeler birbirine, son dipler birbirine yakın → yatay sıkışma.
+    if len(hi_i) >= 2 and len(lo_i) >= 2:
+        hs = [H[j] for j in hi_i[-3:]]
+        ls = [L[j] for j in lo_i[-3:]]
+        top, bot = float(np.mean(hs)), float(np.mean(ls))
+        tol = 0.028
+        span = max(hi_i[-1], lo_i[-1]) - min(hi_i[-len(hs)], lo_i[-len(ls)])
+        flat_top = all(abs(v - top) / max(top, 1e-9) <= tol for v in hs)
+        flat_bot = all(abs(v - bot) / max(bot, 1e-9) <= tol for v in ls)
+        height = (top - bot) / max(px, 1e-9)
+        if flat_top and flat_bot and 0.025 <= height <= 0.30 and span >= 15:
+            kind = "bull" if px >= (top + bot) / 2 else "bear"
+            level = top if kind == "bull" else bot
+            st_ = _state(px, level, a, kind)
+            conf = 0.58 + (0.14 if len(hs) >= 3 and len(ls) >= 3 else 0.0) + \
+                (0.14 if st_ == "breakout" else 0.0)
+            out.append({"key": "rectangle", "name": SETUP_NAMES["rectangle"], "kind": kind,
+                        "level": float(level), "lower": float(bot if kind == "bull" else top),
+                        "state": st_, "bars_since": 0, "conf": round(min(1.0, conf), 2),
+                        "vol_x": round(vx, 2),
+                        "start": int(min(hi_i[-len(hs)], lo_i[-len(ls)])) + (len(df) - n),
+                        "note": "%s – %s bandı, yükseklik %%%s"
+                                % (fmt_num(bot, 2), fmt_num(top, 2), fmt_num(height * 100, 1))})
+
+    # ---------------- 3) MERDİVEN ---------------------------------------------
+    # Üst üste yükselen zirveler VE yükselen dipler (ya da tersi).
+    if len(hi_i) >= 3 and len(lo_i) >= 3:
+        hs = [H[j] for j in hi_i[-3:]]
+        ls = [L[j] for j in lo_i[-3:]]
+        step = 0.01
+        up_h = all(hs[i + 1] > hs[i] * (1 + step) for i in range(2))
+        up_l = all(ls[i + 1] > ls[i] * (1 + step) for i in range(2))
+        dn_h = all(hs[i + 1] < hs[i] * (1 - step) for i in range(2))
+        dn_l = all(ls[i + 1] < ls[i] * (1 - step) for i in range(2))
+        kind = "bull" if (up_h and up_l) else "bear" if (dn_h and dn_l) else None
+        if kind:
+            level = float(hs[-1] if kind == "bull" else ls[-1])
+            st_ = _state(px, level, a, kind)
+            legs = (hs[-1] / hs[0] - 1) * 100 if kind == "bull" else (1 - ls[-1] / ls[0]) * 100
+            conf = 0.56 + min(0.2, abs(legs) / 100) + (0.12 if st_ == "breakout" else 0.0)
+            out.append({"key": "ladder", "name": SETUP_NAMES["ladder"], "kind": kind,
+                        "level": level, "lower": float(ls[-1] if kind == "bull" else hs[-1]),
+                        "state": st_, "bars_since": 0, "conf": round(min(1.0, conf), 2),
+                        "vol_x": round(vx, 2), "start": int(min(hi_i[-3], lo_i[-3])) + (len(df) - n),
+                        "note": "üç basamakta %%%s" % fmt_num(abs(legs), 1)})
+
+    # ---------------- 4) KIRILIM ----------------------------------------------
+    # N barlık zirvenin ATR payıyla üstünde kapanış + hacim teyidi + güçlü kapanış yeri.
+    for N, tag in ((20, "20 günlük"), (55, "55 günlük")):
+        if n < N + 6:
+            continue
+        prior_h = float(np.nanmax(H[-N - 1:-1]))
+        prior_l = float(np.nanmin(L[-N - 1:-1]))
+        if px > prior_h + 0.25 * a:
+            since = 0
+            for k in range(1, min(12, n - N)):
+                ref = float(np.nanmax(H[-N - 1 - k:-1 - k]))
+                if C[-1 - k] > ref + 0.25 * a:
+                    since = k
+                else:
+                    break
+            rng10 = (np.nanmax(H[-12:-1]) - np.nanmin(L[-12:-1])) / max(a, 1e-9)
+            conf = 0.5 + (0.18 if vx >= 1.5 else 0.06 if vx >= 1.1 else -0.08) \
+                + (0.12 if cpos >= 0.65 else 0.0) + (0.1 if rng10 <= 4.5 else 0.0) \
+                + (0.08 if N == 55 else 0.0)
+            out.append({"key": "breakout", "name": "%s zirve kırılımı" % tag, "kind": "bull",
+                        "level": prior_h, "lower": prior_l, "state": "breakout",
+                        "bars_since": int(since), "conf": round(min(1.0, max(0.15, conf)), 2),
+                        "vol_x": round(vx, 2), "start": int(n - N - 1) + (len(df) - n),
+                        "note": "%s zirvesi %s aşıldı · hacim %sx%s"
+                                % (tag, fmt_num(prior_h, 2), fmt_num(vx, 1),
+                                   " · dar sıkışmadan" if rng10 <= 4.5 else "")})
+            break
+        if px < prior_l - 0.25 * a:
+            out.append({"key": "breakdown", "name": "%s dip kırılımı" % tag, "kind": "bear",
+                        "level": prior_l, "lower": prior_h, "state": "breakout", "bars_since": 0,
+                        "conf": 0.55, "vol_x": round(vx, 2), "start": int(n - N - 1) + (len(df) - n),
+                        "note": "%s dibi %s kırıldı" % (tag, fmt_num(prior_l, 2))})
+            break
+
+    out.sort(key=lambda p: (-(p["state"] == "breakout"), -p["conf"]))
+    return out[:int(limit)]
+
+
+def confirm_15m(df15, level, kind="bull", vol_n=20, window=26):
+    """Günlük kırılımın 15 dakikalık grafikte tutup tutmadığı.
+    teyitli = seviyenin üstünde + hacimli kesiş + EMA9>EMA21 · bekleniyor = zayıf · bozuldu = altına döndü."""
+    out = {"state": "veri yok", "ok": False, "vol_x": None, "bars_since": None,
+           "note": "15 dakikalık veri alınamadı", "last": None}
+    if df15 is None or len(df15) < 12 or level is None or not _ok(level):
+        return out
+    c = df15["Close"].to_numpy(float)
+    v = df15["Volume"].astype(float).to_numpy()
+    px = float(c[-1])
+    out["last"] = px
+    e9, e21 = _last(ema(df15["Close"], 9)), _last(ema(df15["Close"], 21))
+    aligned = _ok(e9) and _ok(e21) and ((e9 > e21) if kind == "bull" else (e9 < e21))
+    above = px > level if kind == "bull" else px < level
+    cross = None
+    lo = max(1, len(c) - int(window))
+    for i in range(len(c) - 1, lo - 1, -1):
+        prev, cur = c[i - 1], c[i]
+        if kind == "bull" and prev <= level < cur:
+            cross = i
+            break
+        if kind == "bear" and prev >= level > cur:
+            cross = i
+            break
+    vx = None
+    if cross is not None:
+        base = v[max(0, cross - vol_n):cross]
+        m = float(base.mean()) if len(base) else 0.0
+        vx = round(float(v[cross]) / m, 2) if m > 0 else None
+        out["bars_since"] = int(len(c) - 1 - cross)
+    last_vx = None
+    base = v[-vol_n - 1:-1]
+    if len(base) and base.mean() > 0:
+        last_vx = round(float(v[-1]) / float(base.mean()), 2)
+    out["vol_x"] = vx if vx is not None else last_vx
+    strong = (vx is not None and vx >= 1.3) or (last_vx is not None and last_vx >= 1.3)
+    if not above:
+        out["state"] = "bozuldu"
+        out["note"] = "15dk fiyat %s seviyesinin %s döndü" % (fmt_num(level, 2),
+                                                              "altına" if kind == "bull" else "üstüne")
+        return out
+    if strong and aligned:
+        out["state"], out["ok"] = "teyitli", True
+        out["note"] = "15dk %s üstünde tutuyor · hacim %sx · EMA9>EMA21" \
+            % (fmt_num(level, 2), fmt_num(out["vol_x"] or 1, 1))
+    else:
+        out["state"] = "bekleniyor"
+        eksik = []
+        if not strong:
+            eksik.append("hacim zayıf")
+        if not aligned:
+            eksik.append("EMA dizilimi henüz dönmedi")
+        out["note"] = "15dk seviyenin üstünde ama " + " ve ".join(eksik)
+    return out
+
+
+def swing_plan(df, zones, level=None, kind="bull", tp1_part=0.40):
+    """Stop / hedef planı: stop son günlük mumun ya da destek bandının altı,
+    TP1 bir sonraki S/R bandı (burada %40 satılır), kalan %60 trendi takip eder;
+    TP1'e ulaşınca kalanın stopu TP1 seviyesine çekilir."""
+    if df is None or len(df) < 20:
+        return None
+    px = float(df["Close"].iloc[-1])
+    a = _last(atr(df, 14)) or px * 0.02
+    last_low = float(df["Low"].iloc[-1])
+    last_high = float(df["High"].iloc[-1])
+    zones = zones or []
+    sup = [z for z in zones if (z["lo"] + z["hi"]) / 2 < px]
+    res = [z for z in zones if (z["lo"] + z["hi"]) / 2 > px]
+    sup.sort(key=lambda z: -(z["lo"] + z["hi"]) / 2)
+    res.sort(key=lambda z: (z["lo"] + z["hi"]) / 2)
+    if kind == "bull":
+        cands = [("son günlük mum", last_low - 0.08 * a)]
+        if sup:
+            cands.append(("destek bandı", float(sup[0]["lo"]) - 0.08 * a))
+        if level is not None and _ok(level):
+            cands.append(("kırılım seviyesi", float(level) - 0.5 * a))
+        name, stop = min(cands, key=lambda x: x[1])
+        if px - stop > 3.2 * a:                       # çok geniş stop → ATR'ye çek
+            name, stop = "2×ATR (bantlar çok uzak)", px - 2.0 * a
+        risk = max(px - stop, 0.15 * a)
+        t1_src = "direnç bandı"
+        tp1 = float(res[0]["lo"]) if res else px + 2.0 * risk
+        if not res:
+            t1_src = "2R hedefi"
+        if tp1 <= px + 0.35 * risk:                   # bant çok yakınsa bir sonrakine geç
+            if len(res) > 1:
+                tp1 = float(res[1]["lo"])
+            else:
+                tp1, t1_src = px + 2.0 * risk, "2R hedefi"
+        t2_src = "üstteki ikinci bant"
+        nxt = [z for z in res if float(z["lo"]) > tp1 * 1.001]
+        tp2 = float(nxt[0]["lo"]) if nxt else px + 3.5 * risk
+        if not nxt:
+            t2_src = "3,5R hedefi"
+    else:
+        cands = [("son günlük mum", last_high + 0.08 * a)]
+        if res:
+            cands.append(("direnç bandı", float(res[0]["hi"]) + 0.08 * a))
+        name, stop = max(cands, key=lambda x: x[1])
+        if stop - px > 3.2 * a:
+            name, stop = "2×ATR (bantlar çok uzak)", px + 2.0 * a
+        risk = max(stop - px, 0.15 * a)
+        tp1 = float(sup[0]["hi"]) if sup else px - 2.0 * risk
+        t1_src = "destek bandı" if sup else "2R hedefi"
+        nxt = [z for z in sup if float(z["hi"]) < tp1 * 0.999]
+        tp2 = float(nxt[0]["hi"]) if nxt else px - 3.5 * risk
+        t2_src = "alttaki ikinci bant" if nxt else "3,5R hedefi"
+    rr1 = abs(tp1 - px) / risk if risk > 0 else 0.0
+    rr2 = abs(tp2 - px) / risk if risk > 0 else 0.0
+    part = float(min(0.9, max(0.1, tp1_part)))
+    return {"entry": round(px, 4), "stop": round(stop, 4), "tp1": round(tp1, 4), "tp2": round(tp2, 4),
+            "risk": round(risk, 4), "risk_pct": round(risk / px * 100, 2),
+            "rr1": round(rr1, 2), "rr2": round(rr2, 2), "atr": round(float(a), 4),
+            "stop_src": name, "tp1_src": t1_src, "tp2_src": t2_src,
+            "part1": part, "part2": round(1 - part, 2),
+            "rule": ("TP1'de %%%d sat, kalan %%%d trendi takip etsin; TP1 görüldükten sonra "
+                     "kalanın stopu TP1 (%s) seviyesine çekilir."
+                     % (round(part * 100), round((1 - part) * 100), fmt_num(tp1, 2)))}
+
+
+# ======================================================================
+# v3.2 — "Yapay Zeka Trade Fırsatları" taraması
+#   1) Ucuz filtreler (fiyat, günlük değişim, piyasa değeri) → hacme göre sırala
+#   2) İlk N adayın günlük verisinde EMA21 / EMA50 kapısı
+#   3) Kalanların ilk 20'sinde formasyon + 15 dakikalık teyit + stop/hedef planı
+# ======================================================================
+AI_FILTER = {
+    "min_price": 3.0,        # fiyat ≥ 3 $
+    "min_change": 0.01,      # günlük değişim > %0,01 (pozitif yönde)
+    "min_cap": 300e6,        # piyasa değeri ≥ 300 M$
+    "ema_fast": 21,          # fiyat 21 EMA üstünde
+    "ema_slow": 50,          # fiyat 50 EMA üstünde
+    "regime_ema": 50,        # SPY ve QQQ 50 günlük EMA üstünde
+    "prelim": 60,            # günlük veri çekilecek aday sayısı
+    "top": 20,               # nihai liste
+    "tp1_part": 0.40,        # TP1'de satılacak oran
+}
+AI_STATE_PTS = {"breakout": 20.0, "retest": 12.0, "forming": 5.0}
+AI_C15_PTS = {"teyitli": 20.0, "bekleniyor": 8.0, "veri yok": 6.0, "bozuldu": 0.0}
+
+
+def ai_cfg(over=None):
+    c = dict(AI_FILTER)
+    for k, v in (over or {}).items():
+        if k in c:
+            try:
+                c[k] = type(AI_FILTER[k])(v)
+            except (TypeError, ValueError):
+                pass
+    return c
+
+
+def ai_regime(idx, n=50):
+    """SPY / QQQ 50 günlük EMA'nın üstünde mi? Filtrenin bölge kapısı."""
+    out, ok = {}, True
+    for k, df in (idx or {}).items():
+        if df is None or len(df) < n + 5:
+            out[k] = None
+            ok = False
+            continue
+        px = float(df["Close"].iloc[-1])
+        e = _last(ema(df["Close"], n))
+        good = bool(_ok(e) and px > e)
+        out[k] = {"price": px, "ema": float(e) if _ok(e) else None, "ok": good,
+                  "pct": ((px / e - 1) * 100) if (_ok(e) and e) else None}
+        ok = ok and good
+    out["ok"] = bool(ok and idx)
+    return out
+
+
+def ai_prefilter(snap, cfg=None):
+    """Anlık görüntüde ucuz filtreler; hacme göre azalan sırada döndürür."""
+    c = ai_cfg(cfg)
+    steps = {"evren": 0, "fiyat": 0, "degisim": 0, "piyasa_degeri": 0, "capless": True}
+    if snap is None or len(snap) == 0:
+        return snap, steps
+    capless = bool((getattr(snap, "attrs", None) or {}).get("capless"))
+    d = snap.copy()
+    steps["evren"] = len(d)
+    d = d[d["last"].astype(float) >= c["min_price"]]
+    steps["fiyat"] = len(d)
+    d = d[d["change_pct"].astype(float) > c["min_change"]]
+    steps["degisim"] = len(d)
+    if not capless:
+        cap = pd.to_numeric(d["market_cap"], errors="coerce")
+        d = d[cap >= c["min_cap"]]
+    steps["piyasa_degeri"] = len(d)
+    steps["capless"] = capless
+    d = d.sort_values("volume", ascending=False, na_position="last").reset_index(drop=True)
+    return d, steps
+
+
+def ai_evaluate(ticker, df, df15=None, zones=None, cfg=None, meta=None):
+    """Tek sembol: EMA kapısı, formasyon, 15dk teyidi ve işlem planı."""
+    c = ai_cfg(cfg)
+    if df is None or len(df) < 60:
+        return None
+    close = df["Close"]
+    px = float(close.iloc[-1])
+    ef, es = _last(ema(close, c["ema_fast"])), _last(ema(close, c["ema_slow"]))
+    if not (_ok(ef) and _ok(es)):
+        return None
+    ema_ok = bool(px > ef and px > es)
+    zones = ranked_sr_zones(df) if zones is None else zones
+    pats = setup_patterns(df)
+    best = pats[0] if pats else None
+    plan = swing_plan(df, zones, level=(best or {}).get("level"),
+                      kind=(best or {}).get("kind", "bull"), tp1_part=c["tp1_part"])
+    c15 = confirm_15m(df15, best["level"], best["kind"]) if (df15 is not None and best) else None
+    score = 0.0
+    if best:
+        score += 40.0 * float(best["conf"])
+        score += AI_STATE_PTS.get(best["state"], 0.0)
+        if best["vol_x"] and best["vol_x"] >= 1.5:
+            score += 5.0
+    if c15:
+        score += AI_C15_PTS.get(c15["state"], 0.0)
+    if plan:
+        score += 12.0 * min(1.0, plan["rr1"] / 3.0)
+    if ema_ok:
+        score += 8.0
+    m = meta or {}
+    return {"ticker": ticker, "name": m.get("name") or ticker, "price": px,
+            "chg": float(m.get("change_pct") or 0.0), "volume": float(m.get("volume") or 0.0),
+            "market_cap": m.get("market_cap"), "sector": m.get("sector") or "",
+            "ema_ok": ema_ok, "ema_fast": float(ef), "ema_slow": float(es),
+            "patterns": pats, "best": best, "plan": plan, "c15": c15,
+            "zones": (zones or [])[:6], "score": round(min(100.0, max(0.0, score)), 1)}
+
+
+def ai_fresh_breakout(r, max_bars=1):
+    """Bildirime düşecek kadar taze ve teyitli bir kırılım mı?"""
+    b, c15 = r.get("best"), r.get("c15")
+    if not b or b["state"] != "breakout" or b["kind"] != "bull":
+        return False
+    if int(b.get("bars_since") or 0) > max_bars:
+        return False
+    return bool(r.get("ema_ok")) and bool(c15 and c15.get("state") in ("teyitli", "bekleniyor"))
+
+
+def ai_apply_15m(r, c15):
+    """15 dakikalık teyit sonucunu sonuca ve skora işler."""
+    if not r:
+        return r
+    r["c15"] = c15
+    if c15:
+        r["score"] = round(min(100.0, r["score"] + AI_C15_PTS.get(c15.get("state"), 0.0)), 1)
+    return r
+
+
+def ai_summary(r):
+    """Sonucu tek cümlede özetler (kural tabanlı)."""
+    if not r:
+        return ""
+    b, p, c = r.get("best"), r.get("plan"), r.get("c15")
+    bits = []
+    if b:
+        durum = {"breakout": "kırılım gerçekleşti", "retest": "seviyeyi geri test ediyor",
+                 "forming": "henüz oluşuyor"}.get(b["state"], b["state"])
+        bits.append("%s — %s (%s)" % (b["name"], durum, b["note"]))
+    else:
+        bits.append("Net bir formasyon yok, yalnızca trend ve hacim şartlarını geçti")
+    if c:
+        bits.append("15 dakikalık teyit: %s — %s" % (c["state"], c["note"]))
+    if p:
+        bits.append("Giriş %s · stop %s (%s, −%%%s) · TP1 %s (%s, R/R 1:%s)"
+                    % (fmt_num(p["entry"], 2), fmt_num(p["stop"], 2), p["stop_src"],
+                       fmt_num(p["risk_pct"], 1), fmt_num(p["tp1"], 2), p["tp1_src"],
+                       fmt_num(p["rr1"], 2)))
+        bits.append(p["rule"])
+    return " ".join(bits)
