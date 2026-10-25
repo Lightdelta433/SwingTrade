@@ -33,7 +33,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Piyasa Paneli", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -75,13 +75,11 @@ TONE = {"good": (UP, "#0F1A15", "#1F4D3A", "#0A0B0D"), "warn": (WARN, "#1A160E",
         "bad": (DOWN, "#1A0F10", "#4D1F24", "#ECEEF1")}
 
 SECTIONS = ["Piyasalar", "Long Term", "Short Term", "Backtest", "Forex & Haberler"]
-# Zaman aralıkları tek yerde tanımlı: chart.py. 1G/1H/4S gün içi, Hf haftalık mumlar.
-TF_BARS = ch.TF_BARS
-INTRA = ch.INTRA
-TF_LIST = ["1G", "1H", "4S", "1A", "3A", "1Y", "5Y", "Hf"]
-TF_NAME = {"1G": "Son 1 gün", "1H": "Son 1 hafta", "4S": "4 saatlik", "1A": "Son 1 ay", "3A": "Son 3 ay",
-           "1Y": "Son 1 yıl", "5Y": "Son 5 yıl", "Hf": "Haftalık"}
-TF_LABEL = {"4S": "4s", "Hf": "Hafta"}   # şeritte görünen kısa ad
+# Mum aralıkları tek yerde tanımlı: chart.py (küçükten büyüğe sıralı)
+TF_LIST = ch.INTERVAL_ORDER
+TF_DEF = ch.DEFAULT_INTERVAL
+TF_NAME = {k: v["name"] for k, v in ch.INTERVALS.items()}
+TF_LABEL = {k: v["short"] for k, v in ch.INTERVALS.items()}
 CUR = {"USD": "$", "TRY": "₺", "EUR": "€", "GBP": "£", "JPY": "¥"}
 CHART_CFG = {"displayModeBar": True, "displaylogo": False, "modeBarButtonsToRemove": ["select2d", "lasso2d"]}
 LOGO_SVG = ('<svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" '
@@ -119,6 +117,12 @@ def button(label, key, primary=False, **kw):
     return st.button(label, key=key, type="primary" if primary else "secondary", **_wkw(st.button), **kw)
 
 
+def toggle(label, key, help=None):
+    """st.toggle eski Streamlit sürümlerinde yok — checkbox'a düşer."""
+    fn = getattr(st, "toggle", None) or st.checkbox
+    return fn(label, key=key, help=help)
+
+
 def H(s):
     # Her zaman <div> ile başlat → Markdown bunu HTML bloğu olarak geçirir
     # (aksi halde metindeki $, *, _ karakterleri biçimlendirmeye dönüşebilir).
@@ -141,13 +145,15 @@ def _store():
 STORE = _store()
 # Widget anahtarları (kullanıcı ayarları) — sayfa değişse de korunur
 WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_fxtf", "w_fxc", "w_calday",
+               "w_aimode", "w_aiauto", "w_savedflt", "w_theme", "flt_import_txt",
                "w_calimp", "w_nc", "w_mov", "w_setup", "w_sort", "w_bttf", "bt_inst", "bt_custom", "bt_pick",
                "bt_yrs", "bt_ind1", "bt_p1", "bt_op1", "bt_v1", "bt_logic", "bt_c2on", "bt_src2", "bt_p2",
                "bt_op2", "bt_dir", "bt_slMode", "bt_slV", "bt_tpMode", "bt_tpV", "bt_maxBars", "bt_cap",
                "bt_risk", "bt_comm", "bt_xmin"]
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
            "bt_extra_ver", "bt_ran", "bt_saved",
-           "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n"] + WIDGET_KEYS
+           "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
+           "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending"] + WIDGET_KEYS
 
 
 def _qp(key, default=None):
@@ -194,7 +200,11 @@ for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journa
                "flt_name": "Trend içi geri çekilme", "flt_ver": 0,
                "flt_edit": False, "bt_extra": [], "bt_extra_ver": 0, "bt_ran": None, "bt_saved": [],
                "acct": 100000.0, "draws": {}, "alerts": {}, "ch_cfg": copy.deepcopy(ch.DEFAULT_CFG),
-               "ch_type": "candles", "ch_rev": 1, "ch_n": None, **BT_WIDGETS}.items():
+               "ch_type": "candles", "ch_rev": 1, "ch_n": None, "tf_pending": None, "ch_tfkey": "w_tf",
+               "theme": "gece", "notes": [], "notes_seen": 0, "notes_gone": [], "ai_auto": False,
+               "saved_filters": [], "flt_pending": None,
+               "ai_nonce": 0, "w_aiauto": False,
+               **BT_WIDGETS}.items():
     ss.setdefault(_k, copy.deepcopy(_v))
 # Streamlit, o çalıştırmada çizilmeyen widget'ın değerini siler (ör. filtre editörü kapalıyken).
 # Değeri kendine yeniden atamak bu temizliği engeller → ayarlar kaybolmaz.
@@ -209,12 +219,13 @@ ACTIVE = _SYM_RE.sub("", _qp("sym", "SPY")).upper()[:24] or "SPY"
 FX = _qp("fx", "EUR/USD")
 FX = FX if any(p == FX for p, *_ in md._FX_LIST) else "EUR/USD"
 OPP = _SYM_RE.sub("", _qp("opp", "") or "").upper()[:24] or None
+AIP = _SYM_RE.sub("", _qp("aip", "") or "").upper()[:24] or None
 SECTOR = _qp("sector")
 SECTOR = SECTOR if md.sector_by_etf(SECTOR or "") else None
 
 
 def link(**kw):
-    p = {"sid": SID, "sec": SEC, "sym": ACTIVE, "fx": FX, "opp": OPP, "sector": SECTOR}
+    p = {"sid": SID, "sec": SEC, "sym": ACTIVE, "fx": FX, "opp": OPP, "aip": AIP, "sector": SECTOR}
     p.update(kw)
     return "?" + urlencode({k: v for k, v in p.items() if v not in (None, "")})
 
@@ -258,6 +269,8 @@ if _a in en.INDICATORS:
     ss.flt_rows.append(en.suggested_condition(_a))
     ss.flt_ver += 1
     ss.flt_edit = True
+    ss["w_aimode"] = "Kendi Filtrem"      # kendi filtresine geçsin
+    ss["_last_w_aimode"] = "Kendi Filtrem"
     st.toast(f"“{_a}” filtreye eklendi — değerini düzenleyebilirsin")
 _a = _consume("add_bt")
 if _a in en.INDICATORS:
@@ -538,9 +551,19 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
  text-overflow:ellipsis;font-family:inherit}
 /* satır listeleri */
 .row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid #1C1F25}
-.nw{display:flex;gap:12px;padding:11px 0;border-top:1px solid #1C1F25}
-.nw b{font-size:13.5px;font-weight:700;line-height:1.35;display:block}
+.nw{display:flex;gap:12px;padding:11px 6px;border-top:1px solid #1C1F25;text-decoration:none;
+ align-items:flex-start;border-radius:10px}
+.nw:hover{background:#13161C}
+.nw b{font-size:13.5px;font-weight:700;line-height:1.35;display:block;color:#ECEEF1}
+.nw:hover b{color:#C3D4FF}
 .nw a{color:#ECEEF1;text-decoration:none}.nw a:hover{color:#C3D4FF}
+.nwb{flex:1;min-width:0}
+.nwm{display:block;margin-top:4px}
+.nwi{width:64px;height:46px;flex:none;border-radius:8px;border:1px solid #1C1F25;background:#0C0D10;
+ background-size:cover;background-position:center;display:flex;align-items:center;justify-content:center;
+ font-size:11px;font-weight:800;color:#5A6372;overflow:hidden}
+.nwx{color:#5A6372;font-size:13px;flex:none;align-self:center;padding-left:2px}
+.nw:hover .nwx{color:#9DB8FF}
 /* arama */
 .sr-row{display:flex;align-items:center;gap:12px;padding:9px 4px;border-top:1px solid #1C1F25}
 .sr-row .sr-main{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
@@ -566,6 +589,15 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .opp-grid{display:grid;grid-template-columns:1.9fr 1.15fr .9fr 1.55fr .8fr .85fr .45fr 1.05fr;
  align-items:center;gap:0 10px;min-width:800px;padding:0 14px}
 .opp-grid .r{white-space:nowrap}
+.ai-grid{grid-template-columns:1.75fr 1.5fr .9fr .85fr .9fr .8fr .5fr 1fr;min-width:880px}
+.aist{font-size:10.5px;font-weight:800;border-radius:5px;padding:2px 7px;white-space:nowrap}
+.funnel{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px 0}
+.funnel div{background:#0C0D10;border:1px solid #22262D;border-radius:10px;padding:7px 11px;font-size:12px}
+.funnel b{display:block;font-family:ui-monospace,monospace;font-size:15px;font-weight:700;color:#ECEEF1}
+.plan{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:8px 0}
+.planrow{display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid #1C1F25;font-size:12.5px}
+.planrow .l{color:#8D96A5;flex:1}
+.planrow .v{font-family:ui-monospace,monospace;font-weight:600}
 .opp-head{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#8D96A5;padding-top:12px;
  padding-bottom:10px}
 .opp-row{border-top:1px solid #1A1D23;padding-top:8px;padding-bottom:8px;font-size:13px;color:#ECEEF1;
@@ -685,10 +717,26 @@ def handle_chart_event(ev):
     elif kind == "cfg":
         ss.ch_cfg = ch.merge_cfg(ev.get("cfg"))
         st.rerun()   # indikatörler gerçek veriyle yeniden hesaplanacak
+    elif kind == "interval":
+        v = ev.get("interval")
+        if v in ch.INTERVALS:
+            # widget değeri yalnızca widget çizilmeden önce değiştirilebilir → beklemeye al
+            ss.tf_pending = (ss.get("ch_tfkey") or "w_tf", v)
+            st.rerun()
 
 
-def render_big_chart(sym, tf, height=600):
+def apply_pending_tf(key):
+    """Grafikten gelen aralık seçimini widget çizilmeden önce uygular."""
+    p = ss.get("tf_pending")
+    if p and p[0] == key:
+        ss[key] = p[1]
+        ss["_last_" + key] = p[1]
+        ss.tf_pending = None
+
+
+def render_big_chart(sym, tf, height=600, tf_key="w_tf"):
     """TradingView tarzı grafik; dosya eksikse Plotly'ye düşer."""
+    ss.ch_tfkey = tf_key
     if ch.missing_frontend():
         st.warning("`pulse_chart/index.html` yüklenmemiş — basit grafiğe düşüldü. GitHub'da "
                    "**pulse_chart** klasörünü ve içindeki **index.html** dosyasını da yükle.")
@@ -706,11 +754,11 @@ def render_big_chart(sym, tf, height=600):
 
 
 def candle_label(tf, intraday):
-    if intraday:
-        return {"1G": "5 dk mumlar", "1H": "30 dk mumlar", "4S": "4 saatlik mumlar"}.get(tf, "gün içi mumlar")
-    if tf == "Hf":
-        return "haftalık mumlar"
-    return "gün içi veri yok · günlük mumlar" if tf in INTRA else "günlük mumlar"
+    """Grafiğin altındaki açıklama: istenen aralık gerçekten çizilebildi mi?"""
+    want = ch.norm_tf(tf)
+    if ch.is_intraday(want) and not intraday:
+        return "gün içi veri yok · günlük mumlar"
+    return "%s mumlar" % TF_NAME.get(want, "günlük").lower()
 
 
 def price_chart(full, bars, height=430, rsi_panel=True, intraday=False):
@@ -867,17 +915,134 @@ def render_search(q):
             H('<div class="muted" style="margin-top:6px">Sonuç bulunamadı.</div>')
 
 
+THEMES = {
+    "gece": {"name": "Gece", "bg": "#0A0B0D", "panel": "#111317", "panel2": "#0C0D10",
+             "border": "#22262D", "grad": None, "dot": "#5B8CFF"},
+    "uzay": {"name": "Uzay", "bg": "#07060F", "panel": "#131029", "panel2": "#0C0A1A",
+             "border": "#2C2457", "dot": "#A78BFA",
+             "grad": ("radial-gradient(1200px 620px at 12% -8%, rgba(124,58,237,.26), transparent 62%),"
+                      "radial-gradient(900px 520px at 88% 6%, rgba(37,99,235,.20), transparent 60%),"
+                      "radial-gradient(700px 400px at 55% 110%, rgba(14,165,233,.12), transparent 60%)")},
+    "orman": {"name": "Orman", "bg": "#060D0A", "panel": "#0E1A14", "panel2": "#0A130F",
+              "border": "#1F3C2F", "dot": "#34D399",
+              "grad": ("radial-gradient(1100px 620px at 8% -6%, rgba(16,122,87,.26), transparent 62%),"
+                       "radial-gradient(850px 480px at 92% 10%, rgba(132,204,22,.12), transparent 60%)")},
+    "okyanus": {"name": "Okyanus", "bg": "#050D14", "panel": "#0C1824", "panel2": "#08121A",
+                "border": "#1C3448", "dot": "#22D3EE",
+                "grad": ("radial-gradient(1150px 640px at 85% -8%, rgba(14,116,144,.28), transparent 62%),"
+                         "radial-gradient(800px 460px at 10% 12%, rgba(37,99,235,.16), transparent 60%)")},
+    "gunbatimi": {"name": "Gün batımı", "bg": "#100A0A", "panel": "#1B1113", "panel2": "#140D0F",
+                  "border": "#3E2429", "dot": "#F5B544",
+                  "grad": ("radial-gradient(1100px 600px at 18% -6%, rgba(234,88,12,.22), transparent 62%),"
+                           "radial-gradient(820px 460px at 88% 14%, rgba(190,24,93,.16), transparent 60%)")},
+}
+
+
+def theme_css(key):
+    t = THEMES.get(key) or THEMES["gece"]
+    grad = (f"background-image:{t['grad']};background-attachment:fixed;background-repeat:no-repeat;"
+            if t.get("grad") else "background-image:none;")
+    return (
+        "<style>"
+        f'[data-testid="stAppViewContainer"],.stApp,body{{background-color:{t["bg"]};{grad}}}'
+        '[data-testid="stMain"],[data-testid="stMainBlockContainer"],section.main{background:transparent}'
+        f'div[data-testid="stVerticalBlockBorderWrapper"]{{background:{t["panel"]};border-radius:18px;'
+        f'border-color:{t["border"]}}}'
+        f'.opp,.idx,.feat,.regime,.kpi,.critbar,.wll,.jt{{background:{t["panel"]};border-color:{t["border"]}}}'
+        f'.tile,.card,.nwi,.funnel div{{background:{t["panel2"]};border-color:{t["border"]}}}'
+        f'.dot-live{{background:{t["dot"]}}}'
+        "</style>")
+
+
+def panel(label, key):
+    """Başlıktaki açılır kutu: st.popover varsa onu, yoksa expander'ı kullanır."""
+    p = getattr(st, "popover", None)
+    return p(label) if p else st.expander(label)
+
+
+def notes_body():
+    n = ss.notes
+    H(f'<div style="font-size:13px;font-weight:800;margin-bottom:4px">Bildirimler</div>'
+      f'<div class="muted small">Yapay zeka taraması taze ve teyitli bir kırılım bulduğunda buraya düşer. '
+      f'Uygulama açıkken çalışır; kapalıyken tarama yapılmaz.</div>')
+    if not n:
+        H('<div class="muted" style="padding:10px 0">Henüz bildirim yok.</div>')
+    else:
+        rows = ""
+        for x in n[:20]:
+            rows += (f'<a class="nw" target="_self" href="{link(sec="Piyasalar", sym=x["ticker"])}">'
+                     f'<span class="nwb"><b>{esc(x["title"])}</b>'
+                     f'<span class="muted small nwm">{esc(x["body"])} · {esc(x["at"])}</span></span>'
+                     f'<span class="nwx">→</span></a>')
+        H(rows)
+    if button("Okundu işaretle", key="btn_notes_seen"):
+        ss.notes_seen = len(ss.notes)
+        st.rerun()
+    if button("Bildirimleri temizle", key="btn_notes_clear"):
+        gone = list(ss.get("notes_gone") or [])
+        gone += [f'{x["ticker"]}|{x["day"]}' for x in ss.notes]
+        ss.notes_gone = list(dict.fromkeys(gone))[-300:]
+        ss.notes, ss.notes_seen = [], 0
+        st.rerun()
+
+
+def account_body():
+    H(f'<div style="font-size:13px;font-weight:800">Hesap</div>'
+      f'<div class="muted small">Yerel oturum · <span class="mono">{esc(SID)}</span></div>'
+      f'<div class="muted small" style="margin-top:2px">Ayarlar bu tarayıcı oturumunda saklanır; '
+      f'bağlantıyı paylaşırsan aynı ayarlarla açılır.</div>')
+    H('<div style="font-size:12px;font-weight:700;margin:12px 0 4px 0">Arka plan teması</div>')
+    names = [THEMES[k]["name"] for k in THEMES]
+    cur = THEMES.get(ss.get("theme") or "gece", THEMES["gece"])["name"]
+    picked = seg("Tema", names, "w_theme", cur)
+    key = next((k for k, v in THEMES.items() if v["name"] == picked), "gece")
+    if key != ss.get("theme"):
+        ss.theme = key
+        st.rerun()
+    sw = "".join(f'<span title="{esc(v["name"])}" style="width:26px;height:26px;border-radius:8px;'
+                 f'display:inline-block;border:2px solid {"#ECEEF1" if k == ss.theme else "transparent"};'
+                 f'background:{v["bg"]};box-shadow:inset 0 0 0 1px {v["border"]}"></span>'
+                 for k, v in THEMES.items())
+    H(f'<div style="display:flex;gap:7px;margin-top:8px">{sw}</div>')
+    H('<div style="font-size:12px;font-weight:700;margin:14px 0 4px 0">Veri</div>')
+    if button("Önbelleği temizle ve yeniden çek", key="btn_cacheclear"):
+        for fn in (md.get_market_snapshot, md.get_daily_batch, md.get_intraday_batch,
+                   md.get_universe_history):
+            try:
+                fn.clear()
+            except Exception:
+                pass
+        for fn in (run_ai_scan, run_scan, ch.build_payload, get_regime):
+            try:
+                fn.clear()
+            except Exception:
+                pass
+        ss.ai_nonce = int(ss.get("ai_nonce", 0)) + 1
+        st.toast("Önbellek temizlendi — veriler yeniden çekiliyor")
+        st.rerun()
+    H('<div class="muted small" style="margin-top:8px">Fiyatlar Yahoo Finance, tarama evreni Nasdaq '
+      'tarayıcı servisi, duyarlılık CNN, takvim ForexFactory.</div>')
+
+
 def render_header():
-    c1, c2, c3 = st.columns([5.6, 2.4, 0.9], vertical_alignment="center")
+    H(theme_css(ss.get("theme") or "gece"))
+    c1, c2, c3 = st.columns([5.0, 2.3, 1.6], vertical_alignment="center")
     with c1:
         nav = "".join(f'<a class="{"active" if s == SEC else ""}" target="_self" '
-                      f'href="{link(sec=s, opp=None, sector=None)}">{esc(s)}</a>' for s in SECTIONS)
+                      f'href="{link(sec=s, opp=None, aip=None, sector=None)}">{esc(s)}</a>' for s in SECTIONS)
         H(f'<div class="hdr"><div class="brand">{LOGO_SVG}<span>Pulse</span></div><nav class="navbar">{nav}</nav></div>')
     with c2:
         q = st.text_input("Ara", key="q", placeholder="🔍  Sembol, parite, indikatör ara…",
                           label_visibility="collapsed")
     with c3:
-        H('<div class="hdr-icons"><span class="hbtn">🔔</span><span class="hbtn">A</span></div>')
+        n_new = max(0, len(ss.notes) - int(ss.get("notes_seen") or 0))
+        p1, p2 = st.columns(2)
+        with p1:
+            with panel(f"🔔 {n_new}" if n_new else "🔔", "pop_notes"):
+                notes_body()
+        with p2:
+            with panel("A", "pop_acct"):
+                account_body()
     H('<div class="hdr-line"></div>')
     if q and q.strip():
         render_search(q.strip()[:60])
@@ -910,10 +1075,11 @@ def render_chart_panel(sym):
         H(f'<div class="panel-title">{esc(sym)}</div><div class="muted" style="margin:10px 0 16px 0">Bu sembol için '
           f'veri alınamadı. Yahoo Finance sembolünü kontrol et (ör. BIST için <span class="mono">THYAO.IS</span>, '
           f'parite için <span class="mono">EURUSD=X</span>) ya da birkaç dakika sonra tekrar dene.</div>')
-        return None, "1A", None
+        return None, TF_DEF, None
     cur = d.get("currency") or "USD"
     dec = pdec(sym, d["last"])
-    h1, h2 = st.columns([2.3, 1.45], vertical_alignment="top")
+    apply_pending_tf("w_tf")
+    h1, h2 = st.columns([2.6, 1.15], vertical_alignment="top")
     with h1:
         H(f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{avatar(sym, 30)}'
           f'<span class="panel-title">{esc(d["name"])}</span><span class="chip mono">{esc(sym)}</span>'
@@ -924,7 +1090,6 @@ def render_chart_panel(sym):
           f'{chg(d["change_abs"], dec)} ({pct(d["change_pct"])})</span>'
           f'<span class="muted">Günlük · {esc(cur)}</span></div>')
     with h2:
-        tf = seg("Zaman aralığı", TF_LIST, "w_tf", "1A", fmt=lambda t: TF_LABEL.get(t, t))
         in_wl = sym in ss.watchlist
         if button("★ İzleniyor — listeden çıkar" if in_wl else "☆ İzleme listesine ekle", key="wl_toggle"):
             if in_wl:
@@ -948,17 +1113,19 @@ def render_chart_panel(sym):
     if en_sum and (d.get("desc") or len(en_sum) > 260):
         with st.expander("Şirket hakkında — ayrıntılı (Yahoo Finance)"):
             H(f'<div class="desc" style="margin:0">{esc(en_sum)}</div>')
+    H('<div class="muted small" style="margin:14px 0 3px 0">Mum aralığı</div>')
+    tf = seg("Mum aralığı", TF_LIST, "w_tf", TF_DEF, fmt=lambda t: TF_LABEL.get(t, t))
     full, bars, intr = chart_data(sym, tf)
     df = full.tail(bars)
-    H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:12px 0 6px 0">'
+    H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:10px 0 6px 0">'
       f'<span class="muted">Açılış <span class="mono" style="color:{TXT}">{tr(df["Open"].iloc[0], dec)}</span></span>'
       f'<span class="muted">Yüksek <span class="mono" style="color:{TXT}">{tr(df["High"].max(), dec)}</span></span>'
       f'<span class="muted">Düşük <span class="mono" style="color:{TXT}">{tr(df["Low"].min(), dec)}</span></span>'
       f'<span class="muted">Kapanış <span class="mono" style="color:{TXT}">{tr(df["Close"].iloc[-1], dec)}</span></span>'
-      f'<span class="muted">{TF_NAME[tf]} · {candle_label(tf, intr)}</span><span style="flex:1"></span>'
+      f'<span class="muted">{candle_label(tf, intr)}</span><span style="flex:1"></span>'
       f'<span class="muted small">tekerlek / çift tık: yakınlaştır · sağ tık ya da ＋− düğmeleri: uzaklaştır · '
       f'sürükle: kaydır · çizime tıkla: renk · “Tam ekran”</span></div>')
-    render_big_chart(sym, tf, height=620)
+    render_big_chart(sym, tf, height=620, tf_key="w_tf")
     fired = ch.check_alerts(ss.alerts.get(sym, []), daily)
     for a in fired:
         st.toast(f"🔔 {sym}: {ch.alert_text(a)} — tetiklendi")
@@ -1002,8 +1169,7 @@ def render_tech(df, tf="1A", sym=""):
     """Teknik Özet: A–Z notu, grup kırılımı, kural tabanlı yorum ve klasik gösterge listesi."""
     H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
       f'<span class="panel-title">Teknik Özet</span>'
-      f'<span class="muted small srcap">{esc(TF_NAME.get(tf, "Günlük"))} · {esc(candle_label(tf, tf in INTRA))}'
-      f'</span></div>')
+      f'<span class="muted small srcap">{esc(TF_NAME.get(ch.norm_tf(tf), "Günlük"))} mumlar</span></div>')
     g = None
     try:
         g = _grade_cached(sym, tf, ch.data_token(sym, tf) if sym else str(len(df)), df)
@@ -1073,6 +1239,36 @@ def render_sr(df, sym):
       f'<span class="muted small srcap">Klasik pivot · günlük · son fiyat {tr(price, dec)}</span></div>'
       f'<div class="srstrip">{cells}</div>')
     H('<div style="height:6px"></div>')   # kutunun alt kenarına değmesin
+
+
+def news_link(it):
+    """Haberin kendi sayfası; Yahoo bağlantı vermediyse sembolün haber akışı."""
+    u = safe_url(it.get("link"))
+    if u:
+        return u
+    t = _SYM_RE.sub("", str(it.get("ticker") or "")).upper()[:12]
+    return f"https://finance.yahoo.com/quote/{t}/news/" if t else "https://finance.yahoo.com/topic/stock-market-news/"
+
+
+def news_rows(items, left=None):
+    """Tamamı tıklanabilir haber satırları — kaynağın sitesine yeni sekmede açılır."""
+    out = ""
+    for it in items:
+        sc = {"Yükseliş": UP, "Düşüş": DOWN}.get(it.get("sentiment"), MUT)
+        thumb = safe_url(it.get("thumb"))
+        if left is not None:
+            img = left(it, sc)
+        elif thumb:
+            img = f'<span class="nwi" style="background-image:url(\'{esc(thumb)}\')"></span>'
+        else:
+            img = f'<span class="nwi">{esc((it.get("ticker") or it.get("pair") or "•")[:5])}</span>'
+        meta = " · ".join(esc(x) for x in [it.get("ticker") or it.get("pair"), it.get("source"),
+                                           it.get("when")] if x)
+        out += (f'<a class="nw" href="{esc(news_link(it))}" target="_blank" rel="noopener">{img}'
+                f'<span class="nwb"><b>{esc(it["title"])}</b>'
+                f'<span class="muted small nwm"><span style="color:{sc}">●</span> {meta}</span></span>'
+                f'<span class="nwx">↗</span></a>')
+    return out
 
 
 def render_watchlist_compact():
@@ -1234,18 +1430,10 @@ def render_piyasalar():
     with c2:
         with st.container(border=True):
             news = md.get_watchlist_news(ss.watchlist)
-            H(f'<div class="sec-head"><h3>İzleme Listesi Haberleri</h3><span style="margin-left:auto">'
-              f'{src_chip(news[0]["src"] if news else "none")}</span></div>')
-            rows = ""
-            for it in news[:8]:
-                title = (f'<a href="{esc(it["link"])}" target="_blank">{esc(it["title"])}</a>'
-                         if safe_url(it.get("link"))
-                         else esc(it["title"]))
-                sc = {"Yükseliş": UP, "Düşüş": DOWN}.get(it["sentiment"], MUT)
-                rows += (f'<div class="nw"><div style="flex:1"><b>{title}</b><div class="muted small" '
-                         f'style="margin-top:3px"><span style="color:{sc}">●</span> {esc(it["ticker"])} · '
-                         f'{esc(it["source"])} · {esc(it["when"])}</div></div></div>')
-            H(rows or '<div class="muted">Haber bulunamadı.</div>')
+            H(f'<div class="sec-head"><h3>İzleme Listesi Haberleri</h3>'
+              f'<span class="muted small">habere tıkla → kaynağın sitesi</span>'
+              f'<span style="margin-left:auto">{src_chip(news[0]["src"] if news else "none")}</span></div>')
+            H(news_rows(news[:8]) or '<div class="muted">Haber bulunamadı.</div>')
 
 
 # ======================================================================
@@ -1375,10 +1563,100 @@ def render_filter_editor(n_active):
             if button("Kapat", key="flt_close"):
                 ss.flt_edit = False
                 st.rerun()
+        render_saved_filters()
         with st.expander("İndikatör sözlüğü"):
             H("".join(f'<div class="stat-row"><span style="width:190px;font-weight:700">{esc(n)}</span>'
                       f'<span class="lbl small">{esc(m["desc"])}</span><span class="chip">{esc(m["group"])}</span></div>'
                       for n, m in en.INDICATORS.items()))
+
+
+# ---------------------------------------------------------------- kayıtlı filtreler
+def flt_snapshot():
+    return {"name": (ss.get("flt_name") or "Filtrem").strip()[:40] or "Filtrem",
+            "rows": copy.deepcopy(en.normalize_conds(ss.flt_rows)),
+            "logic": ss.get("flt_logic") or "VE",
+            "min": int(ss.get("flt_min") or 1)}
+
+
+def apply_pending_filter():
+    """Kayıtlı filtre yüklemesi — widget'lar çizilmeden önce uygulanır."""
+    f = ss.get("flt_pending")
+    if not f:
+        return
+    ss.flt_pending = None
+    rows = f.get("rows") or []
+    if not isinstance(rows, list) or not rows:
+        return
+    ss.flt_rows = copy.deepcopy(rows)
+    ss.flt_ver = int(ss.get("flt_ver") or 0) + 1
+    n_act = sum(1 for r in rows if r.get("Aktif"))
+    ss.flt_lastN = n_act
+    for k, v in (("flt_name", str(f.get("name") or "Filtrem")[:40]),
+                 ("flt_logic", f.get("logic") if f.get("logic") in ("VE", "VEYA") else "VE"),
+                 ("flt_min", int(min(max(1, int(f.get("min") or 1)), max(1, n_act))))):
+        ss[k] = v
+        ss["_last_" + k] = v
+
+
+def render_saved_filters():
+    H('<div style="font-size:12px;font-weight:700;margin:14px 0 4px 0">Kayıtlı filtrelerim</div>')
+    saved = ss.get("saved_filters") or []
+    names = [f["name"] for f in saved]
+    opts = ["—"] + names
+    if ss.get("w_savedflt") not in opts:      # silinen filtre seçili kalmasın
+        ss["w_savedflt"] = "—"
+    s1, s2, s3 = st.columns([2, 1, 1], vertical_alignment="bottom")
+    with s1:
+        pick = st.selectbox("Kayıtlı filtre", opts, key="w_savedflt", label_visibility="collapsed")
+    with s2:
+        if button("Yükle", key="flt_load", disabled=pick == "—"):
+            f = next((x for x in saved if x["name"] == pick), None)
+            if f:
+                ss.flt_pending = copy.deepcopy(f)
+                st.toast(f"“{pick}” yüklendi")
+                st.rerun()
+    with s3:
+        if button("Sil", key="flt_del", disabled=pick == "—"):
+            ss.saved_filters = [x for x in saved if x["name"] != pick]
+            st.toast(f"“{pick}” silindi")
+            st.rerun()
+    v1, v2 = st.columns([1, 1])
+    with v1:
+        if button("💾 Bu filtreyi kaydet", key="flt_save", primary=True):
+            snap = flt_snapshot()
+            ss.saved_filters = [x for x in saved if x["name"] != snap["name"]] + [snap]
+            del ss.saved_filters[20:]
+            st.toast(f"“{snap['name']}” kaydedildi")
+            st.rerun()
+    with v2:
+        try:
+            st.download_button("⬇ JSON olarak indir", key="flt_export",
+                               data=json.dumps(ss.get("saved_filters") or [], ensure_ascii=False, indent=1),
+                               file_name="pulse_filtreler.json", mime="application/json")
+        except Exception:
+            pass
+    if names:
+        H('<div class="muted small" style="margin-top:4px">' +
+          " · ".join(esc(n) for n in names) + "</div>")
+    with st.expander("JSON'dan geri yükle"):
+        txt = st.text_area("Filtre JSON'u", key="flt_import_txt", height=90,
+                           placeholder='[{"name": "...", "rows": [...]}]', label_visibility="collapsed")
+        if button("İçe aktar", key="flt_import"):
+            try:
+                data = json.loads(txt or "[]")
+                ok = [x for x in data if isinstance(x, dict) and x.get("rows")]
+                if not ok:
+                    raise ValueError("boş")
+                have = {x["name"] for x in ok}
+                ss.saved_filters = [x for x in (ss.get("saved_filters") or [])
+                                    if x["name"] not in have] + ok
+                del ss.saved_filters[20:]
+                st.toast(f"{len(ok)} filtre içe aktarıldı")
+                st.rerun()
+            except Exception:
+                st.warning("JSON okunamadı — indirdiğin dosyanın içeriğini olduğu gibi yapıştır.")
+        H('<div class="muted small">Filtreler oturumda saklanır; uygulama yeniden başlarsa bu JSON ile '
+          'geri yükleyebilirsin.</div>')
 
 
 def _seed_journal(hist):
@@ -1413,7 +1691,288 @@ def opp_chart(df, o):
     return _layout(fig, 230, margin=dict(l=4, r=70, t=6, b=4))
 
 
+# ======================================================================
+# YAPAY ZEKA TRADE FIRSATLARI
+# ======================================================================
+AI_STATE_STYLE = {"breakout": (UP, UP_BG, "KIRILIM"), "retest": (ACCENT, ACC_BG, "GERİ TEST"),
+                  "forming": (WARN, WARN_BG, "OLUŞUYOR")}
+C15_STYLE = {"teyitli": (UP, UP_BG), "bekleniyor": (WARN, WARN_BG),
+             "bozuldu": (DOWN, DOWN_BG), "veri yok": (MUT, NEU_BG)}
+
+
+def ai_token():
+    """Önbellek anahtarı: 10 dakikalık pencere + elle yenileme sayacı."""
+    now = pd.Timestamp.now(tz=md.TZ)
+    return f'{now:%Y-%m-%d %H}:{now.minute // 10}|{ss.get("ai_nonce", 0)}'
+
+
+@st.cache_data(ttl=600, show_spinner="Piyasa taranıyor — NASDAQ + NYSE…")
+def run_ai_scan(token, cfg_json):
+    """Üç aşamalı tarama. Ağır iş yalnızca eleme sonrası kalan sembollerde yapılır."""
+    cfg = json.loads(cfg_json)
+    snap = md.get_market_snapshot()
+    cand, steps = en.ai_prefilter(snap, cfg)
+    idx = md.get_daily_batch(("SPY", "QQQ"))
+    regime = en.ai_regime(idx, int(cfg.get("regime_ema", 50)))
+    prelim = [t for t in list(cand["ticker"].head(int(cfg.get("prelim", 60))))] if len(cand) else []
+    daily = md.get_daily_batch(tuple(prelim)) if prelim else {}
+    meta = cand.set_index("ticker").to_dict("index") if len(cand) else {}
+    passed, ema_fail = [], 0
+    for t in prelim:
+        r = en.ai_evaluate(t, daily.get(t), meta=meta.get(t), cfg=cfg)
+        if not r:
+            continue
+        if r["ema_ok"]:
+            passed.append(r)
+        else:
+            ema_fail += 1
+    passed.sort(key=lambda r: -r["volume"])
+    top = passed[:int(cfg.get("top", 20))]
+    if top:
+        i15 = md.get_intraday_batch(tuple(r["ticker"] for r in top))
+        for r in top:
+            b = r["best"]
+            en.ai_apply_15m(r, en.confirm_15m(i15.get(r["ticker"]), b["level"], b["kind"]) if b else None)
+    top.sort(key=lambda r: -r["score"])
+    for r in top:
+        r["summary"] = en.ai_summary(r)
+        d = daily.get(r["ticker"])
+        r["df"] = d.tail(120).copy() if d is not None else None   # ayrıntı grafiği için
+    return {"rows": top, "steps": steps, "regime": regime, "ema_fail": ema_fail,
+            "prelim_n": len(prelim), "passed_n": len(passed),
+            "src": snap.attrs.get("src", "mock") if snap is not None else "none",
+            "capless": bool(steps.get("capless")),
+            "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M")}
+
+
+def ai_chart(df, r, height=250):
+    """Fırsatın günlük grafiği + kırılım seviyesi, stop ve hedefler."""
+    d = df.tail(90)
+    fig = go.Figure(go.Candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"],
+                                   close=d["Close"], increasing_line_color=UP, decreasing_line_color=DOWN,
+                                   name=r["ticker"]))
+    lines = []
+    p, b = r.get("plan"), r.get("best")
+    if b:
+        lines.append((b["level"], ACCENT, "Seviye"))
+    if p:
+        lines += [(p["stop"], DOWN, "Stop"), (p["tp1"], UP, "TP1 · %%%d" % round(p["part1"] * 100)),
+                  (p["tp2"], "#6EE7B7", "TP2 · kalan")]
+    for y, c_, lbl in lines:
+        fig.add_hline(y=y, line=dict(color=c_, width=1, dash="dot" if lbl == "Seviye" else "dash"),
+                      annotation_text=f"{lbl} {tr(y)}", annotation_position="right",
+                      annotation_font=dict(color=c_, size=10))
+    ys = [float(d["Low"].min()), float(d["High"].max())] + [y for y, _, _ in lines]
+    lo, hi = min(ys), max(ys)
+    fig.update_yaxes(range=[lo - (hi - lo) * 0.06, hi + (hi - lo) * 0.06])
+    fig.update_layout(xaxis_rangeslider_visible=False)
+    rb = _rangebreaks(d.index)
+    if rb:
+        fig.update_xaxes(rangebreaks=rb)
+    return _layout(fig, height, margin=dict(l=4, r=96, t=6, b=4))
+
+
+def push_notes(rows):
+    """Taze ve teyitli kırılımları bildirim kutusuna düşürür (aynı gün bir kez)."""
+    day = pd.Timestamp.now(tz=md.TZ).strftime("%Y-%m-%d")
+    have = {f'{n["ticker"]}|{n["day"]}' for n in ss.notes}
+    gone = set(ss.get("notes_gone") or [])
+    added = 0
+    for r in rows:
+        if not en.ai_fresh_breakout(r):
+            continue
+        k = f'{r["ticker"]}|{day}'
+        if k in have or k in gone:     # aynı gün tekrar düşmesin, silinenler geri gelmesin
+            continue
+        b, c = r["best"], r.get("c15") or {}
+        ss.notes.insert(0, {"ticker": r["ticker"], "day": day,
+                            "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M"),
+                            "title": f'{r["ticker"]} · {b["name"]}',
+                            "body": f'{tr(r["price"])} — {b["note"]} · 15dk {c.get("state", "—")}',
+                            "level": b["level"], "score": r["score"]})
+        added += 1
+    del ss.notes[40:]
+    return added
+
+
+def render_ai_opps():
+    anchor("ai")
+    cfg = en.ai_cfg({"tp1_part": 0.40})
+    res = run_ai_scan(ai_token(), json.dumps(cfg, sort_keys=True))
+    rows, reg, steps = res["rows"], res["regime"], res["steps"]
+    new_n = push_notes(rows)
+    if new_n:
+        st.toast(f"🔔 {new_n} yeni kırılım bildirimi")
+        st.rerun()   # başlıktaki zil rozeti aynı anda güncellensin
+
+    t1, t2 = st.columns([2.8, 1.6], vertical_alignment="center")
+    with t1:
+        H(f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+          f'<span style="font-size:20px;font-weight:800">🤖 Yapay Zeka Trade Fırsatları</span>'
+          f'{src_chip(res["src"])}</div>'
+          f'<div class="muted small" style="margin-top:3px">NASDAQ + NYSE taraması · son tarama {res["at"]} · '
+          f'ilk {res["prelim_n"]} aday → EMA kapısını geçen {res["passed_n"]} → en yüksek hacimli '
+          f'{len(rows)}</div>')
+    with t2:
+        c1, c2 = st.columns(2)
+        with c1:
+            ss.ai_auto = bool(toggle("Gün içi tazele", "w_aiauto",
+                                     "Sayfa açıkken taramayı belirli aralıkla tekrarlar."))
+        with c2:
+            if button("↻ Yeniden tara", key="btn_airescan", primary=True):
+                ss.ai_nonce = int(ss.get("ai_nonce", 0)) + 1
+                md.get_market_snapshot.clear()
+                md.get_daily_batch.clear()
+                md.get_intraday_batch.clear()
+                st.rerun()
+
+    # ---- bölge (rejim) kapısı
+    sp, qq = reg.get("SPY"), reg.get("QQQ")
+    def _rchip(nm, v):
+        if not v:
+            return f'<span class="badge" style="color:{MUT};background:{NEU_BG}">{nm} —</span>'
+        c_ = UP if v["ok"] else DOWN
+        return (f'<span class="badge" style="color:{c_};background:{UP_BG if v["ok"] else DOWN_BG}">'
+                f'{nm} {"✓" if v["ok"] else "✕"} 50 EMA {pct(v["pct"]) if v["pct"] is not None else ""}</span>')
+    ok = bool(reg.get("ok"))
+    H(f'<div class="critbar" style="margin-top:12px"><div style="display:flex;align-items:center;gap:8px;'
+      f'flex-wrap:wrap"><span class="boxlbl">Bölge filtresi</span>{_rchip("S&amp;P 500", sp)}{_rchip("Nasdaq", qq)}'
+      f'</div><div class="muted small" style="flex:1 1 300px">Strateji yalnızca her iki endeks de 50 günlük '
+      f'EMA üstündeyken long arar.</div></div>')
+    if not ok:
+        st.warning("Endekslerden en az biri 50 günlük EMA'nın altında — strateji bu rejimde long aramaz. "
+                   "Aşağıdaki liste bilgi amaçlı gösteriliyor.")
+
+    H(f'<div class="funnel"><div>Evren<b>{steps.get("evren", 0)}</b></div>'
+      f'<div>Fiyat ≥ 3 $<b>{steps.get("fiyat", 0)}</b></div>'
+      f'<div>Günlük değişim +<b>{steps.get("degisim", 0)}</b></div>'
+      f'<div>Piyasa değeri ≥ 300 M$<b>'
+      f'{"—" if res["capless"] else steps.get("piyasa_degeri", 0)}</b></div>'
+      f'<div>21 &amp; 50 EMA üstü<b>{res["passed_n"]}</b></div>'
+      f'<div>Hacimde ilk {cfg["top"]}<b>{len(rows)}</b></div></div>')
+    if res["capless"]:
+        H('<div class="muted small">Nasdaq tarayıcı servisi yanıt vermedi — sınırlı evrenle tarandı, '
+          'piyasa değeri filtresi uygulanamadı.</div>')
+
+    if not rows:
+        H('<div class="muted" style="padding:18px 0">Bugün filtreye uyan hisse yok.</div>')
+        return
+
+    sel = next((r for r in rows if r["ticker"] == AIP), rows[0])
+    left, right = st.columns([2.25, 1], gap="medium")
+    with left:
+        head = ('<div class="opp-grid ai-grid opp-head"><span>Sembol</span><span>Formasyon</span>'
+                '<span class="r">Fiyat</span><span class="r">Hacim</span><span>15 dk</span>'
+                '<span class="r">Stop</span><span class="r">R/R</span><span>Skor</span></div>')
+        body = ""
+        for r in rows:
+            b, p, c = r["best"], r["plan"], r.get("c15") or {}
+            sfg, sbg, slab = AI_STATE_STYLE.get((b or {}).get("state"), (MUT, NEU_BG, "—"))
+            cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
+            sc = UP if r["score"] >= 70 else ACCENT if r["score"] >= 55 else WARN
+            body += (f'<a class="opp-grid ai-grid opp-row{" sel" if r["ticker"] == sel["ticker"] else ""}" '
+                     f'target="_self" href="{link(aip=r["ticker"], f="ai")}">'
+                     f'<span style="display:flex;align-items:center;gap:11px">{avatar(r["ticker"], 32)}'
+                     f'<span style="min-width:0"><b style="font-size:13.5px">{esc(r["ticker"])}</b>'
+                     f'<div class="muted small" style="white-space:nowrap;overflow:hidden;'
+                     f'text-overflow:ellipsis">{esc(r["name"])}</div></span></span>'
+                     f'<span style="min-width:0"><span class="aist" style="color:{sfg};background:{sbg}">'
+                     f'{slab}</span><div class="muted small" style="white-space:nowrap;overflow:hidden;'
+                     f'text-overflow:ellipsis;margin-top:3px">{esc((b or {}).get("name", "formasyon yok"))}'
+                     f'</div></span>'
+                     f'<span class="r"><div style="font-weight:600">{tr(r["price"])}</div>'
+                     f'<div style="font-size:11px;font-weight:600;color:{col(r["chg"])}">{pct(r["chg"])}</div></span>'
+                     f'<span class="r" style="color:{SOFT}">{big(r["volume"], "")}</span>'
+                     f'<span><span class="aist" style="color:{cfg_};background:{cbg}">'
+                     f'{esc(c.get("state", "—"))}</span></span>'
+                     f'<span class="r" style="color:{DOWN}">{tr(p["stop"]) if p else "—"}</span>'
+                     f'<span class="r" style="font-weight:700">{tr(p["rr1"], 1) if p else "—"}</span>'
+                     f'<span><span class="scorebar"><span style="display:block;height:6px;'
+                     f'width:{r["score"]:.0f}%;background:{sc}"></span></span>'
+                     f'<span class="mono" style="font-weight:600">{tr(r["score"], 0)}</span></span></a>')
+        H(f'<div class="opp"><div class="opp-scroll">{head}{body}</div><div class="opp-foot">'
+          f'<span>Skor: formasyon gücü + kırılım durumu + 15 dakikalık teyit + R/R + trend</span>'
+          f'<span style="margin-left:auto">Hacme göre ilk {cfg["top"]} hisse değerlendirilir</span></div></div>')
+    with right:
+        render_ai_detail(sel)
+    if ss.get("ai_auto"):
+        components.html(_AUTO_JS % 180, height=0)
+        H('<div class="muted small" style="margin-top:8px">Gün içi tazeleme açık — sayfa 3 dakikada bir '
+          'yenilenip taramayı tekrarlıyor.</div>')
+
+
+# Sayfayı belirli aralıkla yenileyip taramayı tekrarlar (yalnızca sekme açıkken).
+_AUTO_JS = """<script>
+(function(){ setTimeout(function(){ try{ window.parent.location.reload(); }catch(e){} }, %d*1000); })();
+</script>"""
+
+
+def render_ai_detail(r):
+    """Seçili fırsatın grafiği, planı ve kural tabanlı açıklaması."""
+    b, p, c = r["best"], r["plan"], r.get("c15") or {}
+    with st.container(border=True):
+        sfg, sbg, slab = AI_STATE_STYLE.get((b or {}).get("state"), (MUT, NEU_BG, "—"))
+        H(f'<div style="display:flex;align-items:center;gap:11px">{avatar(r["ticker"], 38)}'
+          f'<div style="flex:1;min-width:0"><a class="plain" target="_self" '
+          f'href="{link(sec="Piyasalar", sym=r["ticker"])}"><b style="font-size:17px">{esc(r["ticker"])}</b></a>'
+          f'<div class="muted small">{esc(r["name"])}{" · " + esc(r["sector"]) if r["sector"] else ""}</div></div>'
+          f'<span class="aist" style="color:{sfg};background:{sbg}">{slab}</span></div>')
+        if r.get("df") is not None and len(r["df"]) > 10:
+            plot(ai_chart(r["df"], r), key=f'aic_{r["ticker"]}')
+        if b:
+            H(f'<div class="muted small" style="margin-top:2px"><b style="color:{SOFT}">{esc(b["name"])}</b> — '
+              f'{esc(b["note"])} · güven %{tr(b["conf"] * 100, 0)} · hacim {tr(b["vol_x"], 1)}x</div>')
+        cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
+        H(f'<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+          f'<span class="aist" style="color:{cfg_};background:{cbg}">15 dk · {esc(c.get("state", "—"))}</span>'
+          f'<span class="muted small" style="flex:1">{esc(c.get("note", ""))}</span></div>')
+        if p:
+            tiles = [("Giriş", tr(p["entry"]), TXT), ("Stop", tr(p["stop"]), DOWN),
+                     (f'TP1 · %{round(p["part1"] * 100)}', tr(p["tp1"]), UP),
+                     (f'TP2 · kalan %{round(p["part2"] * 100)}', tr(p["tp2"]), "#6EE7B7")]
+            H('<div class="plan">' + "".join(
+                f'<div class="tile"><span class="k">{esc(k)}</span>'
+                f'<span class="v" style="color:{c_}">{v}</span></div>' for k, v, c_ in tiles) + "</div>")
+            H(f'<div class="planrow"><span class="l">Risk</span>'
+              f'<span class="v" style="color:{DOWN}">−%{tr(p["risk_pct"], 2)}</span></div>'
+              f'<div class="planrow"><span class="l">R/R · TP1 / TP2</span>'
+              f'<span class="v">1 : {tr(p["rr1"], 2)}  ·  1 : {tr(p["rr2"], 2)}</span></div>'
+              f'<div class="planrow"><span class="l">Stop nereden</span>'
+              f'<span class="v" style="font-size:12px">{esc(p["stop_src"])}</span></div>'
+              f'<div class="planrow"><span class="l">TP1 nereden</span>'
+              f'<span class="v" style="font-size:12px">{esc(p["tp1_src"])}</span></div>')
+            H(f'<div class="gtext" style="margin-top:10px">{esc(p["rule"])}</div>')
+        if r.get("summary"):
+            with st.expander("Bu fırsat neden listede"):
+                H(f'<div class="greason">{esc(r["summary"])}</div>')
+        if p and button("İşlem günlüğüne ekle", key=f'aij_{r["ticker"]}', primary=True):
+            if ss.journal is None:
+                ss.journal = []
+            ss.journal.append({"t": r["ticker"], "dir": "LONG", "entry": p["entry"], "stop": p["stop"],
+                               "target": p["tp1"], "atr": p["atr"],
+                               "date": pd.Timestamp.today().strftime("%Y-%m-%d"), "example": False})
+            st.toast(f'{r["ticker"]} işlem günlüğüne eklendi')
+
+
+AI_MODE = "🤖 Yapay Zeka Fırsatları"
+
+
 def render_short():
+    """Short Term: hazır yapay zeka stratejisi ya da kullanıcının kendi filtresi."""
+    now0 = pd.Timestamp.now(tz=md.TZ)
+    H(f'<div class="page-title">Swing &amp; Kısa Vade</div><div class="muted" style="margin-bottom:10px">'
+      f'<span class="dot-live"></span>{md.tr_date_label(now0)} {now0.year} · hazır strateji ya da kendi filtren'
+      f'</div>')
+    mode = seg("Mod", [AI_MODE, "Kendi Filtrem"], "w_aimode", AI_MODE)
+    if mode == AI_MODE:
+        render_ai_opps()
+        render_journal(md.get_universe_history()["hist"])
+        return
+    render_own_filter()
+
+
+def render_own_filter():
+    apply_pending_filter()
     U = md.get_universe_history()
     hist = U["hist"]
     fkey = U["fetched"].isoformat()
@@ -1431,9 +1990,9 @@ def render_short():
 
     t1, t2 = st.columns([2.6, 2], vertical_alignment="bottom")
     with t1:
-        H(f'<div class="page-title">Swing &amp; Kısa Vade</div><div class="muted"><span class="dot-live"></span>'
-          f'Son tarama {U["fetched"].strftime("%H:%M")} · {U["n"]} hisse tarandı · {md.tr_date_label(now)} '
-          f'{now.year}</div>')
+        H(f'<div style="font-size:20px;font-weight:800">Kendi Filtrem</div><div class="muted">'
+          f'<span class="dot-live"></span>Son tarama {U["fetched"].strftime("%H:%M")} · {U["n"]} hisse tarandı'
+          f'</div>')
     with t2:
         b0, b1, b2 = st.columns([1.1, 1.2, 1.3], vertical_alignment="center")
         with b0:
@@ -2081,6 +2640,7 @@ def render_forex():
             else:
                 last, prev = float(daily["Close"].iloc[-1]), float(daily["Close"].iloc[-2])
                 dec = meta["dec"]
+                apply_pending_tf("w_fxtf")
                 h1, h2 = st.columns([2, 1.5], vertical_alignment="top")
                 with h1:
                     H(f'<div style="display:flex;align-items:center;gap:9px">{avatar(meta["symbol"], 30)}'
@@ -2090,16 +2650,16 @@ def render_forex():
                       f'<span class="mono" style="color:{col(last - prev)};font-weight:600;font-size:13px">'
                       f'{chg(last - prev, dec)} ({pct((last / prev - 1) * 100)})</span></div>')
                 with h2:
-                    tf = seg("Zaman", TF_LIST, "w_fxtf", "1A", fmt=lambda t: TF_LABEL.get(t, t))
+                    tf = seg("Mum aralığı", TF_LIST, "w_fxtf", TF_DEF, fmt=lambda t: TF_LABEL.get(t, t))
                 full, bars, intr = chart_data(meta["symbol"], tf)
                 d = full.tail(bars)
                 H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;margin:10px 0 6px 0">'
                   f'<span class="muted">Yüksek <span class="mono" style="color:{TXT}">{tr(d["High"].max(), dec)}</span>'
                   f'</span><span class="muted">Düşük <span class="mono" style="color:{TXT}">{tr(d["Low"].min(), dec)}'
-                  f'</span></span><span class="muted">{TF_NAME[tf]} · {candle_label(tf, intr)}</span>'
+                  f'</span></span><span class="muted">{candle_label(tf, intr)}</span>'
                   f'<span style="flex:1"></span><span class="muted small">çift tık: yakınlaştır · '
                   f'sağ tık: uzaklaştır · soldaki araçlarla çiz</span></div>')
-                render_big_chart(meta["symbol"], tf, height=520)
+                render_big_chart(meta["symbol"], tf, height=520, tf_key="w_fxtf")
                 for a in ch.check_alerts(ss.alerts.get(meta["symbol"], []), daily):
                     st.toast(f"🔔 {FX}: {ch.alert_text(a)} — tetiklendi")
     with right:
@@ -2169,32 +2729,26 @@ def render_forex():
     with l:
         fs, fb = sbg.get(f["sentiment"], (NEU, NEU_BG))
         img = (f'<img src="{esc(f["thumb"])}" alt="">' if safe_url(f.get("thumb")) else "[HABER GÖRSELİ]")
-        ttl = (f'<a href="{esc(f["link"])}" target="_blank">{esc(f["title"])}</a>' if safe_url(f.get("link"))
-               else esc(f["title"]))
+        furl = news_link(f)
+        ttl = f'<a href="{esc(furl)}" target="_blank" rel="noopener">{esc(f["title"])} ↗</a>'
         tags = " ".join(f'<span class="chip mono">{esc(t)}</span>' for t in f.get("tags", []))
-        H(f'<div class="feat"><div class="img">{img}</div><div style="padding:16px 18px"><div style="display:flex;'
+        H(f'<a class="plain" href="{esc(furl)}" target="_blank" rel="noopener">'
+          f'<div class="feat"><div class="img">{img}</div><div style="padding:16px 18px"><div style="display:flex;'
           f'align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap"><span class="badge" style="color:{fs};'
           f'background:{fb}">{esc(f["sentiment"])}</span><span class="muted small">{esc(f["category"])} · '
           f'{esc(f["source"])} · {esc(f["when"])}</span>{src_chip(data["src"])}</div><b style="font-size:20px;'
           f'line-height:1.3;display:block">{ttl}</b><div class="muted" style="margin-top:8px;line-height:1.55">'
           f'{esc(f["summary"])}</div><div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">{tags}</div>'
-          f'</div></div>')
+          f'</div></div></a>')
     with r:
         with st.container(border=True):
-            rows = ""
-            for it in data["items"]:
-                sc, sb = sbg.get(it["sentiment"], (NEU, NEU_BG))
-                ttl = (f'<a href="{esc(it["link"])}" target="_blank">{esc(it["title"])}</a>'
-                       if safe_url(it.get("link"))
-                       else esc(it["title"]))
-                rows += (f'<div class="nw"><div style="width:84px;flex:none;display:flex;align-items:center;'
-                         f'background:#0C0D10;border-radius:10px;padding:4px">{svg_spark(it["spark"], sc, 76, 40)}</div>'
-                         f'<div style="flex:1;min-width:0"><b>{ttl}</b><div style="margin-top:5px;display:flex;'
-                         f'align-items:center;gap:7px;flex-wrap:wrap"><span class="badge" style="color:{sc};'
-                         f'background:{sb}">{esc(it["sentiment"])}</span><span class="muted mono small">'
-                         f'{esc(it["pair"])}</span><span class="muted small">{esc(it["source"])}</span><span '
-                         f'class="muted small">{esc(it["when"])}</span></div></div></div>')
-            H(rows or '<div class="muted">Bu kategoride haber yok.</div>')
+            H('<div class="muted small" style="margin-bottom:2px">Habere tıkla → kaynağın sitesinde açılır</div>')
+
+            def _spark(it, sc):
+                return (f'<span style="width:84px;flex:none;display:flex;align-items:center;'
+                        f'background:#0C0D10;border-radius:10px;padding:4px">'
+                        f'{svg_spark(it["spark"], sc, 76, 40)}</span>')
+            H(news_rows(data["items"], left=_spark) or '<div class="muted">Bu kategoride haber yok.</div>')
             st.caption("Yükseliş/Düşüş etiketi başlıktaki ifadelerden otomatik çıkarılır.")
 
 
