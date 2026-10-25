@@ -27,16 +27,56 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "3.1"
+CHART_VERSION = "3.2"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
-# Zaman aralığı → (yfinance periyodu, mum aralığı, gösterilecek gün)  ya da None = günlük
-# "4S" saatlik barlardan gün içinde 4'erli toplanır, "Hf" günlükten haftalığa çevrilir.
-INTRA = {"1G": ("5d", "5m", 1), "1H": ("1mo", "30m", 7), "4S": ("6mo", "1h", 45)}
-TF_BARS = {"1G": 10, "1H": 22, "4S": 70, "1A": 22, "3A": 66, "1Y": 252, "5Y": 1260, "Hf": 160}
-AGG4 = "4S"       # saatlik → 4 saatlik
-WEEKLY = "Hf"     # günlük → haftalık
+# ----------------------------------------------------------------------
+# Mum aralıkları — küçükten büyüğe sıralı (TradingView düzeni)
+#   src : (yfinance periyodu, yfinance aralığı) · None = günlük geçmişten türet
+#   agg : 0 yok · N saatlik barı N'erli topla · "W" haftalık · "M" aylık
+#   bars: açılışta görünen mum sayısı
+# ----------------------------------------------------------------------
+INTERVALS = {
+    "1m":  {"name": "1 dakika",  "short": "1dk",   "src": ("5d", "1m"),    "agg": 0,   "bars": 180},
+    "5m":  {"name": "5 dakika",  "short": "5dk",   "src": ("1mo", "5m"),   "agg": 0,   "bars": 160},
+    "15m": {"name": "15 dakika", "short": "15dk",  "src": ("1mo", "15m"),  "agg": 0,   "bars": 130},
+    "30m": {"name": "30 dakika", "short": "30dk",  "src": ("1mo", "30m"),  "agg": 0,   "bars": 120},
+    "1h":  {"name": "1 saat",    "short": "1sa",   "src": ("6mo", "1h"),   "agg": 0,   "bars": 120},
+    "4h":  {"name": "4 saat",    "short": "4sa",   "src": ("1y", "1h"),    "agg": 4,   "bars": 90},
+    "1d":  {"name": "Günlük",    "short": "Gün",   "src": None,            "agg": 0,   "bars": 150},
+    "1wk": {"name": "Haftalık",  "short": "Hafta", "src": None,            "agg": "W", "bars": 160},
+    "1mo": {"name": "Aylık",     "short": "Ay",    "src": None,            "agg": "M", "bars": 120},
+}
+INTERVAL_ORDER = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
+DEFAULT_INTERVAL = "1d"
+# Eski sürümlerden gelen zaman aralığı kodları
+LEGACY_TF = {"1G": "5m", "1H": "30m", "4S": "4h", "1A": "1d", "3A": "1d", "1Y": "1d",
+             "5Y": "1wk", "Hf": "1wk"}
+
+
+def norm_tf(tf):
+    """Geçersiz ya da eski kodları geçerli bir aralığa çevirir."""
+    if tf in INTERVALS:
+        return tf
+    return LEGACY_TF.get(tf, DEFAULT_INTERVAL)
+
+
+def tf_name(tf):
+    return INTERVALS[norm_tf(tf)]["name"]
+
+
+def tf_short(tf):
+    return INTERVALS[norm_tf(tf)]["short"]
+
+
+def is_intraday(tf):
+    return bool(INTERVALS[norm_tf(tf)]["src"])
+
+
+def interval_list():
+    """Bileşene gönderilecek liste: [anahtar, tam ad, kısa ad]."""
+    return [[k, INTERVALS[k]["name"], INTERVALS[k]["short"]] for k in INTERVAL_ORDER]
 
 # İndikatör varsayılanları — TradingView standartları, arayüzden değiştirilebilir
 DEFAULT_CFG = {
@@ -140,31 +180,44 @@ def _to_4h(df, k=4):
     return out
 
 
-def _to_weekly(df):
-    """Günlük barları haftalığa çevirir (hafta kapanışı etiketi)."""
+def _resample(df, rule):
+    """Günlük barları haftalığa / aylığa çevirir."""
     if df is None or df.empty:
         return df
-    out = df.resample("W-FRI").agg(_OHLC_AGG).dropna(subset=["Close"])
+    out = df.resample(rule).agg(_OHLC_AGG).dropna(subset=["Close"])
     out.attrs["src"] = df.attrs.get("src", "real")
     return out
 
 
+def _to_weekly(df):
+    return _resample(df, "W-FRI")
+
+
+def _to_monthly(df):
+    try:
+        return _resample(df, "ME")
+    except ValueError:          # eski pandas
+        return _resample(df, "M")
+
+
 def chart_data(sym, tf):
-    """(veri, gösterilecek mum sayısı, gün içi mi). 1G/1H/4S gün içi mumlarla çizilir."""
-    if tf in INTRA:
-        period, interval, days = INTRA[tf]
+    """(veri, gösterilecek mum sayısı, gün içi mi) — seçilen mum aralığına göre."""
+    spec = INTERVALS[norm_tf(tf)]
+    if spec["src"]:
+        period, interval = spec["src"]
         full = md.get_intraday(sym, period, interval)
         if len(full) > 10:
-            if tf == AGG4:
-                full = _to_4h(full)
-                return full, min(len(full), TF_BARS[AGG4]), True
-            cutoff = full.index[-1] - pd.Timedelta(days=days)
-            return full, max(2, int((full.index > cutoff).sum())), True
+            if spec["agg"]:
+                full = _to_4h(full, int(spec["agg"]))
+            return full, min(len(full), spec["bars"]), True
+        daily = md.get_history(sym)          # gün içi veri yoksa günlüğe düş
+        return daily, min(len(daily) or 150, INTERVALS["1d"]["bars"]), False
     daily = md.get_history(sym)
-    if tf == WEEKLY and not daily.empty:
-        wk = _to_weekly(daily)
-        return wk, min(len(wk), TF_BARS[WEEKLY]), False
-    return daily, TF_BARS.get(tf, 22), False
+    if daily.empty:
+        return daily, spec["bars"], False
+    out = _to_weekly(daily) if spec["agg"] == "W" else \
+        _to_monthly(daily) if spec["agg"] == "M" else daily
+    return out, min(len(out), spec["bars"]), False
 
 
 def _ser(s, dec=6):
@@ -250,7 +303,8 @@ def build_payload(sym, tf, cfg_json, data_token, max_bars=900):
     name = (d or {}).get("name") or md.company_name(sym)
     dec = 4 if sym.endswith("=X") else (0 if float(df["Close"].iloc[-1]) >= 10000 else 2)
     return {"ok": True, "sym": sym, "name": name, "dec": dec,
-            "src": df.attrs.get("src", "real"), "intraday": intraday, "interval": tf,
+            "src": df.attrs.get("src", "real"), "intraday": intraday,
+            "interval": norm_tf(tf), "intervalName": tf_name(tf), "intervals": interval_list(),
             "bars": bars, "ind": ind, "zones": zones, "divs": divs, "cfg": cfg,
             "visible": bars_n}
 
