@@ -1,4 +1,4 @@
-# Pulse — Piyasa Paneli (Streamlit) · v3.1
+# Pulse — Piyasa Paneli (Streamlit) · v3.2
 
 Koyu temalı swing-trade paneli. Bölümler: **Piyasalar · Long Term · Short Term · Backtest · Forex & Haberler**.
 
@@ -20,9 +20,10 @@ Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda
 
 ## Grafik
 
-- **Zaman dilimleri**: 1G · 1H · **4s** · 1A · 3A · 1Y · 5Y · **Hafta**.
-  4 saatlik mumlar saatlik veriden seans başından itibaren 4'erli toplanır,
-  haftalık mumlar günlükten türetilir.
+- **Mum aralığı** (küçükten büyüğe): 1dk · 5dk · 15dk · 30dk · 1sa · 4sa · Gün · Hafta · Ay.
+  Grafiğin üstünde, mum türü düğmesinin solundaki saat ikonundan da seçilebilir.
+  4 saatlik mumlar saatlik veriden seans başından itibaren 4'erli toplanır; haftalık ve
+  aylık mumlar günlükten türetilir.
 - **Çizim araçları** (sol şerit): Trend Tools (Lines, Channels, Pitchfork, Fibonacci),
   Chart Patterns (Elliott, Triangle, Head & Shoulders), Projection (Price/Date Range,
   Forecast, Long/Short Position), Brush (serbest çizim ve geometrik şekiller).
@@ -64,6 +65,68 @@ skor üretir ve bunu **A** (en güçlü alım) … **M/N** (nötr) … **Z** (en
 Altındaki yorum da kural tabanlıdır: cümleler hesaplanan gerçek değerlerden kurulur,
 dil modeli kullanılmaz. “Notun gerekçesi” bölümü her grubun neye baktığını ve kaç puan
 kattığını gösterir. Yatırım tavsiyesi değildir.
+
+## Short Term — iki mod
+
+Üstteki anahtarla seçilir: **🤖 Yapay Zeka Fırsatları** (hazır strateji, her zaman orada) ya da
+**Kendi Filtrem** (kendi koşullarını kurduğun tarayıcı).
+
+### Yapay Zeka Trade Fırsatları — tarama zinciri
+
+1. **Evren.** Nasdaq'ın tarayıcı servisinden tek istekte NASDAQ + NYSE'nin tamamı
+   (fiyat, günlük değişim, hacim, piyasa değeri, sektör). S&P 500'ün tamamı bu kümenin içinde.
+   Servis kapalıysa sınırlı evrene düşer ve bunu ekranda söyler.
+2. **Ucuz filtreler.** Fiyat ≥ 3 $ · günlük değişim > %0,01 (pozitif) · piyasa değeri ≥ 300 M$.
+3. **Sırala.** Kalanlar günlük hacme göre azalan sırada; ilk 60'ı için günlük OHLCV çekilir.
+4. **Trend kapısı.** Fiyat hem 21 EMA hem 50 EMA üstünde olmalı.
+5. **Bölge kapısı.** SPY ve QQQ 50 günlük EMA'nın üstünde olmalı; değilse strateji long aramaz.
+6. **İlk 20.** Hacimde ilk 20 hisse formasyon analizine girer.
+7. **15 dakikalık teyit.** Günlük kırılım seviyesi 15 dakikalık grafikte hacimle tutuyor mu.
+
+### Formasyon algoritmaları (günlük grafik)
+
+Hepsi pivot noktaları üzerinden çalışır (sol 3 / sağ 3 bar uç değer) ve her biri
+**kırılacak seviyeyi** döndürür — 15 dakikalık teyit ve stop/hedef planı aynı seviyeyi kullanır.
+Durum üç şekilde raporlanır: `kırılım` (kapanış seviyenin 0,25×ATR üstünde),
+`geri test` (±0,35×ATR bandında), `oluşuyor`.
+
+| Formasyon | Nasıl aranıyor |
+|-----------|----------------|
+| **Üçgen** | Son 3 tepeye ve son 3 dibe en küçük karelerle doğru uydurulur. Eğimler fiyatın yüzdesine çevrilir (%/bar), düzlük eşiği 0,045. Üst eğim negatif + alt eğim pozitif + bant genişliği %22'den fazla daraldıysa **simetrik**; üst düz + alt yükselen ise **yükselen** (boğa); üst alçalan + alt düz ise **alçalan** (ayı). Seviye = o barda üst (ya da alt) doğrunun değeri. |
+| **Dikdörtgen** | Son 3 tepe birbirine %2,8 toleransla, son 3 dip de kendi arasında aynı toleransla yakınsa yatay kanal. Yükseklik fiyatın %2,5–%30'u arasında ve en az 15 bar sürmüş olmalı. Seviye = tavan (fiyat ortanın üstündeyse) ya da taban. |
+| **Merdiven** | Son 3 tepe üst üste en az %1 artıyor **ve** son 3 dip de en az %1 artıyorsa yükselen merdiven; ikisi de azalıyorsa alçalan. Seviye = son zirve (ya da son dip). Güven üç basamaklık toplam harekete göre artar. |
+| **Kırılım** | Önce 20 günlük, sonra 55 günlük zirve denenir. Kapanış zirvenin **0,25×ATR** üstündeyse kırılım sayılır. Güven: hacim ≥ 1,5× ortalama (+0,18), kapanış günün üst %35'inde (+0,12), kırılımdan önceki 11 barın aralığı ≤ 4,5×ATR — yani dar sıkışmadan çıkış (+0,10), 55 günlük zirve (+0,08). Kaç bar önce kırıldığı da hesaplanır; aşağı yönde aynı mantıkla dip kırılımı aranır. |
+
+### 15 dakikalık teyit
+
+`teyitli` = fiyat seviyenin üstünde **ve** seviyeyi kesen barın hacmi 20 barlık ortalamanın
+1,3 katından fazla **ve** 15 dakikalık EMA9 > EMA21. Biri eksikse `bekleniyor`,
+fiyat seviyenin altına döndüyse `bozuldu`.
+
+### İşlem planı
+
+- **Stop:** son günlük mumun altı, en yakın destek bandının altı ve kırılım seviyesinin
+  0,5×ATR altı — hangisi daha aşağıdaysa, 0,08×ATR payla. Stop 3,2×ATR'den genişlerse
+  2×ATR'ye çekilir.
+- **TP1:** üstteki ilk S/R bandı (çok yakınsa bir sonraki, hiç yoksa 2R). Burada **%40** satılır.
+- **TP2:** bir üstteki bant (yoksa 3,5R). Kalan **%60** trendi takip eder.
+- TP1 görüldükten sonra kalan %60'ın stopu TP1 seviyesine çekilir.
+- Her satır için R/R, risk yüzdesi ve stop/hedefin nereden geldiği yazılır.
+
+### Kendi filtrem
+
+Koşulları satır satır kurarsın; filtreni adlandırıp **kaydedebilir**, listeden geri
+yükleyebilir, silebilirsin. Kayıtlar oturumda tutulur — kalıcı olması için JSON olarak
+indirip "JSON'dan geri yükle" kutusundan geri verebilirsin.
+
+## Hesap, tema ve bildirimler
+
+Sağ üstteki **A** düğmesi hesap/ayar kutusunu açar: oturum bilgisi, **arka plan teması**
+(Gece · Uzay · Orman · Okyanus · Gün batımı) ve önbellek temizleme.
+Solundaki **🔔** bildirim kutusudur: yapay zeka taraması taze ve teyitli bir kırılım
+bulduğunda oraya düşer, rozet okunmamış sayısını gösterir.
+"Gün içi tazele" açıkken sayfa 3 dakikada bir yenilenip taramayı tekrarlar —
+uygulama açıkken çalışır, kapalıyken tarama yapılmaz ve telefona bildirim gitmez.
 
 ## Veri
 
