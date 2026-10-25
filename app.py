@@ -33,7 +33,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Piyasa Paneli", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -74,12 +74,14 @@ SETUP_STYLE = {"Pullback": ("#9DB8FF", "rgba(91,140,255,.14)"), "Kırılım": ("
 TONE = {"good": (UP, "#0F1A15", "#1F4D3A", "#0A0B0D"), "warn": (WARN, "#1A160E", "#4D3D1F", "#0A0B0D"),
         "bad": (DOWN, "#1A0F10", "#4D1F24", "#ECEEF1")}
 
-SECTIONS = ["Piyasalar", "Long Term", "Short Term", "Backtest", "Forex & Haberler"]
+SECTIONS = ["Piyasalar", "Değer Analizi", "Long Term", "Short Term", "Backtest", "Forex & Haberler"]
 # Mum aralıkları tek yerde tanımlı: chart.py (küçükten büyüğe sıralı)
 TF_LIST = ch.INTERVAL_ORDER
 TF_DEF = ch.DEFAULT_INTERVAL
 TF_NAME = {k: v["name"] for k, v in ch.INTERVALS.items()}
 TF_LABEL = {k: v["short"] for k, v in ch.INTERVALS.items()}
+MONTHS_TR = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos",
+             "Eylül", "Ekim", "Kasım", "Aralık"]
 CUR = {"USD": "$", "TRY": "₺", "EUR": "€", "GBP": "£", "JPY": "¥"}
 CHART_CFG = {"displayModeBar": True, "displaylogo": False, "modeBarButtonsToRemove": ["select2d", "lasso2d"]}
 LOGO_SVG = ('<svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" '
@@ -217,7 +219,7 @@ SEC = _qp("sec", "Piyasalar")
 SEC = SEC if SEC in SECTIONS else "Piyasalar"
 ACTIVE = _SYM_RE.sub("", _qp("sym", "SPY")).upper()[:24] or "SPY"
 FX = _qp("fx", "EUR/USD")
-FX = FX if any(p == FX for p, *_ in md._FX_LIST) else "EUR/USD"
+FX = FX if FX in md.fx_pairs() else "EUR/USD"
 OPP = _SYM_RE.sub("", _qp("opp", "") or "").upper()[:24] or None
 AIP = _SYM_RE.sub("", _qp("aip", "") or "").upper()[:24] or None
 SECTOR = _qp("sector")
@@ -527,7 +529,7 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
  box-shadow:0 0 0 2px #0A0B0D;transform:translateX(-2px)}
 .gax{display:flex;justify-content:space-between;font-size:10.5px;color:#6B7383;margin-bottom:8px}
 .grow{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:12px}
-.grow .gn{color:#C4CAD4;width:116px;flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grow .gn{color:#C4CAD4;width:134px;flex:none;line-height:1.22;font-size:11.5px}
 .grow .gw{color:#6B7383;font-size:10.5px;width:26px;flex:none;text-align:right}
 .grow .gb{flex:1;height:6px;border-radius:999px;background:#1A1D23;overflow:hidden;min-width:20px}
 .grow .gb i{display:block;height:6px;border-radius:999px}
@@ -535,6 +537,27 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .gtext{font-size:12.5px;line-height:1.68;color:#C4CAD4;margin-top:11px;padding-top:11px;
  border-top:1px solid #1C1F25}
 .gtext b{color:#ECEEF1}
+/* değer analizi */
+.vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.ptab{width:100%;border-collapse:collapse;font-size:12.5px}
+.ptab th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#8D96A5;font-weight:700;
+ padding:9px 8px;text-align:right;border-bottom:1px solid #22262D;white-space:nowrap}
+.ptab th:first-child{text-align:left}
+.ptab td{padding:10px 8px;text-align:right;border-bottom:1px solid #1A1D23;font-family:ui-monospace,monospace;
+ font-weight:600;white-space:nowrap}
+.ptab td:first-child{text-align:left;font-family:inherit}
+.ptab tr.me td{background:#151922}
+.ptab tr.med td{color:#8D96A5;font-weight:600;border-bottom:0}
+.ptab tr.med td:first-child{color:#C4CAD4}
+.vrow{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:12.5px;border-top:1px solid #1C1F25}
+.vrow .ic{width:19px;height:19px;flex:none;border-radius:50%;display:flex;align-items:center;
+ justify-content:center;font-size:11px;font-weight:800}
+.vrow .t{flex:1;color:#C4CAD4}
+.vrow .n{color:#8D96A5;font-size:11.5px}
+.mbar{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;align-items:end;height:92px;margin-top:6px}
+.mbar div{border-radius:4px 4px 0 0;position:relative}
+.mlab{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;font-size:10px;color:#6B7383;
+ text-align:center;margin-top:4px}
 .greason{font-size:11.5px;color:#8D96A5;line-height:1.6;padding:3px 0 3px 10px;border-left:2px solid #22262D}
 /* ısı haritası */
 .heatgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
@@ -844,6 +867,11 @@ def pivots(df):
 # Üst bar + arama
 # ======================================================================
 SITE_INDEX = [
+    ("Değer notu · adil değer", "Değer Analizi", "A–Z değer notu ve gelecek yılların hedef değeri"),
+    ("Rakiplere göre çarpan karşılaştırması", "Değer Analizi", "F/K, PEG, FD/FAVÖK ve büyüme haritası"),
+    ("Bilanço sürekliliği · Piotroski · Altman Z", "Değer Analizi", "Kalite ve iflas riski skorları"),
+    ("Döngüsellik ve mevsimsellik", "Değer Analizi", "Beta, düşüşte davranış, ay bazında getiri"),
+    ("Nakit akışı iskontosu (DCF) · ters DCF", "Değer Analizi", "Piyasanın fiyatladığı büyüme"),
     ("Fear & Greed Index", "Long Term", "Piyasa duyarlılığı göstergesi (CNN)"),
     ("Ucuz şirketler (PEG / Forward PE)", "Long Term", "Değer taraması"),
     ("Sektör performansı · şirket ısı haritası", "Piyasalar", "Sektöre tıkla → şirketlerin günlük performansı"),
@@ -1437,8 +1465,385 @@ def render_piyasalar():
 
 
 # ======================================================================
-# BÖLÜM: LONG TERM
+# BÖLÜM: DEĞER ANALİZİ
 # ======================================================================
+@st.cache_data(ttl=1800, show_spinner="Finansal tablolar çekiliyor…")
+def value_bundle(sym, token):
+    """Değer analizi için gereken her şey tek yerde — hepsi gerçek veriden."""
+    d = md.get_company_detail(sym)
+    if not d:
+        return None
+    stm = md.get_statements(sym)
+    f = en.financials(stm)
+    px = md.get_history(sym)
+    bench = md.get_history("SPY")
+    an = md.get_analyst(sym)
+    peers = md.get_peers(sym, 5)
+    vals = md.get_valuations([sym] + peers)
+    r = en.fin_ratios(f, d) if f else {}
+    pe_now = d.get("pe")
+    if not en._ok(pe_now) and f and en._ok(f["eps"][-1]) and f["eps"][-1] > 0:
+        pe_now = d["last"] / f["eps"][-1]
+    band = en.pe_band(px, f, pe_now) if f else None
+    fsc = en.piotroski(f) if f else None
+    zsc = en.altman_z(f, d.get("market_cap")) if f else None
+    cons = en.consistency(f) if f else None
+    cyc = en.cyclicality(px, bench, f)
+    sea = en.seasonality(px)
+    pm = {}
+    pv = [vals[p] for p in peers if p in vals]
+    for k in ("pe", "fwd_pe", "ev_ebitda", "peg", "growth", "net_margin"):
+        xs = [v[k] for v in pv if en._ok(v.get(k)) and v[k] > -1e6]
+        pm[k] = float(np.median(xs)) if xs else float("nan")
+    grade = en.value_grade(r, pm, band, fsc, zsc, cons, cyc, an, d) if f else None
+    # adil değer patikası: büyüme = analist > EPS CAGR > ciro CAGR; çarpan = ileri F/K > rakip medyanı
+    g = next((x for x in (an.get("growth_next_y"), r.get("eps_cagr"), r.get("rev_cagr"))
+              if en._ok(x)), 8.0)
+    mult = next((x for x in (d.get("fwd_pe"), pm.get("fwd_pe"), pm.get("pe"), d.get("pe"))
+                 if en._ok(x) and x > 0), 18.0)
+    eps0 = next((x for x in (d.get("eps"), (f["eps"][-1] if f else None)) if en._ok(x) and x > 0), None)
+    path = en.fair_value_path(eps0, g, mult, 5, d.get("last")) if eps0 else None
+    sens = en.sensitivity(eps0, [round(g * k, 1) for k in (0.5, 0.75, 1.0, 1.25, 1.5)],
+                          [round(mult * k, 1) for k in (0.7, 0.85, 1.0, 1.15, 1.3)], 5) if eps0 else None
+    dcfv = rdcf = None
+    if f and en._ok(f["fcf"][-1]) and en._ok(f["shares"][-1]) and f["fcf"][-1] > 0:
+        dcfv = en.dcf(f["fcf"][-1], f["shares"][-1], g, 10, 9.0, 2.5, f["net_debt"][-1])
+        rdcf = en.reverse_dcf(d["last"], f["fcf"][-1], f["shares"][-1], 10, 9.0, 2.5, f["net_debt"][-1])
+    return {"d": d, "f": f, "r": r, "an": an, "peers": peers, "vals": vals, "pm": pm, "band": band,
+            "fsc": fsc, "zsc": zsc, "cons": cons, "cyc": cyc, "sea": sea, "grade": grade,
+            "path": path, "sens": sens, "dcf": dcfv, "rdcf": rdcf, "g": g, "mult": mult,
+            "eps0": eps0, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
+            "px": px.tail(1300) if px is not None else None,
+            "bench": bench.tail(1300) if bench is not None else None,
+            "pe_ser": en.pe_series(px.tail(1300), f) if (f and px is not None) else None}
+
+
+def fin_bar_chart(f, keys, names, colors, height=240, pct=False):
+    """Yıllık kalemler için çubuk grafiği."""
+    fig = go.Figure()
+    for k, n, c in zip(keys, names, colors):
+        vals = [v / 1e9 if not pct and en._ok(v) else v for v in f[k]]
+        fig.add_trace(go.Bar(x=[str(y) for y in f["years"]], y=vals, name=n, marker_color=c))
+    fig.update_layout(barmode="group", legend=dict(orientation="h", y=1.18, x=0))
+    fig.update_yaxes(ticksuffix="%" if pct else " mr")
+    return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=26, b=4))
+
+
+def rgba(hexcol, a):
+    """'#RRGGBB' → 'rgba(r,g,b,a)' (Plotly'nin her sürümü kabul eder)."""
+    h = str(hexcol).lstrip("#")
+    if len(h) != 6:
+        return hexcol
+    return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{a})"
+
+
+def _clean(vals):
+    return [float(v) if en._ok(v) else None for v in vals]
+
+
+def bar_fig(cats, series, height=220, suffix="", barmode="group", hline=None, hl_label=None,
+            legend=True, horizontal=False, text=False, dec=1):
+    """Genel çubuk grafiği. series: [(ad, değerler, renk ya da renk listesi)]."""
+    fig = go.Figure()
+    for name, vals, color in series:
+        v = _clean(vals)
+        txt = [("" if x is None else tr(x, dec) + suffix) for x in v] if text else None
+        kw = dict(name=name, marker_color=color,
+                  hovertemplate=f"<b>%{{{'y' if horizontal else 'x'}}}</b><br>{name}: "
+                                f"%{{{'x' if horizontal else 'y'}:.2f}}{suffix}<extra></extra>")
+        if txt:
+            kw.update(text=txt, textposition="outside")
+        if horizontal:
+            fig.add_trace(go.Bar(x=v, y=cats, orientation="h", **kw))
+        else:
+            fig.add_trace(go.Bar(x=cats, y=v, **kw))
+    fig.update_layout(barmode=barmode)
+    if hline is not None and en._ok(hline) and not horizontal:
+        fig.add_hline(y=hline, line=dict(color=MUT, width=1, dash="dash"),
+                      annotation_text=hl_label or "", annotation_position="top left",
+                      annotation_font=dict(color=MUT, size=10))
+    if suffix and not horizontal:
+        fig.update_yaxes(ticksuffix=suffix)
+    fig = _layout(fig, height, legend=legend and len(series) > 1, margin=dict(l=4, r=8, t=24, b=4))
+    if horizontal:
+        if suffix:
+            fig.update_xaxes(ticksuffix=suffix)
+        fig.update_yaxes(side="left")          # _layout ekseni sağa alıyor; kategori adları solda dursun
+    return fig
+
+
+def line_fig(series, height=240, suffix="", hlines=None, legend=True):
+    """Genel çizgi grafiği. series: [(ad, x, y, renk, kesik?, dolgu?)]."""
+    fig = go.Figure()
+    for name, x, y, color, dash, fill in series:
+        fig.add_trace(go.Scatter(x=list(x), y=_clean(y), mode="lines", name=name,
+                                 line=dict(color=color, width=1.8 if not dash else 1.3,
+                                           dash="dot" if dash else None),
+                                 fill="tozeroy" if fill else None,
+                                 fillcolor=rgba(color, 0.14) if fill else None,
+                                 hovertemplate=f"{name}: %{{y:.2f}}{suffix}<extra></extra>"))
+    for y, lab, c in (hlines or []):
+        if en._ok(y):
+            fig.add_hline(y=y, line=dict(color=c, width=1, dash="dash"), annotation_text=lab,
+                          annotation_position="right", annotation_font=dict(color=c, size=10))
+    if suffix:
+        fig.update_yaxes(ticksuffix=suffix)
+    return _layout(fig, height, legend=legend and len(series) > 1,
+                   margin=dict(l=4, r=(70 if hlines else 8), t=24, b=4))
+
+
+def eps_proj_fig(f, path, height=250):
+    """Gerçekleşen EPS (çubuk) + üç senaryonun EPS projeksiyonu (çizgi)."""
+    fig = go.Figure()
+    yrs = [str(y) for y in f["years"]]
+    fig.add_trace(go.Bar(x=yrs, y=_clean(f["eps"]), name="Gerçekleşen", marker_color="#4A515C",
+                         hovertemplate="%{x}: %{y:.2f}<extra></extra>"))
+    last_y = str(f["years"][-1])
+    last_e = next((v for v in reversed(f["eps"]) if en._ok(v)), path["eps0"])
+    fut = [str(r["year"]) for r in path["rows"]]
+    for key, name, c, dash in (("bull", "İyimser", "#6EE7B7", "dot"), ("base", "Taban", ACCENT, None),
+                               ("bear", "Kötümser", "#F0883E", "dot")):
+        fig.add_trace(go.Scatter(x=[last_y] + fut, y=[last_e] + [r["eps"][key] for r in path["rows"]],
+                                 mode="lines+markers", name=name,
+                                 line=dict(color=c, width=2 if key == "base" else 1.3, dash=dash),
+                                 marker=dict(size=5), hovertemplate=f"{name} %{{x}}: %{{y:.2f}}<extra></extra>"))
+    return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=24, b=4))
+
+
+def peer_scatter(sym, vals, peers, height=300):
+    """Büyüme / çarpan haritası — çizginin üstü büyümesine göre pahalı."""
+    pts = []
+    for t in [sym] + list(peers):
+        v = vals.get(t)
+        if not v:
+            continue
+        g, p, m = v.get("growth"), v.get("fwd_pe"), v.get("market_cap")
+        if en._ok(g) and en._ok(p) and p > 0:
+            pts.append((t, float(g), float(p), float(m) if en._ok(m) else 1e9))
+    if len(pts) < 3:
+        return None
+    xs = [p[1] for p in pts]
+    ys = [p[2] for p in pts]
+    caps = [p[3] for p in pts]
+    mx = max(caps) or 1.0
+    sizes = [14 + 34 * (c / mx) ** 0.5 for c in caps]
+    cols = [ACCENT if p[0] == sym else "#4A515C" for p in pts]
+    fig = go.Figure()
+    sl, ic = en._fit(xs, ys)
+    if abs(sl) > 1e-9:
+        x0, x1 = min(xs) - 2, max(xs) + 3
+        fig.add_trace(go.Scatter(x=[x0, x1], y=[sl * x0 + ic, sl * x1 + ic], mode="lines",
+                                 line=dict(color=ACCENT, width=1.2, dash="dash"),
+                                 hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(
+        x=xs, y=ys, mode="markers+text", text=[p[0] for p in pts], textposition="middle right",
+        textfont=dict(color=TXT, size=11),
+        marker=dict(size=sizes, color=cols, line=dict(width=1, color="#0A0B0D")),
+        customdata=[[big(p[3], "")] for p in pts], showlegend=False,
+        hovertemplate="<b>%{text}</b><br>Büyüme %{x:.1f}%<br>İleri F/K %{y:.1f}<br>"
+                      "Piyasa değeri %{customdata[0]}<extra></extra>"))
+    fig.update_xaxes(title="Beklenen büyüme", ticksuffix="%")
+    fig.update_yaxes(title="İleri F/K", ticksuffix="x")
+    return _layout(fig, height, margin=dict(l=8, r=40, t=10, b=34))
+
+
+def fair_path_chart(path, px, price, height=300):
+    """Geçmiş fiyat + önümüzdeki yılların adil değer bandı."""
+    fig = go.Figure()
+    if px is not None and len(px) > 20:
+        h = px.tail(500)
+        fig.add_trace(go.Scatter(x=h.index, y=h["Close"], mode="lines", name="Fiyat",
+                                 line=dict(color=SOFT, width=1.5)))
+    xs = [pd.Timestamp(year=r["year"], month=12, day=31) for r in path["rows"]]
+    x0 = px.index[-1] if (px is not None and len(px)) else pd.Timestamp.today()
+    for key, name, c, dash in (("bull", "İyimser", "#6EE7B7", "dot"), ("base", "Taban", ACCENT, None),
+                               ("bear", "Kötümser", "#F0883E", "dot")):
+        fig.add_trace(go.Scatter(x=[x0] + xs, y=[price] + [r["value"][key] for r in path["rows"]],
+                                 mode="lines+markers", name=name,
+                                 line=dict(color=c, width=2 if key == "base" else 1.3, dash=dash),
+                                 marker=dict(size=5)))
+    fig.add_hline(y=price, line=dict(color=MUT, width=1, dash="dash"),
+                  annotation_text=f"bugün {tr(price)}", annotation_position="left",
+                  annotation_font=dict(color=MUT, size=10))
+    fig.update_layout(legend=dict(orientation="h", y=1.16, x=0))
+    return _layout(fig, height, legend=True, margin=dict(l=4, r=10, t=28, b=4))
+
+
+def _cell(v, med, dec=1, lower_better=True, suffix=""):
+    """Medyana göre renklenen hücre."""
+    if not en._ok(v):
+        return f'<td style="color:{MUT}">—</td>'
+    c = TXT
+    if en._ok(med) and med:
+        diff = (v / med - 1) if med > 0 else 0
+        good = (diff < -0.08) if lower_better else (diff > 0.08)
+        bad = (diff > 0.08) if lower_better else (diff < -0.08)
+        c = UP if good else DOWN if bad else TXT
+    return f'<td style="color:{c}">{tr(v, dec)}{suffix}</td>'
+
+
+def render_value():
+    H('<div class="page-title">Değer Analizi</div><div class="muted" style="margin-bottom:10px">'
+      'Bilanço, çarpanlar, gelecek yılların adil değeri, rakip kıyası, döngüsellik ve bilanço sürekliliği'
+      '</div>')
+    sym = ACTIVE
+    chips = "".join(f'<a class="crit" target="_self" style="text-decoration:none;'
+                    f'{"color:#ECEEF1;border-color:" + ACCENT if t == sym else ""}" '
+                    f'href="{link(sym=t)}">{esc(t)}</a>' for t in ss.watchlist[:14])
+    H(f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+      f'<span class="muted small">İzleme listen:</span>{chips}'
+      f'<span class="muted small">· başka bir sembol için üstteki aramayı kullan</span></div>')
+    b = value_bundle(sym, md.tr_date_label(pd.Timestamp.now(tz=md.TZ)) + sym)
+    if not b:
+        H(f'<div class="muted">{esc(sym)} için veri alınamadı.</div>')
+        return
+    d, f, r = b["d"], b["f"], b["r"]
+    render_value_head(b, sym)
+    if not f:
+        st.warning("Bu sembol için finansal tablo verisi gelmedi (ETF, endeks ve pariteler için tablo "
+                   "yayımlanmaz; hisselerde kaynak geçici olarak boş dönmüş olabilir). "
+                   "Aşağıdaki bölümler fiyat verisiyle sınırlı.")
+    if f:
+        render_value_fundamentals(b)
+        render_value_future(b)
+    render_value_peers(b, sym)
+    render_value_cycle(b)
+    if f:
+        render_value_quality(b)
+
+
+def render_value_head(b, sym):
+    d, g = b["d"], b["grade"]
+    cur = d.get("currency") or "USD"
+    dec = pdec(sym, d["last"])
+    with st.container(border=True):
+        c1, c2 = st.columns([1.5, 2.2], gap="medium")
+        with c1:
+            H(f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{avatar(sym, 32)}'
+              f'<span class="panel-title">{esc(d["name"])}</span><span class="chip mono">{esc(sym)}</span>'
+              f'{src_chip(b["stm_src"])}</div>'
+              f'<div style="display:flex;align-items:baseline;gap:11px;margin-top:6px">'
+              f'<span class="mono" style="font-size:28px;font-weight:600">{tr(d["last"], dec)}</span>'
+              f'<span class="mono" style="color:{col(d["change_abs"])};font-weight:600;font-size:13px">'
+              f'{pct(d["change_pct"])}</span><span class="muted">{esc(cur)}</span></div>'
+              f'<div class="muted small" style="margin-top:4px">'
+              f'{esc(" · ".join(x for x in [d.get("sector"), d.get("industry")] if x))}</div>')
+            if g:
+                c = grade_color(g["score"])
+                H(f'<div class="grade" style="margin-top:12px"><div class="gletter" '
+                  f'style="color:{c};background:{c}1F;border:1px solid {c}55">{g["letter"]}</div>'
+                  f'<div style="min-width:0"><div class="gact" style="color:{GRADE_TONE.get(g["tone"], NEU)}">'
+                  f'{esc(g["action"])}</div><div class="gsc">Değer notu {tr(g["score"], 0)} / 100 · '
+                  f'A ucuz, Z pahalı</div></div></div>'
+                  f'<div class="gscale"><i style="left:{100 - g["score"]:.1f}%"></i></div>'
+                  f'<div class="gax"><span>A · iskontolu</span><span>M–N · adil</span><span>Z · pahalı</span>'
+                  f'</div>')
+                rows = ""
+                for grp in g["groups"]:
+                    gc = grade_color(grp["score"])
+                    rows += (f'<div class="grow"><span class="gn">{esc(grp["name"])}</span>'
+                             f'<span class="gw">%{grp["weight"]}</span><span class="gb">'
+                             f'<i style="width:{max(2, grp["score"]):.0f}%;background:{gc}"></i></span>'
+                             f'<span class="gv">{tr(grp["score"], 0)}</span></div>')
+                H(rows)
+                with st.expander("Değer notunun gerekçesi"):
+                    for grp in g["groups"]:
+                        items = "".join(f"<div>• {esc(x)}</div>" for x in grp["reasons"]) or \
+                            '<div class="muted">—</div>'
+                        H(f'<div style="margin-bottom:8px"><div style="font-size:12px;font-weight:700;'
+                          f'color:{SOFT}">{esc(grp["name"])} <span class="muted">· '
+                          f'{tr(grp["score"], 0)}/100 · {tr(grp["points"], 1)} puan</span></div>'
+                          f'<div class="greason">{items}</div></div>')
+        with c2:
+            an, r = b["an"], b["r"]
+            tiles = [("Piyasa değeri", big(d.get("market_cap"), cur)),
+                     ("F/K", tr(b.get("pe_now"))), ("İleri F/K", tr(d.get("fwd_pe"))),
+                     ("FD/FAVÖK", tr(r.get("ev_ebitda"))),
+                     ("PEG", tr(b["vals"].get(sym, {}).get("peg"))),
+                     ("EPS (ttm)", tr(d.get("eps"))),
+                     ("Ciro büyümesi (yıllık bileşik)", f'%{tr(r.get("rev_cagr"), 1)}'),
+                     ("EPS büyümesi (yıllık bileşik)", f'%{tr(r.get("eps_cagr"), 1)}'),
+                     ("Net marj", f'%{tr(r.get("net_m"), 1)}'), ("Özkaynak kârlılığı", f'%{tr(r.get("roe"), 1)}'),
+                     ("Serbest nakit akışı getirisi", f'%{tr(r.get("fcf_yield"), 1)}'),
+                     ("Borç / özkaynak", tr(r.get("debt_equity"), 2))]
+            H('<div class="vgrid">' + "".join(
+                f'<div class="tile"><span class="k">{esc(k)}</span><span class="v">{v}</span></div>'
+                for k, v in tiles) + "</div>")
+            if en._ok(an.get("target_mean")):
+                up = (an["target_mean"] / d["last"] - 1) * 100
+                H(f'<div class="planrow" style="margin-top:10px"><span class="l">Analist hedefi'
+                  f'{" · " + str(an["n"]) + " analist" if an.get("n") else ""}</span>'
+                  f'<span class="v">{tr(an["target_mean"], dec)} '
+                  f'<span style="color:{col(up)}">({pct(up)})</span></span></div>')
+
+
+def render_value_fundamentals(b):
+    f, r = b["f"], b["r"]
+    H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">01</span>'
+      '<h3>Temel Veriler</h3><span class="muted">Son ' + str(f["n"]) + ' yılın tabloları</span></div>')
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        with st.container(border=True):
+            H('<div class="panel-title">Gelir Tablosu</div><div class="muted small">Milyar, raporlama '
+              'para birimi</div>')
+            plot(fin_bar_chart(f, ["revenue", "gross", "op_income", "net_income"],
+                               ["Ciro", "Brüt kâr", "Faaliyet kârı", "Net kâr"],
+                               [ACCENT, "#6EE7B7", WARN, VIOLET]), key="v_inc")
+    with c2:
+        with st.container(border=True):
+            H('<div class="panel-title">Marjlar</div><div class="muted small">Ciroya oran</div>')
+            plot(fin_bar_chart(f, ["gross_m", "op_m", "net_m", "fcf_m"],
+                               ["Brüt", "Faaliyet", "Net", "Serbest nakit"],
+                               ["#6EE7B7", WARN, VIOLET, ACCENT], pct=True), key="v_marg")
+    c3, c4 = st.columns(2, gap="medium")
+    with c3:
+        with st.container(border=True):
+            H('<div class="panel-title">Nakit Akışı</div><div class="muted small">Faaliyet, yatırım ve '
+              'serbest nakit akışı</div>')
+            plot(fin_bar_chart(f, ["ocf", "capex", "fcf"],
+                               ["Faaliyet", "Yatırım harcaması", "Serbest nakit"],
+                               [ACCENT, DOWN, "#6EE7B7"]), key="v_cf")
+    with c4:
+        with st.container(border=True):
+            H('<div class="panel-title">Bilanço</div><div class="muted small">Aktif, özkaynak ve net borç</div>')
+            plot(fin_bar_chart(f, ["assets", "equity", "net_debt"],
+                               ["Toplam aktif", "Özkaynak", "Net borç"],
+                               ["#4A515C", "#6EE7B7", DOWN]), key="v_bs")
+    yrs = [str(y) for y in f["years"]]
+    c5, c6, c7 = st.columns(3, gap="medium")
+    with c5:
+        with st.container(border=True):
+            H('<div class="panel-title">Büyüme Oranları</div><div class="muted small">Bir önceki yıla göre</div>')
+            plot(bar_fig(yrs[1:], [("Ciro", r["rev_yoy"][1:], ACCENT), ("EPS", r["eps_yoy"][1:], VIOLET)],
+                         height=220, suffix="%", hline=0), key="v_growth")
+    with c6:
+        with st.container(border=True):
+            H('<div class="panel-title">Borç ve Nakit</div><div class="muted small">Milyar</div>')
+            plot(bar_fig(yrs, [("Toplam borç", [v / 1e9 if en._ok(v) else None for v in f["debt"]], DOWN),
+                               ("Nakit", [v / 1e9 if en._ok(v) else None for v in f["cash"]], "#6EE7B7")],
+                         height=220, suffix=" mr"), key="v_debt")
+    with c7:
+        with st.container(border=True):
+            H('<div class="panel-title">Hissedar Getirisi</div><div class="muted small">Geri alım + temettü, '
+              'milyar</div>')
+            plot(bar_fig(yrs, [("Geri alım", [abs(v) / 1e9 if en._ok(v) else None for v in f["buyback"]], ACCENT),
+                               ("Temettü", [abs(v) / 1e9 if en._ok(v) else None for v in f["dividends_paid"]],
+                                WARN)],
+                         height=220, suffix=" mr", barmode="stack"), key="v_sh")
+    with st.container(border=True):
+        rows = [("Cari oran", tr(r.get("current_ratio"), 2), "1,5 üstü rahat"),
+                ("Net borç / FAVÖK", tr(r.get("net_debt_ebitda"), 2), "3 üstü yüksek kaldıraç"),
+                ("Faiz karşılama", tr(r.get("interest_cover"), 1), "FVÖK / faiz gideri"),
+                ("Aktif kârlılığı", f'%{tr(r.get("roa"), 1)}', ""),
+                ("Nakit akışı / net kâr", tr(r.get("accrual"), 2), "1 altı kazanç kalitesi zayıf"),
+                ("Hisse adedi değişimi", f'%{tr(r.get("share_chg"), 1)}', "eksi = geri alım"),
+                ("Geri alım (son yıl)", big(abs(r.get("buyback")) if en._ok(r.get("buyback")) else float("nan"), ""), ""),
+                ("Temettü (son yıl)", big(abs(r.get("dividends")) if en._ok(r.get("dividends")) else float("nan"), ""), "")]
+        H('<div class="panel-title">Oranlar ve kalite</div>' + "".join(
+            f'<div class="stat-row"><span class="lbl">{esc(k)}</span>'
+            f'<span class="mono">{v}</span>'
+            f'<span class="muted small" style="width:180px;text-align:right">{esc(n)}</span></div>'
+            for k, v, n in rows))
 def render_longterm():
     H('<div class="page-title">Long Term</div><div class="muted" style="margin-bottom:12px">Uzun vadeli '
       'yatırım için duyarlılık, sektörler ve değer taraması</div>')
@@ -2618,14 +3023,21 @@ def render_forex():
     cs = st.columns(6, gap="small")
     for c_, m in zip(cs, strip):
         cc = col(m["change_pct"])
+        on = m.get("pair") == FX
+        act = f"border-color:{ACCENT};background:#151922;" if on else ""
         with c_:
-            H(f'<div class="idx" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;'
+            # kartın tamamı bağlantı: tıklayınca aşağıdaki Forex Piyasası grafiğinde açılır
+            H(f'<a class="plain" target="_self" href="{link(fx=m.get("pair") or FX, f="fx")}" '
+              f'title="{esc(m["name"])} grafiğini aç"><div class="idx" style="padding:12px 14px;{act}">'
+              f'<div style="display:flex;justify-content:space-between;'
               f'align-items:baseline"><b style="font-size:12.5px">{esc(m["name"])}</b><span class="chip mono">'
               f'{m["code"]}</span></div><div class="mono" style="font-size:19px;font-weight:600;margin-top:6px">'
               f'{tr(m["value"], m["dec"])}</div><div style="display:flex;justify-content:space-between;'
               f'align-items:flex-end"><span class="mono" style="color:{cc};font-size:12px;font-weight:600">'
-              f'{pct(m["change_pct"])}</span>{svg_spark(m["series"], cc, 70, 26)}</div></div>')
-    H(f'<div style="margin-top:6px">{src_chip(strip[0]["src"] if strip else "none")}</div>')
+              f'{pct(m["change_pct"])}</span>{svg_spark(m["series"], cc, 70, 26)}</div></div></a>')
+    H(f'<div style="margin-top:6px;display:flex;align-items:center;gap:10px">'
+      f'{src_chip(strip[0]["src"] if strip else "none")}'
+      f'<span class="muted small">karta ya da sağdaki pariteye tıkla → grafik aşağıda açılır</span></div>')
 
     # 01 Forex piyasası
     anchor("fx")
@@ -2724,8 +3136,14 @@ def render_forex():
         nc = seg("Haber kategorisi", md.NEWS_CATEGORIES, "w_nc", "Tümü")
     data = md.get_forex_news(nc)
     f = data["featured"]
-    l, r = st.columns([1, 1.15], gap="medium")
     sbg = {"Yükseliş": (UP, UP_BG), "Düşüş": (DOWN, DOWN_BG)}
+    if not f:
+        with st.container(border=True):
+            H('<div class="panel-title">Piyasa Haberleri</div><div class="muted" style="margin-top:6px">'
+              'Şu an haber kaynaklarından veri gelmiyor. Uydurma başlık göstermiyoruz — birkaç dakika '
+              'sonra tekrar dene.</div>')
+        return
+    l, r = st.columns([1, 1.15], gap="medium")
     with l:
         fs, fb = sbg.get(f["sentiment"], (NEU, NEU_BG))
         img = (f'<img src="{esc(f["thumb"])}" alt="">' if safe_url(f.get("thumb")) else "[HABER GÖRSELİ]")
@@ -2757,8 +3175,379 @@ def render_forex():
 # ======================================================================
 def main():
     render_header()
-    {"Piyasalar": render_piyasalar, "Long Term": render_longterm, "Short Term": render_short,
-     "Backtest": render_backtest, "Forex & Haberler": render_forex}[SEC]()
+    {"Piyasalar": render_piyasalar, "Değer Analizi": render_value, "Long Term": render_longterm,
+     "Short Term": render_short, "Backtest": render_backtest,
+     "Forex & Haberler": render_forex}[SEC]()
+
+
+
+
+def render_value_future(b):
+    path, sens, d = b["path"], b["sens"], b["d"]
+    dec = pdec(d["ticker"], d["last"])
+    H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">02</span>'
+      '<h3>Gelecek Yılların Adil Değeri</h3><span class="muted">EPS büyür, hedef çarpanla çarpılır — '
+      'üç senaryo</span></div>')
+    if not path:
+        H('<div class="muted">EPS ya da çarpan verisi olmadığı için hedef değer hesaplanamadı.</div>')
+        return
+    c1, c2 = st.columns([1.7, 1], gap="medium")
+    with c1:
+        with st.container(border=True):
+            H(f'<div class="panel-title">Değer Patikası</div><div class="muted small">Başlangıç EPS '
+              f'{tr(path["eps0"], 2)} · büyüme %{tr(path["growth"], 1)} · hedef çarpan '
+              f'{tr(path["multiple"], 1)}x</div>')
+            plot(fair_path_chart(path, b["px"], d["last"]), key="v_path")
+            sc = path["scenarios"]
+            H(f'<div class="muted small">Kötümser: büyüme %{tr(sc["bear"]["growth"], 1)}, çarpan '
+              f'{tr(sc["bear"]["multiple"], 1)}x · İyimser: büyüme %{tr(sc["bull"]["growth"], 1)}, çarpan '
+              f'{tr(sc["bull"]["multiple"], 1)}x</div>')
+    with c2:
+        with st.container(border=True):
+            H('<div class="panel-title">Yıl Yıl</div>')
+            rows = ""
+            for row in path["rows"]:
+                up = row.get("upside")
+                rows += (f'<tr><td>{row["year"]}</td>'
+                         f'<td style="color:{SOFT}">{tr(row["value"]["bear"], dec)}</td>'
+                         f'<td style="color:{TXT}">{tr(row["value"]["base"], dec)}</td>'
+                         f'<td style="color:{SOFT}">{tr(row["value"]["bull"], dec)}</td>'
+                         f'<td style="color:{col(up) if up is not None else MUT}">'
+                         f'{pct(up) if up is not None else "—"}</td>'
+                         f'<td style="color:{MUT}">{pct(row.get("cagr")) if row.get("cagr") is not None else "—"}'
+                         f'</td></tr>')
+            H(f'<table class="ptab"><thead><tr><th>Yıl</th><th>Kötümser</th><th>Taban</th><th>İyimser</th>'
+              f'<th>Getiri</th><th>Yıllık</th></tr></thead><tbody>{rows}</tbody></table>')
+            H('<div class="muted small" style="margin-top:8px">Getiri, bugünkü fiyata göre taban '
+              'senaryonun potansiyeli; son sütun bunun yıllık bileşik karşılığı.</div>')
+    c3, c4 = st.columns([1.3, 1], gap="medium")
+    with c3:
+        with st.container(border=True):
+            H(f'<div class="panel-title">Duyarlılık</div><div class="muted small">'
+              f'{sens["years"] if sens else 5} yıl sonraki adil değer — satır: büyüme, sütun: çarpan</div>')
+            if sens:
+                head = "".join(f"<th>{tr(m, 1)}x</th>" for m in sens["multiples"])
+                body = ""
+                for g, row in zip(sens["growths"], sens["grid"]):
+                    cells = ""
+                    for v in row:
+                        up = (v / d["last"] - 1) * 100
+                        c_ = UP if up >= 25 else WARN if up >= 0 else DOWN
+                        cells += f'<td style="color:{c_}">{tr(v, 0)}</td>'
+                    body += f'<tr><td>%{tr(g, 1)}</td>{cells}</tr>'
+                H(f'<table class="ptab"><thead><tr><th>Büyüme</th>{head}</tr></thead>'
+                  f'<tbody>{body}</tbody></table>')
+            else:
+                H('<div class="muted">Hesaplanamadı.</div>')
+    with c4:
+        with st.container(border=True):
+            H('<div class="panel-title">Nakit Akışı İskontosu</div>')
+            dv, rd = b["dcf"], b["rdcf"]
+            if dv:
+                up = (dv["value"] / d["last"] - 1) * 100
+                H(f'<div class="plan"><div class="tile"><span class="k">DCF değeri</span>'
+                  f'<span class="v">{tr(dv["value"], dec)}</span></div>'
+                  f'<div class="tile"><span class="k">Bugüne göre</span>'
+                  f'<span class="v" style="color:{col(up)}">{pct(up)}</span></div></div>'
+                  f'<div class="muted small">%{tr(dv["discount"], 1)} iskonto · %{tr(dv["terminal"], 1)} '
+                  f'uç büyüme · başlangıç büyümesi %{tr(dv["growth"], 1)}, 10 yılda uç değere iniyor · '
+                  f'değerin %{tr(dv["terminal_share"], 0)}\'i uç değerden geliyor.</div>')
+            else:
+                H('<div class="muted small">Serbest nakit akışı pozitif olmadığı için DCF kurulamadı.</div>')
+            if rd:
+                g0 = rd["growth"]
+                cap = rd.get("capped")
+                txt = (f'Bugünkü fiyat, önümüzdeki 10 yıl için yıllık <b>%{tr(g0, 1)}</b> serbest nakit '
+                       f'akışı büyümesi fiyatlıyor.')
+                if cap == "above":
+                    txt = (f'Bugünkü fiyat, %{tr(g0, 0)}\'in <b>üzerinde</b> bir nakit akışı büyümesi '
+                           f'fiyatlıyor — bu aralığın dışında.')
+                elif cap == "below":
+                    txt = f'Bugünkü fiyat, nakit akışında daralma fiyatlıyor (%{tr(g0, 0)} altı).'
+                real = b["r"].get("fcf_cagr")
+                if en._ok(real) and not cap:
+                    fark = "üstünde" if g0 > real else "altında"
+                    txt += (f' Şirketin son yıllardaki gerçek serbest nakit akışı büyümesi '
+                            f'%{tr(real, 1)} — piyasa beklentisi bunun {fark}.')
+                H(f'<div class="gtext">{txt}</div>')
+    c5, c6 = st.columns(2, gap="medium")
+    with c5:
+        with st.container(border=True):
+            H('<div class="panel-title">Hisse Başı Kâr: Geçmiş ve Projeksiyon</div>'
+              '<div class="muted small">Çubuklar gerçekleşen EPS, çizgiler senaryolar</div>')
+            plot(eps_proj_fig(b["f"], path), key="v_eps")
+    with c6:
+        with st.container(border=True):
+            band, ps = b["band"], b.get("pe_ser")
+            H('<div class="panel-title">Tarihsel F/K Bandı</div><div class="muted small">Fiyat ÷ o yılın '
+              'EPS\'i — bugünkü çarpan kendi geçmişine göre nerede</div>')
+            if ps is not None and len(ps) > 20:
+                hl = []
+                if band:
+                    hl = [(band["high"], f'üst %90 · {tr(band["high"], 1)}x', DOWN),
+                          (band["median"], f'medyan · {tr(band["median"], 1)}x', MUT),
+                          (band["low"], f'alt %10 · {tr(band["low"], 1)}x', UP)]
+                plot(line_fig([("F/K", ps.index, ps.values, ACCENT, False, False)],
+                              height=250, suffix="x", hlines=hl, legend=False), key="v_peband")
+            else:
+                H('<div class="muted" style="padding:20px 0">F/K geçmişi için yeterli veri yok.</div>')
+
+
+def render_value_peers(b, sym):
+    vals, peers, pm = b["vals"], b["peers"], b["pm"]
+    H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">03</span>'
+      '<h3>Rakiplere Göre Konum</h3><span class="muted">Çizginin üstü: büyümesine göre pahalı</span></div>')
+    if not peers:
+        H('<div class="muted">Bu sembol için rakip listesi oluşturulamadı.</div>')
+        return
+    c1, c2 = st.columns([1, 1.25], gap="medium")
+    with c1:
+        with st.container(border=True):
+            H('<div class="sec-head"><h3 style="font-size:15px">Büyüme / Çarpan Haritası</h3>'
+              '<span class="muted small" style="margin-left:auto">Daire büyüklüğü = piyasa değeri</span></div>')
+            fig = peer_scatter(sym, vals, peers)
+            if fig is not None:
+                plot(fig, key="v_scatter")
+                H('<div class="muted small">Yatay: beklenen büyüme · Dikey: 12 ay ileri F/K. '
+                  'Kesikli çizgi rakiplerin ortalama eğilimi.</div>')
+            else:
+                H('<div class="muted">Yeterli rakip verisi yok.</div>')
+    with c2:
+        with st.container(border=True):
+            H('<div class="sec-head"><h3 style="font-size:15px">Çarpan Karşılaştırması</h3>'
+              '<span class="muted small" style="margin-left:auto">Sektör medyanına göre renklendirildi</span>'
+              '</div>')
+            rows = ""
+            for t in [sym] + list(peers):
+                v = vals.get(t)
+                if not v:
+                    continue
+                me = " me" if t == sym else ""
+                rows += (f'<tr class="{me.strip()}"><td><span style="display:flex;align-items:center;gap:9px">'
+                         f'{avatar(t, 26)}<span><b>{esc(t)}</b><div class="muted small">'
+                         f'{big(v.get("market_cap"), "")}</div></span></span></td>'
+                         + _cell(v.get("pe"), pm.get("pe"))
+                         + _cell(v.get("fwd_pe"), pm.get("fwd_pe"))
+                         + _cell(v.get("peg"), pm.get("peg"), 2)
+                         + _cell(v.get("ev_ebitda"), pm.get("ev_ebitda"))
+                         + _cell(v.get("growth"), pm.get("growth"), 0, False, "%")
+                         + _cell(v.get("net_margin"), pm.get("net_margin"), 0, False, "%")
+                         + "</tr>")
+            med = ("<tr class='med'><td>Sektör medyanı</td>"
+                   + "".join(f'<td>{tr(pm.get(k), 2 if k == "peg" else (0 if k in ("growth", "net_margin") else 1))}'
+                             f'{"%" if k in ("growth", "net_margin") else ""}</td>'
+                             for k in ("pe", "fwd_pe", "peg", "ev_ebitda", "growth", "net_margin"))
+                   + "</tr>")
+            H(f'<div style="overflow-x:auto"><table class="ptab"><thead><tr><th>Şirket</th><th>F/K</th>'
+              f'<th>İleri F/K</th><th>PEG</th><th>FD/FAVÖK</th><th>Büyüme</th><th>Net marj</th></tr></thead>'
+              f'<tbody>{rows}{med}</tbody></table></div>')
+            me = vals.get(sym, {})
+            note = "Karşılaştırma için yeterli rakip çarpanı yok."
+            if en._ok(me.get("fwd_pe")) and en._ok(pm.get("fwd_pe")) and pm["fwd_pe"]:
+                prem = (me["fwd_pe"] / pm["fwd_pe"] - 1) * 100
+                if abs(prem) < 3:
+                    note = f"{sym}, rakip medyanıyla hemen hemen aynı çarpandan işlem görüyor."
+                else:
+                    yon = "primli" if prem > 0 else "iskontolu"
+                    note = f"{sym}, rakip medyanına göre %{tr(abs(prem), 0)} {yon} işlem görüyor."
+                    if en._ok(me.get("growth")) and en._ok(pm.get("growth")):
+                        daha = me["growth"] > pm["growth"]
+                        note += (" Prim kısmen açıklanabilir, büyümesi medyanın üstünde." if (prem > 0 and daha)
+                                 else " Büyümesi medyanın altında olduğu için prim pahalılığa işaret ediyor."
+                                 if (prem > 0 and not daha)
+                                 else " Büyümesi medyanın üstünde olduğu halde iskontolu — incelemeye değer."
+                                 if (prem < 0 and daha)
+                                 else " İskonto, düşük büyümeyle uyumlu.")
+            H(f'<div class="gtext">{esc(note)}</div>')
+            band = b["band"]
+            if band and band.get("pctile") is not None:
+                H(f'<div class="planrow"><span class="l">Kendi geçmişine göre</span>'
+                  f'<span class="v">F/K {tr(band["current"], 1)} · son yılların %{tr(band["pctile"], 0)} '
+                  f'dilimi</span></div><div class="muted small">Bant {tr(band["low"], 1)}x – '
+                  f'{tr(band["high"], 1)}x, medyan {tr(band["median"], 1)}x '
+                  f'({min(band["years"])}–{max(band["years"])}).</div>')
+    names = [t for t in [sym] + list(peers) if vals.get(t)]
+    c3, c4 = st.columns(2, gap="medium")
+    with c3:
+        with st.container(border=True):
+            H('<div class="panel-title">İleri F/K Karşılaştırması</div><div class="muted small">Kesikli '
+              'çizgi rakip medyanı · mavi seçili şirket</div>')
+            order = sorted(names, key=lambda t: vals[t].get("fwd_pe") if en._ok(vals[t].get("fwd_pe")) else 1e9)
+            plot(bar_fig(order, [("İleri F/K", [vals[t].get("fwd_pe") for t in order],
+                                  [ACCENT if t == sym else "#4A515C" for t in order])],
+                         height=240, suffix="x", hline=pm.get("fwd_pe"), hl_label="medyan",
+                         legend=False, text=True), key="v_pfwd")
+    with c4:
+        with st.container(border=True):
+            H('<div class="panel-title">Büyüme ve Net Marj</div><div class="muted small">Yüzde</div>')
+            plot(bar_fig(names, [("Beklenen büyüme", [vals[t].get("growth") for t in names], ACCENT),
+                                 ("Net marj", [vals[t].get("net_margin") for t in names], "#6EE7B7")],
+                         height=240, suffix="%"), key="v_pgm")
+
+
+def render_value_cycle(b):
+    cyc, sea = b["cyc"], b["sea"]
+    sym = b["d"].get("ticker") or ACTIVE
+    H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">04</span>'
+      '<h3>Döngüsellik</h3><span class="muted">Piyasa düştüğünde ne oluyor, kazançlar ne kadar oynak</span>'
+      '</div>')
+    if not cyc:
+        H('<div class="muted">Yeterli fiyat geçmişi yok.</div>')
+        return
+    px, bench = b.get("px"), b.get("bench")
+    c1, c2 = st.columns([1, 1.15], gap="medium")
+    with c1:
+        with st.container(border=True):
+            lab = cyc["label"]
+            lc = DOWN if "Yüksek" in lab else WARN if lab == "Döngüsel" else ACCENT if lab == "Karma" else UP
+            H(f'<div style="display:flex;align-items:center;gap:10px"><span class="panel-title">Profil</span>'
+              f'<span class="badge" style="color:{lc};background:{lc}1F">{esc(lab)}</span></div>')
+            tiles = [("Beta", tr(cyc.get("beta"), 2)),
+                     ("Düşüşte yakalama", f'%{tr(cyc.get("down_capture"), 0)}'),
+                     ("Yükselişte yakalama", f'%{tr(cyc.get("up_capture"), 0)}'),
+                     ("Yıllık oynaklık", f'%{tr(cyc.get("ann_vol"), 1)}'),
+                     ("Ciro büyümesi oynaklığı", f'%{tr(cyc.get("rev_vol"), 1)}'),
+                     ("EPS büyümesi oynaklığı", f'%{tr(cyc.get("eps_vol"), 1)}'),
+                     ("En sert düşüş (3 yıl)", f'%{tr(cyc.get("max_dd"), 1)}'),
+                     ("Ciro daralan yıl", str(cyc.get("rev_down_years", "—")))]
+            H('<div class="vgrid">' + "".join(
+                f'<div class="tile"><span class="k">{esc(k)}</span><span class="v">{v}</span></div>'
+                for k, v in tiles) + "</div>")
+            H('<div class="muted small" style="margin-top:8px">Düşüşte yakalama %100\'ün üstündeyse hisse, '
+              'endeks düşerken daha sert düşüyor demektir. SPY referans alınır.</div>')
+            if cyc.get("drawdowns"):
+                rows = ""
+                for dd in cyc["drawdowns"][::-1]:
+                    rows += (f'<div class="vrow"><span class="t">%15+ düşüş · {dd["bars"]} işlem günü</span>'
+                             f'<span class="n" style="color:{DOWN}">{pct(dd["depth"])}</span>'
+                             f'<span class="n">{"toparladı" if dd["recovered"] else "sürüyor"}</span></div>')
+                H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin-top:12px">Son düşüş '
+                  f'dönemleri</div>{rows}')
+    with c2:
+        with st.container(border=True):
+            H(f'<div class="panel-title">{esc(sym)} ve S&amp;P 500</div><div class="muted small">Son 3 yıl, '
+              f'başlangıç = 100</div>')
+            if px is not None and bench is not None and len(px) > 60 and len(bench) > 60:
+                a_ = px["Close"].tail(756)
+                b2 = bench["Close"].reindex(a_.index).ffill().dropna()
+                a_ = a_.reindex(b2.index)
+                if len(a_) > 30 and float(a_.iloc[0]) and float(b2.iloc[0]):
+                    na, nb = a_ / float(a_.iloc[0]) * 100, b2 / float(b2.iloc[0]) * 100
+                    plot(line_fig([(sym, na.index, na.values, ACCENT, False, False),
+                                   ("S&P 500", nb.index, nb.values, "#8D96A5", True, False)],
+                                  height=250, hlines=[(100, "başlangıç", "#3A404A")]), key="v_rel")
+                    diff = float(na.iloc[-1] - nb.iloc[-1])
+                    H(f'<div class="muted small">3 yılda {esc(sym)} {pct(float(na.iloc[-1]) - 100)}, '
+                      f'S&amp;P 500 {pct(float(nb.iloc[-1]) - 100)} — fark '
+                      f'<b style="color:{col(diff)}">{tr(diff, 1)} puan</b>.</div>')
+            else:
+                H('<div class="muted">Karşılaştırma için yeterli veri yok.</div>')
+    c3, c4 = st.columns([1.15, 1], gap="medium")
+    with c3:
+        with st.container(border=True):
+            H('<div class="panel-title">Zirveden Uzaklık</div><div class="muted small">Her gün, o güne kadarki '
+              'en yüksek seviyeye göre kayıp — hisse ile endeks yan yana</div>')
+            if px is not None and len(px) > 60:
+                ua = en.underwater(px["Close"].tail(756))
+                ser = [(sym, ua.index, ua.values, DOWN, False, True)]
+                if bench is not None and len(bench) > 60:
+                    ub = en.underwater(bench["Close"].tail(756))
+                    ser.append(("S&P 500", ub.index, ub.values, "#8D96A5", True, False))
+                plot(line_fig(ser, height=230, suffix="%"), key="v_uw")
+    with c4:
+        with st.container(border=True):
+            H('<div class="panel-title">Mevsimsellik</div>')
+            if sea:
+                ms = sea["months"]
+                labs = [MONTHS_TR[m["month"] - 1][:3] for m in ms]
+                vals_ = [m["avg"] for m in ms]
+                plot(bar_fig(labs, [("Ortalama getiri", vals_,
+                                     [UP if (v or 0) >= 0 else DOWN for v in vals_])],
+                             height=200, suffix="%", hline=0, legend=False), key="v_season")
+                best = max(ms, key=lambda m: m["avg"] if m["avg"] is not None else -99)
+                worst = min(ms, key=lambda m: m["avg"] if m["avg"] is not None else 99)
+                H(f'<div class="muted small">Son {sea["n_years"]} yılın ay bazında ortalama getirisi</div>'
+                  f'<div class="planrow" style="margin-top:8px"><span class="l">En güçlü ay</span>'
+                  f'<span class="v" style="color:{UP}">{MONTHS_TR[best["month"] - 1]} '
+                  f'{pct(best["avg"])} · %{tr(best["win"], 0)} pozitif</span></div>'
+                  f'<div class="planrow"><span class="l">En zayıf ay</span>'
+                  f'<span class="v" style="color:{DOWN}">{MONTHS_TR[worst["month"] - 1]} '
+                  f'{pct(worst["avg"])} · %{tr(worst["win"], 0)} pozitif</span></div>'
+                  f'<div class="muted small" style="margin-top:6px">Mevsimsellik tek başına sinyal değildir; '
+                  f'örneklem küçük olduğunda yanıltır.</div>')
+            else:
+                H('<div class="muted">Yeterli geçmiş yok.</div>')
+
+
+def render_value_quality(b):
+    fsc, zsc, cons = b["fsc"], b["zsc"], b["cons"]
+    H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">05</span>'
+      '<h3>Bilanço Sürekliliği</h3><span class="muted">Yıllar içinde aynı yönde mi gidiyor, borç taşıyabiliyor mu'
+      '</span></div>')
+    c1, c2 = st.columns([1, 1], gap="medium")
+    with c1:
+        with st.container(border=True):
+            if fsc:
+                fc = UP if fsc["score"] >= 7 else WARN if fsc["score"] >= 4 else DOWN
+                H(f'<div style="display:flex;align-items:center;gap:10px"><span class="panel-title">'
+                  f'Piotroski F-Skoru</span><span class="badge" style="color:{fc};background:{fc}1F">'
+                  f'{fsc["score"]} / 9 · {esc(fsc["label"])}</span></div>')
+                rows = ""
+                for c in fsc["checks"]:
+                    ic, cc, bg = ("✓", UP, UP_BG) if c["ok"] else ("✕", DOWN, DOWN_BG)
+                    rows += (f'<div class="vrow"><span class="ic" style="color:{cc};background:{bg}">{ic}</span>'
+                             f'<span class="t">{esc(c["t"])}</span>'
+                             f'<span class="n">{esc(c["note"])}</span></div>')
+                H(rows + '<div class="muted small" style="margin-top:8px">Dokuz kontrol: kârlılık, '
+                         'kaldıraç/likidite ve verimlilik. 7+ güçlü, 3 ve altı zayıf kabul edilir.</div>')
+            else:
+                H('<div class="muted">F-skoru için en az iki yıllık tablo gerekiyor.</div>')
+    with c2:
+        with st.container(border=True):
+            if zsc:
+                zc = UP if zsc["zone"] == "Güvenli" else WARN if zsc["zone"] == "Gri bölge" else DOWN
+                H(f'<div style="display:flex;align-items:center;gap:10px"><span class="panel-title">'
+                  f'Altman Z-Skoru</span><span class="badge" style="color:{zc};background:{zc}1F">'
+                  f'{tr(zsc["z"], 2)} · {esc(zsc["zone"])}</span></div>'
+                  f'<div class="muted small">2,99 üstü güvenli · 1,81–2,99 gri bölge · altı riskli</div>'
+                  + "".join(f'<div class="planrow"><span class="l">{esc(k)}</span>'
+                            f'<span class="v">{tr(v, 2)}</span></div>'
+                            for k, v in zsc["parts"].items()))
+            if cons:
+                cc = UP if cons["pct"] >= 80 else WARN if cons["pct"] >= 55 else DOWN
+                H(f'<div style="display:flex;align-items:center;gap:10px;margin-top:14px">'
+                  f'<span class="panel-title">Süreklilik</span>'
+                  f'<span class="badge" style="color:{cc};background:{cc}1F">{cons["hit"]} / {cons["of"]} · '
+                  f'{esc(cons["label"])}</span></div>')
+                rows = ""
+                for r in cons["rows"]:
+                    ic, c_, bg = ("✓", UP, UP_BG) if r["ok"] else ("~", WARN, WARN_BG)
+                    rows += (f'<div class="vrow"><span class="ic" style="color:{c_};background:{bg}">{ic}</span>'
+                             f'<span class="t">{esc(r["t"])}</span>'
+                             f'<span class="n">{r["hit"]}/{r["of"]} yıl</span></div>')
+                H(rows)
+    f = b["f"]
+    yrs = [str(y) for y in f["years"]]
+    c3, c4 = st.columns([1.2, 1], gap="medium")
+    with c3:
+        with st.container(border=True):
+            H('<div class="panel-title">Kârlılık Eğilimi</div><div class="muted small">Özkaynak ve aktif '
+              'kârlılığı, net marj — yıllar içinde aynı seviyede kalabiliyor mu</div>')
+            plot(line_fig([("Özkaynak kârlılığı", yrs, f["roe"], ACCENT, False, False),
+                           ("Aktif kârlılığı", yrs, f["roa"], "#6EE7B7", False, False),
+                           ("Net marj", yrs, f["net_m"], VIOLET, True, False)],
+                          height=240, suffix="%"), key="v_prof")
+    with c4:
+        with st.container(border=True):
+            H('<div class="panel-title">Altman Z — Bileşen Katkıları</div><div class="muted small">Ağırlıklı '
+              'katkı; toplamı Z-skorunu verir</div>')
+            parts = en.altman_contrib(zsc)
+            if parts:
+                plot(bar_fig([k for k, _ in parts], [("Katkı", [v for _, v in parts],
+                                                      [UP if v >= 0 else DOWN for _, v in parts])],
+                             height=240, legend=False, horizontal=True, text=True, dec=2), key="v_altman")
+            else:
+                H('<div class="muted" style="padding:20px 0">Hesaplanamadı.</div>')
 
 
 try:
