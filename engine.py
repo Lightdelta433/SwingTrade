@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.3"
+ENGINE_VERSION = "3.4"
 NAN = float("nan")
 
 
@@ -2229,42 +2229,163 @@ def consistency(f):
 
 
 # ---------------------------------------------------------------- değerleme
-def fair_value_path(eps0, growth_pct, multiple, years=5, price=None,
-                    g_spread=0.35, m_spread=0.20):
-    """Yıl yıl adil değer: EPS büyür, hedef çarpanla çarpılır. Üç senaryo üretir."""
-    if not _ok(eps0) or eps0 <= 0 or not _ok(multiple) or multiple <= 0:
+def hist_eps_drop(eps):
+    """Geçmiş yıllık EPS'te en sert zirve → sonraki dip düşüşü (%). Döngü derinliği için."""
+    xs = [float(v) for v in (eps or []) if _ok(v)]
+    best = None
+    for i, a in enumerate(xs):
+        if a <= 0:
+            continue
+        lo = min(xs[i + 1:], default=a)
+        d = (1 - lo / a) * 100
+        if best is None or d > best:
+            best = d
+    return best
+
+
+SCEN_KEYS = ("bear", "base", "bull")
+
+
+def value_path(price, eps_last, est=None, g_lt=8.0, years=5, cyclical=False, peak_idx=None,
+               drop=45.0, down_years=2, target_mult=None, rerate_years=3, fy0=None, fy0_left=0.5,
+               window=None, g_near=None):
+    """Yıl yıl değer patikası — çarpan ve kâr aynı zaman dilimine ait olacak şekilde.
+
+    * EPS mali yıl bazında kurulur: ilk yıllar analist tahmini (taban = ortalama, kötümser =
+      en düşük, iyimser = en yüksek tahmin); sonrası uzun vade büyümesi.
+    * Döngüsel modda kâr `peak_idx` mali yılında zirve yapar, sonraki `down_years` yılda
+      `drop` % geriler, ardından döngü ortasına doğru toparlanır.
+    * Fiyat_k = çarpan_k × ileri kâr_k. İleri kâr, k anından sonraki 12 ayın EPS'idir;
+      `window` > 1 ise piyasanın daha uzağa baktığı varsayılır (birkaç yılın ortalaması).
+      İleri kâr kullanıldığı için döngüsellerde fiyat, kâr zirvesinden önce döner.
+    * Çarpan bugünkü fiyata kalibre edilir (k=0'da taban = bugünkü fiyat). `target_mult`
+      verilirse çarpan `rerate_years` içinde o değere kayar.
+    """
+    if not _ok(eps_last):
         return None
-    g = (growth_pct if _ok(growth_pct) else 0.0) / 100.0
-    g = max(-0.25, min(0.60, g))
-    scen = {"bear": (g * (1 - g_spread) - 0.01, multiple * (1 - m_spread)),
-            "base": (g, multiple),
-            "bull": (g * (1 + g_spread) + 0.01, multiple * (1 + m_spread))}
+    est = [e for e in (est or []) if _ok(e.get("avg"))]
+    years = int(years)
+    w = int(min(3, max(1, window or 1)))
+    a = float(min(1.0, max(0.0, fy0_left if _ok(fy0_left) else 0.5)))
+    H = years + w + 3
+    g_lt = float(g_lt if _ok(g_lt) else 8.0)
+    if not _ok(g_near):
+        g_near = g_lt
     this_year = int(pd.Timestamp.now().year)
-    rows = []
-    for k in range(1, int(years) + 1):
-        row = {"year": this_year + k, "k": k, "eps": {}, "value": {}}
-        for name, (gg, mm) in scen.items():
-            e = eps0 * ((1 + gg) ** k)
-            row["eps"][name] = round(float(e), 3)
-            row["value"][name] = round(float(e * mm), 2)
-        if _ok(price) and price > 0:
-            row["upside"] = round((row["value"]["base"] / price - 1) * 100, 1)
-            row["cagr"] = round(((row["value"]["base"] / price) ** (1.0 / k) - 1) * 100, 1)
-        rows.append(row)
-    return {"rows": rows, "eps0": float(eps0), "growth": g * 100, "multiple": float(multiple),
-            "scenarios": {k: {"growth": round(v[0] * 100, 1), "multiple": round(v[1], 1)}
-                          for k, v in scen.items()}}
+    fy0 = int(fy0 or this_year)
+    if peak_idx is None:
+        if est:
+            avgs = [e["avg"] for e in est]
+            peak_idx = int(np.argmax(avgs))
+        else:
+            peak_idx = 0
+    peak_idx = int(max(0, peak_idx))
+    drop = float(min(95.0, max(0.0, drop if _ok(drop) else 45.0)))
+    down_years = int(max(1, down_years))
+    sp = {"bear": {"est": "low", "g": g_lt * 0.5 - 1.0, "drop": min(95.0, drop * 1.35), "m": 0.85},
+          "base": {"est": "avg", "g": g_lt, "drop": drop, "m": 1.0},
+          "bull": {"est": "high", "g": g_lt * 1.5 + 1.0, "drop": drop * 0.6, "m": 1.15}}
+    eps = {}
+    for key, p in sp.items():
+        gl = p["g"] / 100.0
+        e = []
+        for i in range(H):
+            if i < len(est):
+                v = float(est[i].get(p["est"], est[i]["avg"]))
+                if not _ok(v):
+                    v = float(est[i]["avg"])
+            elif i == 0:
+                v = float(eps_last) * (1 + g_near / 100.0)
+            else:
+                prev = e[-1]
+                if cyclical and i <= peak_idx:
+                    # analist tahmini bitti ama zirve daha ileride: son büyümenin yarısıyla devam
+                    last_g = (e[-1] / e[-2] - 1) if (len(e) > 1 and e[-2] > 0) else gl
+                    v = prev * (1 + min(0.40, max(gl, last_g * 0.5)))
+                elif cyclical and peak_idx < i <= peak_idx + down_years:
+                    pk = e[peak_idx]
+                    v = pk * (1 - p["drop"] / 100.0 * (i - peak_idx) / down_years)
+                elif cyclical and i > peak_idx + down_years:
+                    # dipten döngü ortasına toparlanma (yılda en fazla %25), sonra uzun vade büyümesi
+                    pk = e[peak_idx]
+                    trough = pk * (1 - p["drop"] / 100.0)
+                    mid = (pk + trough) / 2 * ((1 + gl) ** (i - peak_idx - down_years))
+                    v = min(prev * 1.25, mid) if prev < mid else prev * (1 + gl)
+                else:
+                    v = prev * (1 + gl)
+            e.append(float(v))
+        eps[key] = e
 
+    def fwd(e, k):
+        # k anından itibaren 12 aylık kâr, w yıllık pencerede ortalama
+        vals = [a * e[j] + (1 - a) * e[j + 1] for j in range(k, k + w)]
+        return float(np.mean(vals))
 
-def sensitivity(eps0, growths, multiples, years=5):
-    """Büyüme × çarpan ızgarasında `years` yıl sonraki adil değer."""
-    if not _ok(eps0) or eps0 <= 0:
+    f0 = fwd(eps["base"], 0)
+    if max(fwd(eps["base"], k) for k in range(years + 1)) <= 0:
         return None
-    out = []
-    for g in growths:
-        e = eps0 * ((1 + g / 100.0) ** years)
-        out.append([round(float(e * m), 2) for m in multiples])
-    return {"growths": list(growths), "multiples": list(multiples), "grid": out, "years": years}
+    if _ok(price) and price > 0 and f0 > 0:
+        m_cal = float(price) / f0
+    else:
+        m_cal = float(target_mult) if _ok(target_mult) and target_mult > 0 else 15.0
+    m_cal = float(min(80.0, max(1.0, m_cal)))
+    m_tgt = float(target_mult) if (_ok(target_mult) and target_mult > 0) else m_cal
+
+    def mult(k, key):
+        t = min(1.0, k / float(max(1, rerate_years)))
+        m = m_cal + (m_tgt - m_cal) * t
+        return m * (1 + (sp[key]["m"] - 1) * t)
+
+    rows = []
+    for k in range(0, years + 1):
+        row = {"year": this_year + k, "k": k, "value": {}, "fwd_eps": {}, "mult": {}}
+        for key in SCEN_KEYS:
+            fe = fwd(eps[key], k)
+            m = mult(k, key)
+            row["fwd_eps"][key] = round(fe, 3)
+            row["mult"][key] = round(m, 2)
+            row["value"][key] = round(max(0.0, fe * m), 2)
+        if _ok(price) and price > 0 and k > 0:
+            row["upside"] = round((row["value"]["base"] / price - 1) * 100, 1)
+            row["cagr"] = round(((max(row["value"]["base"], 0.01) / price) ** (1.0 / k) - 1) * 100, 1)
+        rows.append(row)
+    eps_rows = []
+    for i in range(years + 1):
+        eps_rows.append({"fy": fy0 + i, "label": f"FY{fy0 + i}",
+                         "src": "analist" if i < len(est) else "model",
+                         "eps": {key: round(eps[key][i], 3) for key in SCEN_KEYS},
+                         "growth": round((eps["base"][i] / (eps["base"][i - 1] if i else eps_last) - 1) * 100, 1)
+                         if (eps["base"][i - 1] if i else eps_last) > 0 else None})
+    base_vals = [r["value"]["base"] for r in rows]
+    # döngünün fiyat tepesi: bugünden sonraki ilk yerel zirve (toparlanma yıllarındaki yeni tepe değil)
+    pk_k = 0
+    while pk_k + 1 < len(base_vals) and base_vals[pk_k + 1] >= base_vals[pk_k]:
+        pk_k += 1
+    if not cyclical:
+        pk_k = int(np.argmax(base_vals))
+    return {"rows": rows[1:], "today": rows[0], "eps_rows": eps_rows, "eps_last": float(eps_last),
+            "m_cal": round(m_cal, 2), "m_target": round(m_tgt, 2), "window": w, "cyclical": bool(cyclical),
+            "peak_fy": fy0 + peak_idx, "peak_idx": peak_idx, "drop": drop, "down_years": down_years,
+            "g_lt": g_lt, "fy0": fy0, "n_est": len(est), "price_peak_year": rows[pk_k]["year"],
+            "price_peak_value": base_vals[pk_k], "rerated": m_tgt != m_cal,
+            "scen": {k: {"g": round(v["g"], 1), "drop": round(v["drop"], 0), "m": v["m"], "est": v["est"]}
+                     for k, v in sp.items()}}
+
+
+def value_sensitivity(price, eps_last, est, cfg, rows_vals, mults, years=5):
+    """Duyarlılık: satır = döngüselde zirve sonrası düşüş, değilse uzun vade büyümesi; sütun = hedef çarpan."""
+    key = "drop" if cfg.get("cyclical") else "g_lt"
+    grid = []
+    for rv in rows_vals:
+        line = []
+        for m in mults:
+            c = dict(cfg)
+            c[key] = rv
+            c["target_mult"] = m
+            p = value_path(price, eps_last, est, years=years, **c)
+            line.append(p["rows"][-1]["value"]["base"] if p else float("nan"))
+        grid.append(line)
+    return {"key": key, "rows": list(rows_vals), "multiples": list(mults), "grid": grid, "years": years}
 
 
 def dcf(fcf0, shares, growth_pct, years=10, discount=9.0, terminal=2.5, net_debt=0.0):
