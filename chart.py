@@ -27,7 +27,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "3.4"
+CHART_VERSION = "3.6"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -38,15 +38,15 @@ _INDEX = os.path.join(_DIR, "index.html")
 #   bars: açılışta görünen mum sayısı
 # ----------------------------------------------------------------------
 INTERVALS = {
-    "1m":  {"name": "1 dakika",  "short": "1dk",   "src": ("5d", "1m"),    "agg": 0,   "bars": 180},
-    "5m":  {"name": "5 dakika",  "short": "5dk",   "src": ("1mo", "5m"),   "agg": 0,   "bars": 160},
-    "15m": {"name": "15 dakika", "short": "15dk",  "src": ("1mo", "15m"),  "agg": 0,   "bars": 130},
-    "30m": {"name": "30 dakika", "short": "30dk",  "src": ("1mo", "30m"),  "agg": 0,   "bars": 120},
-    "1h":  {"name": "1 saat",    "short": "1sa",   "src": ("6mo", "1h"),   "agg": 0,   "bars": 120},
-    "4h":  {"name": "4 saat",    "short": "4sa",   "src": ("1y", "1h"),    "agg": 4,   "bars": 90},
-    "1d":  {"name": "Günlük",    "short": "Gün",   "src": None,            "agg": 0,   "bars": 150},
-    "1wk": {"name": "Haftalık",  "short": "Hafta", "src": None,            "agg": "W", "bars": 160},
-    "1mo": {"name": "Aylık",     "short": "Ay",    "src": None,            "agg": "M", "bars": 120},
+    "1m":  {"name": "1 minute", "adj": "1-minute",   "short": "1m",  "src": ("5d", "1m"),    "agg": 0,   "bars": 180},
+    "5m":  {"name": "5 minutes", "adj": "5-minute",  "short": "5m",  "src": ("1mo", "5m"),   "agg": 0,   "bars": 160},
+    "15m": {"name": "15 minutes", "adj": "15-minute", "short": "15m", "src": ("1mo", "15m"),  "agg": 0,   "bars": 130},
+    "30m": {"name": "30 minutes", "adj": "30-minute", "short": "30m", "src": ("1mo", "30m"),  "agg": 0,   "bars": 120},
+    "1h":  {"name": "1 hour", "adj": "1-hour",     "short": "1H",  "src": ("6mo", "1h"),   "agg": 0,   "bars": 120},
+    "4h":  {"name": "4 hours", "adj": "4-hour",    "short": "4H",  "src": ("1y", "1h"),    "agg": 4,   "bars": 90},
+    "1d":  {"name": "Daily", "adj": "daily",      "short": "1D",  "src": None,            "agg": 0,   "bars": 150},
+    "1wk": {"name": "Weekly", "adj": "weekly",     "short": "1W",  "src": None,            "agg": "W", "bars": 160},
+    "1mo": {"name": "Monthly", "adj": "monthly",    "short": "1M",  "src": None,            "agg": "M", "bars": 120},
 }
 INTERVAL_ORDER = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
 DEFAULT_INTERVAL = "1d"
@@ -98,8 +98,8 @@ DEFAULT_CFG = {
     "atr": {"on": False, "n": 14, "c": "#F5B544"},
     "div": {"on": False, "src": "rsi", "left": 5, "right": 5, "hidden": True},
 }
-CONDS = {"cross": "keserse", "above": "üstüne çıkarsa", "below": "altına inerse",
-         "cross_up": "yukarı keserse", "cross_dn": "aşağı keserse"}
+CONDS = {"cross": "crosses", "above": "rises above", "below": "falls below",
+         "cross_up": "crosses above", "cross_dn": "crosses below"}
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -200,24 +200,128 @@ def _to_monthly(df):
         return _resample(df, "M")
 
 
-def chart_data(sym, tf):
-    """(veri, gösterilecek mum sayısı, gün içi mi) — seçilen mum aralığına göre."""
+# ----------------------------------------------------------------------
+# Lookback (geriye bakış) — mum aralığından bağımsız: "son 1 ay, 4 saatlik mumlarla"
+#   days: takvim günü · sess: son N işlem günü · None = tüm geçmiş
+# ----------------------------------------------------------------------
+LOOKBACKS = {
+    "1D":  {"name": "1 day",    "sess": 1},
+    "5D":  {"name": "5 days",   "sess": 5},
+    "1M":  {"name": "1 month",  "days": 31},
+    "3M":  {"name": "3 months", "days": 92},
+    "6M":  {"name": "6 months", "days": 183},
+    "YTD": {"name": "Year to date", "ytd": True},
+    "1Y":  {"name": "1 year",   "days": 366},
+    "2Y":  {"name": "2 years",  "days": 731},
+    "5Y":  {"name": "5 years",  "days": 1827},
+    "MAX": {"name": "All data"},
+}
+LOOKBACK_ORDER = list(LOOKBACKS)
+DEFAULT_LOOKBACK = "6M"
+# yfinance'in gün içi veriyi geriye ne kadar verdiği (gün)
+INTRADAY_LIMIT = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730, "4h": 730}
+MAX_KEEP = 6000
+
+
+def norm_lb(lb):
+    return lb if lb in LOOKBACKS else DEFAULT_LOOKBACK
+
+
+def lb_days(lb):
+    """Lookback'in yaklaşık takvim günü karşılığı (veri çekme periyodu seçmek için)."""
+    spec = LOOKBACKS[norm_lb(lb)]
+    if "sess" in spec:
+        return spec["sess"] * 1.5 + 2
+    if spec.get("ytd"):
+        return (pd.Timestamp.today() - pd.Timestamp(year=pd.Timestamp.today().year, month=1, day=1)).days + 1
+    return spec.get("days") or 1e9
+
+
+def _intraday_period(tf, lb):
+    """Gün içi aralık için yfinance periyodu: lookback + gösterge ısınması, sınırı aşmadan."""
+    need = lb_days(lb)
+    if tf == "1m":
+        return "7d"
+    if tf in ("5m", "15m", "30m"):
+        return "1mo" if need <= 12 else "60d"
+    return "3mo" if need <= 35 else "1y" if need <= 200 else "730d"
+
+
+def lookback_start(idx, lb):
+    """Görünür aralığın başlangıç zamanı (None = hepsi)."""
+    if idx is None or len(idx) == 0:
+        return None
+    spec = LOOKBACKS[norm_lb(lb)]
+    last = pd.Timestamp(idx[-1])
+    if "sess" in spec:
+        days = pd.DatetimeIndex(idx).normalize().unique()
+        return days[-min(len(days), spec["sess"])]
+    if spec.get("ytd"):
+        return pd.Timestamp(year=last.year, month=1, day=1, tz=last.tz)
+    if spec.get("days"):
+        return last - pd.Timedelta(days=spec["days"])
+    return None
+
+
+def visible_bars(full, lb):
+    """Lookback penceresine düşen mum sayısı (en az 1)."""
+    if full is None or full.empty:
+        return 0
+    start = lookback_start(full.index, lb)
+    if start is None:
+        return len(full)
+    try:
+        n = int((full.index >= start).sum())
+    except TypeError:
+        n = int((full.index.tz_localize(None) >= start.tz_localize(None)).sum())
+    return max(1, n)
+
+
+def chart_data(sym, tf, lb=None):
+    """(veri, gösterilecek mum sayısı, gün içi mi). `lb` verilirse görünür mum sayısı
+    lookback penceresinden hesaplanır; verilmezse aralığın varsayılan mum sayısı kullanılır."""
     spec = INTERVALS[norm_tf(tf)]
+    tfn = norm_tf(tf)
     if spec["src"]:
         period, interval = spec["src"]
+        if lb is not None:
+            period = _intraday_period(tfn, lb)
         full = md.get_intraday(sym, period, interval)
         if len(full) > 10:
             if spec["agg"]:
                 full = _to_4h(full, int(spec["agg"]))
-            return full, min(len(full), spec["bars"]), True
+            n = visible_bars(full, lb) if lb is not None else min(len(full), spec["bars"])
+            return full, n, True
         daily = md.get_history(sym)          # gün içi veri yoksa günlüğe düş
-        return daily, min(len(daily) or 150, INTERVALS["1d"]["bars"]), False
-    daily = md.get_history(sym)
+        n = visible_bars(daily, lb) if lb is not None else min(len(daily) or 150, INTERVALS["1d"]["bars"])
+        return daily, n, False
+    daily = md.get_history_max(sym) if (lb is not None and norm_lb(lb) == "MAX") else md.get_history(sym)
     if daily.empty:
         return daily, spec["bars"], False
     out = _to_weekly(daily) if spec["agg"] == "W" else \
         _to_monthly(daily) if spec["agg"] == "M" else daily
-    return out, min(len(out), spec["bars"]), False
+    n = visible_bars(out, lb) if lb is not None else min(len(out), spec["bars"])
+    return out, n, False
+
+
+def lookback_note(full, tf, lb, bars, intraday):
+    """Seçilen lookback + mum aralığı tam karşılanamıyorsa kısa açıklama (yoksa "")."""
+    if full is None or full.empty:
+        return ""
+    tfn, lbn = norm_tf(tf), norm_lb(lb)
+    if is_intraday(tfn) and not intraday:
+        return "No intraday data for this symbol — showing daily candles."
+    start = lookback_start(full.index, lbn)
+    if start is not None and pd.Timestamp(full.index[0]) > start and tfn in INTRADAY_LIMIT:
+        return (f"{INTERVALS[tfn]['adj'].capitalize()} candles only go back about {INTRADAY_LIMIT[tfn]} days — "
+                f"showing all available data. Pick a larger candle interval to see the full "
+                f"{LOOKBACKS[lbn]['name']}.")
+    if bars > MAX_KEEP:
+        return f"Showing the last {MAX_KEEP:,} candles — pick a larger candle interval for the full range."
+    if bars < 3:
+        return (f"Only {bars} candle{'s' if bars != 1 else ''} in this period — "
+                f"pick a smaller candle interval.")
+    return ""
 
 
 def _ser(s, dec=6):
@@ -233,14 +337,15 @@ def _ser(s, dec=6):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def build_payload(sym, tf, cfg_json, data_token, max_bars=900):
+def build_payload(sym, tf, cfg_json, data_token, max_bars=900, lb=None):
     """Grafiğin ihtiyaç duyduğu her şeyi tek bir JSON'a toplar (hepsi gerçek veriden)."""
     cfg = merge_cfg(json.loads(cfg_json))
-    full, bars_n, intraday = chart_data(sym, tf)
+    full, bars_n, intraday = chart_data(sym, tf, lb)
     if full.empty:
         return {"ok": False, "sym": sym}
-    # Görünür aralığın birkaç katını gönder: kullanıcı geriye kaydırabilsin
-    keep = int(min(len(full), max(max_bars, bars_n * 4)))
+    bars_n = int(min(bars_n, MAX_KEEP))
+    # Görünür aralıktan biraz fazlasını gönder: kullanıcı geriye kaydırabilsin
+    keep = int(min(len(full), MAX_KEEP, max(max_bars, bars_n + max(300, bars_n // 2))))
     df = full.tail(keep)
     ind = {}
     if cfg["sma"]["on"]:
@@ -306,15 +411,16 @@ def build_payload(sym, tf, cfg_json, data_token, max_bars=900):
             "src": df.attrs.get("src", "real"), "intraday": intraday,
             "interval": norm_tf(tf), "intervalName": tf_name(tf), "intervals": interval_list(),
             "bars": bars, "ind": ind, "zones": zones, "divs": divs, "cfg": cfg,
-            "visible": bars_n}
+            "visible": bars_n, "lookback": norm_lb(lb) if lb is not None else ""}
 
 
-def data_token(sym, tf):
+def data_token(sym, tf, lb=None):
     """Fiyat verisi değişince payload önbelleği yenilensin."""
-    full, _, _ = chart_data(sym, tf)
+    full, n, _ = chart_data(sym, tf, lb)
     if full.empty:
         return "none"
-    return "%s|%d|%s|%.6g" % (full.attrs.get("src"), len(full), full.index[-1], float(full["Close"].iloc[-1]))
+    return "%s|%d|%d|%s|%.6g" % (full.attrs.get("src"), len(full), n, full.index[-1],
+                                 float(full["Close"].iloc[-1]))
 
 
 # ----------------------------------------------------------------------
@@ -388,4 +494,4 @@ def check_alerts(alerts, df, lookback=3):
 
 
 def alert_text(a):
-    return "Fiyat %s %s" % (CONDS.get(a.get("cond"), ""), en.fmt_num(a.get("price"), 2))
+    return "Price %s %s" % (CONDS.get(a.get("cond"), ""), en.fmt_num(a.get("price"), 2))
