@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.3"
+DATA_VERSION = "3.4"
 
 try:
     import yfinance as yf
@@ -1540,7 +1540,8 @@ def get_market_snapshot():
                          "change_pct": _num_money(r.get("pctchange")),
                          "volume": _num_money(r.get("volume")),
                          "market_cap": _num_money(r.get("marketCap")),
-                         "exchange": ex, "sector": str(r.get("sector") or "")})
+                         "exchange": ex, "sector": str(r.get("sector") or ""),
+                         "industry": str(r.get("industry") or "")})
     if not got or len(rows) < 100:
         return _snapshot_fallback()
     df = pd.DataFrame(rows).drop_duplicates(subset=["ticker"]).reset_index(drop=True)
@@ -1714,11 +1715,39 @@ def get_statements(t):
     return out
 
 
+def _fiscal_year0(info):
+    """Analistlerin '0y' satırının ait olduğu mali yıl (ör. Micron Ekim 2026'da → FY2027)."""
+    for k in ("nextFiscalYearEnd", "lastFiscalYearEnd"):
+        v = _num(_g(info, k))
+        if v:
+            try:
+                y = int(pd.Timestamp(v, unit="s").year)
+                return y if k == "nextFiscalYearEnd" else y + 1
+            except Exception:
+                pass
+    return int(pd.Timestamp.now().year)
+
+
+def _pct_val(v):
+    v = _num(v)
+    if v is None:
+        return None
+    return float(v) * (100 if abs(float(v)) < 5 else 1)
+
+
 @_ttl_cache(10800, fail_ttl=600)
 def get_analyst(t):
-    """Analist büyüme tahminleri ve hedef fiyat dağılımı — bulunabildiği kadarıyla."""
-    out = {"growth_next_y": float("nan"), "growth_5y": float("nan"), "eps_next_y": float("nan"),
-           "target_mean": float("nan"), "target_high": float("nan"), "target_low": float("nan"),
+    """Analist tahminleri: mali yıl bazında EPS (ortalama / en düşük / en yüksek), büyüme, hedef fiyat.
+
+    '0y' = içinde bulunulan mali yıl, '+1y' = bir sonraki mali yıl. Çeyreklik
+    `earningsGrowth` (son çeyrek / geçen yılın aynı çeyreği) burada kullanılmaz — o bir
+    beklenti değil, geçmiş bir çeyrek kıyası.
+    """
+    nan = float("nan")
+    out = {"growth_next_y": nan, "growth_0y": nan, "growth_1y": nan, "growth_5y": nan,
+           "eps_next_y": nan, "eps_last_fy": nan, "fy0": None, "fy0_left": 0.5, "fy": [],
+           "fwd_eps": nan, "trailing_eps": nan,
+           "target_mean": nan, "target_high": nan, "target_low": nan,
            "n": 0, "src": "none"}
     if not _HAS_YF:
         return out
@@ -1728,41 +1757,146 @@ def get_analyst(t):
     except Exception:
         info = {}
     for k, keys in (("target_mean", ("targetMeanPrice",)), ("target_high", ("targetHighPrice",)),
-                    ("target_low", ("targetLowPrice",))):
+                    ("target_low", ("targetLowPrice",)), ("fwd_eps", ("forwardEps",)),
+                    ("trailing_eps", ("trailingEps", "epsTrailingTwelveMonths"))):
         v = _num(_g(info, *keys))
         if v is not None:
             out[k] = float(v)
     out["n"] = int(_num(_g(info, "numberOfAnalystOpinions")) or 0)
-    g = _num(_g(info, "earningsGrowth"))
-    if g is not None:
-        out["growth_next_y"] = float(g) * 100
+    fy0 = _fiscal_year0(info)
+    out["fy0"] = fy0
+    nfe = _num(_g(info, "nextFiscalYearEnd"))
+    if nfe:
+        try:
+            left = (pd.Timestamp(nfe, unit="s") - pd.Timestamp.now()).days / 365.25
+            out["fy0_left"] = float(min(1.0, max(0.0, left)))
+        except Exception:
+            pass
+    try:
+        ee = getattr(tk, "earnings_estimate", None)
+        if ee is not None and hasattr(ee, "empty") and not ee.empty and "avg" in ee.columns:
+            for i, idx in enumerate(("0y", "+1y")):
+                if idx not in ee.index:
+                    continue
+                row = ee.loc[idx]
+                avg = _num(row.get("avg"))
+                if avg is None:
+                    continue
+                lo, hi = _num(row.get("low")), _num(row.get("high"))
+                out["fy"].append({"fy": fy0 + i, "label": f"FY{fy0 + i}", "avg": float(avg),
+                                  "low": float(lo) if lo is not None else float(avg),
+                                  "high": float(hi) if hi is not None else float(avg),
+                                  "n": int(_num(row.get("numberOfAnalysts")) or 0),
+                                  "growth": _pct_val(row.get("growth"))})
+                if idx == "0y":
+                    ya = _num(row.get("yearAgoEps"))
+                    if ya is not None:
+                        out["eps_last_fy"] = float(ya)
+    except Exception:
+        pass
     try:
         ge = getattr(tk, "growth_estimates", None)
         if ge is not None and hasattr(ge, "empty") and not ge.empty:
             col = ge.columns[0]
-            for idx, key in (("+1y", "growth_next_y"), ("+5y", "growth_5y")):
+            for idx, key in (("0y", "growth_0y"), ("+1y", "growth_1y"), ("+5y", "growth_5y")):
                 if idx in ge.index:
-                    v = _num(ge.loc[idx, col])
+                    v = _pct_val(ge.loc[idx, col])
                     if v is not None:
-                        out[key] = float(v) * (100 if abs(float(v)) < 5 else 1)
+                        out[key] = v
     except Exception:
         pass
-    try:
-        ee = getattr(tk, "earnings_estimate", None)
-        if ee is not None and hasattr(ee, "empty") and not ee.empty and "avg" in ee.columns:
-            if "+1y" in ee.index:
-                v = _num(ee.loc["+1y", "avg"])
-                if v is not None:
-                    out["eps_next_y"] = float(v)
-    except Exception:
-        pass
-    if out["n"] or out["target_mean"] == out["target_mean"] or out["growth_next_y"] == out["growth_next_y"]:
+    # tahmin tablosundaki büyüme ve EPS'ler birbirini tamamlar
+    fys = out["fy"]
+    # büyümeyi EPS'lerden kendimiz hesaplarız (Yahoo'nun oran alanı %500 üstünde birim karıştırabiliyor)
+    for i, e in enumerate(fys):
+        prev = fys[i - 1]["avg"] if i else out["eps_last_fy"]
+        if prev == prev and prev and prev > 0:
+            e["growth"] = (e["avg"] / prev - 1) * 100
+    if fys:
+        if fys[0].get("growth") is not None:
+            out["growth_0y"] = fys[0]["growth"]
+        if len(fys) > 1 and fys[1].get("growth") is not None:
+            out["growth_1y"] = fys[1]["growth"]
+        if out["growth_0y"] != out["growth_0y"] and out["eps_last_fy"] == out["eps_last_fy"] \
+                and out["eps_last_fy"] > 0:
+            out["growth_0y"] = (fys[0]["avg"] / out["eps_last_fy"] - 1) * 100
+        if len(fys) > 1:
+            out["eps_next_y"] = fys[1]["avg"]
+            if out["growth_1y"] != out["growth_1y"] and fys[0]["avg"] > 0:
+                out["growth_1y"] = (fys[1]["avg"] / fys[0]["avg"] - 1) * 100
+    for key in ("growth_0y", "growth_1y"):
+        if out[key] == out[key]:
+            out["growth_next_y"] = out[key]
+            break
+    if out["n"] or fys or out["target_mean"] == out["target_mean"] or \
+            out["growth_next_y"] == out["growth_next_y"]:
         out["src"] = "real"
     return out
 
 
+# Sektör ETF'leri çok geniş (MU ile PLTR aynı ETF'de). Burada aynı ürünü satan, gerçekten
+# rekabet eden şirketler tutulur — yabancı borsalardakiler dahil. "cyc" döngüsel sektör demek.
+PEER_GROUPS = [
+    {"name": "Bellek ve depolama", "cyc": True,
+     "syms": ["MU", "000660.KS", "005930.KS", "2408.TW", "SNDK", "285A.T", "WDC", "STX"],
+     "core": {"MU": ["000660.KS", "005930.KS", "2408.TW", "SNDK", "285A.T"],
+              "SNDK": ["285A.T", "MU", "005930.KS", "000660.KS", "WDC"],
+              "WDC": ["STX", "SNDK", "MU", "285A.T"],
+              "STX": ["WDC", "SNDK", "MU"]}},
+    {"name": "GPU ve hızlandırıcı", "cyc": False,
+     "syms": ["NVDA", "AMD", "AVGO", "INTC", "MRVL", "QCOM", "ARM"]},
+    {"name": "Dökümhane", "cyc": True, "syms": ["TSM", "INTC", "GFS", "UMC", "005930.KS"]},
+    {"name": "Yarı iletken ekipman", "cyc": True,
+     "syms": ["ASML", "AMAT", "LRCX", "KLAC", "8035.T", "TER"]},
+    {"name": "Analog ve mikrodenetleyici", "cyc": True,
+     "syms": ["TXN", "ADI", "NXPI", "MCHP", "ON", "STM", "IFNNY"]},
+    {"name": "Bulut ve yazılım devleri", "cyc": False,
+     "syms": ["MSFT", "ORCL", "CRM", "SAP", "ADBE", "NOW"]},
+    {"name": "İnternet ve reklam", "cyc": False, "syms": ["GOOGL", "META", "AMZN", "SNAP", "PINS", "TTD"]},
+    {"name": "Akıllı telefon ve donanım", "cyc": False, "syms": ["AAPL", "005930.KS", "1810.HK", "DELL", "HPQ"]},
+    {"name": "Elektrikli araç ve otomotiv", "cyc": True,
+     "syms": ["TSLA", "BYDDY", "TM", "GM", "F", "RIVN", "LI", "NIO", "STLA"]},
+    {"name": "Büyük bankalar", "cyc": True, "syms": ["JPM", "BAC", "C", "WFC", "GS", "MS"]},
+    {"name": "Ödeme ağları", "cyc": False, "syms": ["V", "MA", "AXP", "PYPL", "FI"]},
+    {"name": "Petrol devleri", "cyc": True, "syms": ["XOM", "CVX", "SHEL", "BP", "TTE", "COP"]},
+    {"name": "İlaç", "cyc": False, "syms": ["LLY", "NVO", "JNJ", "MRK", "PFE", "ABBV", "AZN"]},
+    {"name": "Perakende", "cyc": False, "syms": ["WMT", "COST", "TGT", "AMZN", "HD", "LOW"]},
+    {"name": "Yayın ve eğlence", "cyc": False, "syms": ["NFLX", "DIS", "WBD", "ROKU", "SPOT"]},
+    {"name": "Havayolu", "cyc": True, "syms": ["DAL", "UAL", "AAL", "LUV", "ALK"]},
+    {"name": "Çelik ve metal", "cyc": True, "syms": ["NUE", "STLD", "CLF", "X", "FCX", "AA"]},
+    {"name": "Kimya", "cyc": True, "syms": ["DOW", "LYB", "DD", "CE", "EMN"]},
+]
+
+
+def peer_group(t):
+    """Seçili hissenin elle derlenmiş rakip grubu (varsa)."""
+    for g in PEER_GROUPS:
+        if t in g.get("core", {}) or t in g["syms"]:
+            return g
+    return None
+
+
+def is_cyclical_industry(t):
+    g = peer_group(t)
+    return bool(g and g.get("cyc"))
+
+
 def peer_universe(t):
-    """Aynı sektördeki şirketler (ETF bileşen listelerinden)."""
+    """Rakip adayları: önce elle derlenmiş grup, sonra aynı endüstri, en son aynı sektör."""
+    g = peer_group(t)
+    if g:
+        core = g.get("core", {}).get(t)
+        if core:
+            return list(core)
+        return [s for s in g["syms"] if s != t]
+    snap = get_market_snapshot()
+    if snap is not None and len(snap) and "industry" in snap.columns:
+        row = snap[snap["ticker"] == t]
+        ind = str(row["industry"].iloc[0]) if len(row) else ""
+        if ind:
+            same = snap[(snap["industry"] == ind) & (snap["ticker"] != t)]
+            if len(same) >= 3:
+                return list(same["ticker"])
     for _, _, cons in SECTORS:
         syms = [c[0] for c in cons]
         if t in syms:
@@ -1773,12 +1907,27 @@ def peer_universe(t):
     return []
 
 
+def peer_source(t):
+    """Rakip listesinin nereden geldiği — arayüzde açıklama için."""
+    g = peer_group(t)
+    if g:
+        return g["name"]
+    snap = get_market_snapshot()
+    if snap is not None and len(snap) and "industry" in snap.columns:
+        row = snap[snap["ticker"] == t]
+        if len(row) and str(row["industry"].iloc[0]):
+            return f'{row["industry"].iloc[0]} (NASDAQ endüstri sınıfı)'
+    return "Sektör ETF bileşenleri"
+
+
 @_ttl_cache(1800, fail_ttl=300)
 def get_peers(t, n=5):
-    """Piyasa değeri en yakın rakipler — karşılaştırma tablosu için."""
+    """Rakipler. Elle derlenmiş grupta sıra korunur; diğerlerinde piyasa değeri en yakınlar."""
     cand = peer_universe(t)
     if not cand:
         return []
+    if peer_group(t):
+        return cand[:int(n)]
     snap = get_market_snapshot()
     caps = {}
     if snap is not None and len(snap):
@@ -1798,12 +1947,48 @@ def get_peers(t, n=5):
     return [s for _, s in scored[:int(n)]]
 
 
+# Kur bulunamazsa kullanılacak yaklaşık değerler (1 birim = ? USD)
+_USD_FALLBACK = {"USD": 1.0, "KRW": 0.00072, "JPY": 0.0066, "TWD": 0.031, "EUR": 1.08, "GBP": 1.27,
+                 "HKD": 0.128, "CNY": 0.138, "CHF": 1.13, "CAD": 0.73, "AUD": 0.66, "INR": 0.012,
+                 "SEK": 0.095, "DKK": 0.145, "TRY": 0.029}
+
+
+@_ttl_cache(3600, fail_ttl=300)
+def usd_rate(cur):
+    """1 birim yerel para kaç dolar (GBp gibi kuruş cinsleri de çevrilir)."""
+    cur = str(cur or "USD")
+    div = 1.0
+    if cur in ("GBp", "GBX"):
+        cur, div = "GBP", 100.0
+    elif cur == "ZAc":
+        cur, div = "ZAR", 100.0
+    cur = cur.upper()
+    if cur == "USD":
+        return 1.0 / div
+    rate = None
+    if _HAS_YF:
+        try:
+            h = yf.Ticker(f"{cur}USD=X").history(period="5d")
+            if h is not None and len(h):
+                rate = float(h["Close"].dropna().iloc[-1])
+        except Exception:
+            rate = None
+    if not rate or rate != rate:
+        rate = _USD_FALLBACK.get(cur)
+    return (rate / div) if rate else float("nan")
+
+
 @_ttl_cache(1800, fail_ttl=300)
 def get_valuation(t):
-    """Karşılaştırma tablosu için çarpanlar — tek info çağrısı, önbellekli."""
+    """Karşılaştırma tablosu için çarpanlar — tek info çağrısı, önbellekli.
+
+    growth = ileri EPS büyümesi (analistlerin önümüzdeki mali yıl EPS'i ÷ son 12 ay EPS).
+    Piyasa değeri dolara çevrilir (Samsung, SK Hynix vb. yerel parayla yayımlanır).
+    """
     nan = float("nan")
     out = {"ticker": t, "name": company_name(t), "market_cap": nan, "pe": nan, "fwd_pe": nan,
-           "peg": nan, "ev_ebitda": nan, "growth": nan, "net_margin": nan, "src": "none"}
+           "peg": nan, "ev_ebitda": nan, "growth": nan, "rev_growth": nan, "net_margin": nan,
+           "currency": "USD", "src": "none"}
     if not _HAS_YF:
         return out
     try:
@@ -1816,20 +2001,34 @@ def get_valuation(t):
         v = _num(_g(info, *keys))
         return float(v) if v is not None else nan
     out["name"] = _g(info, "shortName", "longName") or company_name(t)
-    out["market_cap"] = _f("marketCap")
+    cur = _g(info, "currency", default="USD")
+    out["currency"] = cur
+    mc = _f("marketCap")
+    if mc == mc and cur not in ("USD", None):
+        r = usd_rate(cur)
+        mc = mc * r if r == r else nan
+    out["market_cap"] = mc
     out["pe"] = _f("trailingPE")
     out["fwd_pe"] = _f("forwardPE")
-    out["peg"] = _f("trailingPegRatio", "pegRatio")
+    te, fe = _f("trailingEps"), _f("forwardEps")
+    if out["pe"] != out["pe"]:
+        p = _f("currentPrice", "regularMarketPrice")
+        if p == p and te == te and te > 0:
+            out["pe"] = p / te
+    if out["fwd_pe"] != out["fwd_pe"]:
+        p = _f("currentPrice", "regularMarketPrice")
+        if p == p and fe == fe and fe > 0:
+            out["fwd_pe"] = p / fe
     out["ev_ebitda"] = _f("enterpriseToEbitda")
-    g = _f("earningsGrowth")
-    if g != g:
-        g = _f("revenueGrowth")
-    out["growth"] = g * 100 if g == g else nan
+    if te == te and fe == fe and te > 0:
+        out["growth"] = (fe / te - 1) * 100
+    rg = _f("revenueGrowth")
+    out["rev_growth"] = rg * 100 if rg == rg else nan
     m = _f("profitMargins")
     out["net_margin"] = m * 100 if m == m else nan
-    if out["peg"] != out["peg"] and out["fwd_pe"] == out["fwd_pe"] and out["growth"] == out["growth"] \
-            and out["growth"] > 0:
-        out["peg"] = out["fwd_pe"] / out["growth"]
+    g = out["growth"]
+    if out["fwd_pe"] == out["fwd_pe"] and g == g and g > 0:
+        out["peg"] = out["fwd_pe"] / g
     out["src"] = "real"
     return out
 
