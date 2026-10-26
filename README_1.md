@@ -1,4 +1,4 @@
-# Pulse — Piyasa Paneli (Streamlit) · v3.3
+# Pulse — Piyasa Paneli (Streamlit) · v3.4
 
 Koyu temalı swing-trade paneli. Bölümler: **Piyasalar · Değer Analizi · Long Term · Short Term ·
 Backtest · Forex & Haberler**.
@@ -77,9 +77,9 @@ yayımlanmadığından o sembollerde yalnızca fiyat tabanlı bölümler çalı�
 
 | Grup | Ağırlık | Nelere bakar |
 |------|---------|--------------|
-| Rakiplere göre çarpan | %25 | F/K, ileri F/K ve FD/FAVÖK'ün sektör medyanına primi |
+| Rakiplere göre çarpan | %25 | F/K, ileri F/K ve FD/FAVÖK'ün rakip medyanına primi |
 | Kendi geçmişine göre | %15 | Son yılların F/K dağılımında bugünkü konum (yüzdelik dilim) |
-| Büyüme | %20 | Ciro ve EPS bileşik büyümesi + analistin gelecek yıl beklentisi |
+| Büyüme | %20 | Ciro ve EPS bileşik büyümesi + analistlerin bu mali yıl EPS büyümesi beklentisi |
 | Bilanço & kalite | %20 | Piotroski F, Altman Z, süreklilik kontrolleri, borç/özkaynak |
 | Nakit üretimi | %20 | Serbest nakit akışı getirisi, nakit akışı/net kâr, hisse adedi değişimi |
 
@@ -87,20 +87,41 @@ yayımlanmadığından o sembollerde yalnızca fiyat tabanlı bölümler çalı�
 büyüme oranları (ciro ve EPS, bir önceki yıla göre), borç ve nakit, hissedar getirisi (geri alım +
 temettü). Altında cari oran, net borç/FAVÖK, faiz karşılama, aktif kârlılığı, kazanç kalitesi.
 
-**02 Gelecek Yılların Adil Değeri.** EPS seçilen büyümeyle ilerletilir, hedef çarpanla çarpılır;
-kötümser / taban / iyimser üç senaryo beş yıl boyunca çizilir ve tablolanır (getiri + yıllık bileşik
-karşılığı). Yanında **duyarlılık ızgarası** (büyüme × çarpan) ve **nakit akışı iskontosu**:
-10 yıllık DCF (büyüme kademeli olarak uç değere iner) ile **ters DCF** — bugünkü fiyatın hangi
-nakit akışı büyümesini fiyatladığını çözüp şirketin gerçek büyümesiyle karşılaştırır.
-Ayrıca **EPS geçmişi ve projeksiyonu** (gerçekleşen çubuklar + üç senaryo çizgisi) ve
-**tarihsel F/K bandı** (fiyat ÷ o yılın EPS'i; alt %10, medyan, üst %90 çizgileriyle).
+**02 Gelecek Yılların Değeri.** Mali yıl bazında kurulur ve çarpanla kâr hep aynı döneme aittir:
 
-**03 Rakiplere Göre Konum.** Aynı sektörden, piyasa değeri en yakın beş rakip.
-Büyüme / çarpan haritasında yatay eksen beklenen büyüme, dikey eksen 12 ay ileri F/K,
-daire büyüklüğü piyasa değeri; kesikli çizgi rakiplerin eğilimi — üstünde kalanlar büyümesine göre
-pahalı. Yanındaki tabloda F/K, ileri F/K, PEG, FD/FAVÖK, büyüme ve net marj sektör medyanına göre
-renklendirilir. Altında hissenin kendi tarihsel F/K bandındaki yeri, ileri F/K çubukları
-(küçükten büyüğe, kesikli çizgi medyan) ve büyüme / net marj karşılaştırması.
+* **EPS:** ilk iki yıl analistlerin mali yıl tahminleri (`0y` = içinde bulunulan mali yıl,
+  `+1y` = sonraki). Taban = ortalama, kötümser = en düşük, iyimser = en yüksek tahmin. Sonraki
+  yıllar uzun vade büyümesiyle ilerler. Çeyreklik `earningsGrowth` (son çeyrek ÷ geçen yılın aynı
+  çeyreği) beklenti olmadığı için kullanılmaz.
+* **Döngüsel mod** (bellek, yarı iletken ekipman, otomotiv, petrol, çelik… ve geçmişi döngüsel
+  çıkan hisselerde varsayılan açık): kâr seçilen mali yılda zirve yapar, sonraki iki yılda seçilen
+  oranda geriler, sonra döngü ortasına doğru toparlanır. Varsayılan düşüş şirketin kendi geçmiş
+  döngülerinden gelir (%30–80 aralığına sınırlı).
+* **Değer:** her yıl = o andaki çarpan × **önümüzdeki 12 ayın EPS'i**. Çarpan bugünkü fiyata
+  kalibre edilir — taban senaryo bugünkü fiyattan başlar. İstenirse rakiplerin ileri F/K medyanı,
+  kendi F/K medyanı ya da elle girilen bir çarpana 3 yılda kayar. İleri kâr kullanıldığı için
+  döngüsellerde fiyat, kâr zirvesinden önce tepe yapar.
+* **Model Ayarları** paneli: döngüsel mod, kâr zirvesi yılı, zirve sonrası düşüş, uzun vade büyüme,
+  hedef çarpan, piyasanın ufku (1–2 yıl). Ayarlar hisse başına saklanır.
+
+Grafikler: değer patikası (kötümser–iyimser aralığı dolgulu), yıl yıl değer + çarpan tablosu,
+mali yıl EPS tablosu (analist / model etiketli), **duyarlılık ızgarası** (döngüselde zirve sonrası
+düşüş × hedef çarpan, değilse uzun vade büyüme × hedef çarpan), EPS geçmişi ve projeksiyonu
+(kâr zirvesi işaretli), patikanın yapı taşları (ileri EPS çubukları + çarpan çizgisi),
+**nakit akışı iskontosu** (10 yıllık DCF + **ters DCF**) ve **tarihsel F/K bandı**.
+
+**03 Rakiplere Göre Konum.** Rakipler önce elle derlenmiş sektör gruplarından gelir — aynı ürünü
+satan, gerçekten rekabet eden şirketler, yabancı borsalardakiler dahil. Örneğin Micron için
+SK Hynix (`000660.KS`), Samsung Electronics (`005930.KS`), Nanya (`2408.TW`), SanDisk (`SNDK`),
+Kioxia (`285A.T`). Grupta olmayan hisselerde NASDAQ'ın endüstri sınıfı, o da yoksa sektör ETF'i
+kullanılır. Kaynak başlığın altında yazar; **Rakipleri düzenle** ile liste değiştirilebilir
+(hisse başına saklanır). Yabancı şirketlerin piyasa değeri dolara çevrilir. Borsada işlem görmeyen
+şirketler (ör. CXMT) eklenemez.
+Büyüme / çarpan haritasında yatay eksen **ileri EPS büyümesi** (önümüzdeki mali yıl tahmini ÷ son
+12 ay EPS), dikey eksen ileri F/K, daire büyüklüğü piyasa değeri; kesikli çizgi rakiplerin eğilimi.
+Tabloda F/K, ileri F/K, PEG (ileri), FD/FAVÖK, ileri EPS büyümesi ve net marj rakip medyanına göre
+renklendirilir. Altında hissenin kendi tarihsel F/K bandındaki yeri, ileri F/K çubukları ve
+büyüme / net marj karşılaştırması.
 
 **04 Döngüsellik.** Beta, düşüşte/yükselişte yakalama oranı (SPY referans), yıllık oynaklık,
 ciro ve EPS büyümesinin oynaklığı, son %15+ düşüş dönemleri ve toparlanma süreleri.
