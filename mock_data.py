@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.4"
+DATA_VERSION = "3.6"
 
 try:
     import yfinance as yf
@@ -126,156 +126,156 @@ def _g(info, *keys, default=None):
 # Sembol evreni
 # ======================================================================
 COMPANIES = {
-    "AAPL":  {"name": "Apple", "domain": "apple.com", "sector": "Teknoloji",
-              "desc": "iPhone, Mac ve servislerden oluşan donanım-yazılım ekosistemiyle dünyanın en değerli tüketici teknolojisi şirketlerinden biri."},
-    "MSFT":  {"name": "Microsoft", "domain": "microsoft.com", "sector": "Teknoloji",
-              "desc": "Windows, Office ve Azure bulut platformuyla kurumsal yazılım ve bulut altyapısında lider."},
-    "NVDA":  {"name": "NVIDIA", "domain": "nvidia.com", "sector": "Yarı İletken",
-              "desc": "Yapay zeka ve veri merkezi GPU'larında baskın oyuncu; hızlandırılmış hesaplamanın merkezinde."},
-    "AMZN":  {"name": "Amazon", "domain": "amazon.com", "sector": "Tüketici",
-              "desc": "E-ticaret devi ve AWS ile dünyanın en büyük bulut servis sağlayıcısı."},
-    "GOOGL": {"name": "Alphabet", "domain": "google.com", "sector": "Teknoloji",
-              "desc": "Google arama, reklam, YouTube ve bulut; ayrıca yapay zeka araştırmalarında öncü."},
-    "META":  {"name": "Meta Platforms", "domain": "meta.com", "sector": "Teknoloji",
-              "desc": "Facebook, Instagram ve WhatsApp'ı işleten sosyal medya ve dijital reklam devi."},
-    "TSLA":  {"name": "Tesla", "domain": "tesla.com", "sector": "Otomotiv",
-              "desc": "Elektrikli araç üreticisi; enerji depolama ve otonom sürüş alanlarında da faaliyette."},
-    "AMD":   {"name": "AMD", "domain": "amd.com", "sector": "Yarı İletken",
-              "desc": "CPU ve GPU üreticisi; veri merkezi ve PC pazarında Intel ve NVIDIA'nın başlıca rakibi."},
-    "NFLX":  {"name": "Netflix", "domain": "netflix.com", "sector": "İletişim",
-              "desc": "Dünya çapında abonelik tabanlı video akış platformu ve içerik üreticisi."},
-    "CRM":   {"name": "Salesforce", "domain": "salesforce.com", "sector": "Yazılım",
-              "desc": "Bulut tabanlı müşteri ilişkileri yönetimi (CRM) yazılımında pazar lideri."},
-    "ADBE":  {"name": "Adobe", "domain": "adobe.com", "sector": "Yazılım",
-              "desc": "Photoshop, Acrobat ve yaratıcı bulut araçlarıyla dijital medya yazılımı lideri."},
-    "AVGO":  {"name": "Broadcom", "domain": "broadcom.com", "sector": "Yarı İletken",
-              "desc": "Ağ, kablosuz ve altyapı çipleri üreten, kurumsal yazılımda da büyüyen yarı iletken devi."},
-    "COST":  {"name": "Costco", "domain": "costco.com", "sector": "Perakende",
-              "desc": "Üyelik tabanlı toptan perakende zinciri; istikrarlı gelir ve güçlü müşteri sadakati."},
-    "PEP":   {"name": "PepsiCo", "domain": "pepsico.com", "sector": "Temel Tüketim",
-              "desc": "İçecek ve atıştırmalık devi; Pepsi, Lay's ve Gatorade gibi küresel markalara sahip."},
-    "SHOP":  {"name": "Shopify", "domain": "shopify.com", "sector": "Yazılım",
-              "desc": "KOBİ'ler için e-ticaret altyapısı sağlayan bulut tabanlı ticaret platformu."},
-    "UBER":  {"name": "Uber", "domain": "uber.com", "sector": "Teknoloji",
-              "desc": "Yolculuk paylaşımı ve yemek teslimatında küresel pazar lideri platform."},
-    "PLTR":  {"name": "Palantir", "domain": "palantir.com", "sector": "Yazılım",
-              "desc": "Devlet ve kurumlar için büyük veri analitiği ve yapay zeka yazılım platformları."},
-    "SOFI":  {"name": "SoFi", "domain": "sofi.com", "sector": "Fintek",
-              "desc": "Kredi, yatırım ve bankacılığı tek uygulamada birleştiren dijital finans platformu."},
-    "COIN":  {"name": "Coinbase", "domain": "coinbase.com", "sector": "Fintek",
-              "desc": "ABD merkezli en büyük kripto para borsalarından biri; perakende ve kurumsal işlem."},
-    "SNOW":  {"name": "Snowflake", "domain": "snowflake.com", "sector": "Yazılım",
-              "desc": "Bulut tabanlı veri ambarı ve veri analitiği platformu; kullandıkça öde modeli."},
-    "SPY":   {"name": "SPDR S&P 500 ETF", "domain": "ssga.com", "sector": "Endeks ETF",
-              "desc": "S&P 500 endeksini takip eden en büyük ve en likit borsa yatırım fonu; ABD'nin en büyük 500 halka açık şirketini kapsar."},
-    "QQQ":   {"name": "Invesco QQQ Trust", "domain": "invesco.com", "sector": "Endeks ETF",
-              "desc": "Nasdaq-100 endeksini takip eden ETF; ağırlıklı olarak teknoloji ve büyüme şirketlerinden oluşur."},
-    "DIA":   {"name": "SPDR Dow Jones Industrial Average ETF", "domain": "ssga.com", "sector": "Endeks ETF",
-              "desc": "Dow Jones Endüstri Ortalaması'nı takip eden ETF; 30 büyük ve köklü ABD şirketini fiyat ağırlıklı izler."},
-    "IWM":   {"name": "iShares Russell 2000 ETF", "domain": "ishares.com", "sector": "Endeks ETF",
-              "desc": "Russell 2000 endeksini takip eden ETF; ABD'li küçük ölçekli (small-cap) şirketleri kapsar."},
+    "AAPL":  {"name": "Apple", "domain": "apple.com", "sector": "Technology",
+              "desc": "One of the world's most valuable consumer technology companies, with a hardware-software ecosystem of iPhone, Mac and services."},
+    "MSFT":  {"name": "Microsoft", "domain": "microsoft.com", "sector": "Technology",
+              "desc": "Leader in enterprise software and cloud infrastructure with Windows, Office and the Azure cloud platform."},
+    "NVDA":  {"name": "NVIDIA", "domain": "nvidia.com", "sector": "Semiconductors",
+              "desc": "Dominant player in AI and data-center GPUs; at the centre of accelerated computing."},
+    "AMZN":  {"name": "Amazon", "domain": "amazon.com", "sector": "Consumer",
+              "desc": "E-commerce giant and, with AWS, the world's largest cloud service provider."},
+    "GOOGL": {"name": "Alphabet", "domain": "google.com", "sector": "Technology",
+              "desc": "Google search, advertising, YouTube and cloud; also a pioneer in AI research."},
+    "META":  {"name": "Meta Platforms", "domain": "meta.com", "sector": "Technology",
+              "desc": "Social media and digital advertising giant operating Facebook, Instagram and WhatsApp."},
+    "TSLA":  {"name": "Tesla", "domain": "tesla.com", "sector": "Automotive",
+              "desc": "Electric vehicle maker; also active in energy storage and autonomous driving."},
+    "AMD":   {"name": "AMD", "domain": "amd.com", "sector": "Semiconductors",
+              "desc": "CPU and GPU maker; Intel's and NVIDIA's main rival in the data-center and PC markets."},
+    "NFLX":  {"name": "Netflix", "domain": "netflix.com", "sector": "Communication",
+              "desc": "Worldwide subscription video streaming platform and content producer."},
+    "CRM":   {"name": "Salesforce", "domain": "salesforce.com", "sector": "Software",
+              "desc": "Market leader in cloud-based customer relationship management (CRM) software."},
+    "ADBE":  {"name": "Adobe", "domain": "adobe.com", "sector": "Software",
+              "desc": "Digital media software leader with Photoshop, Acrobat and Creative Cloud tools."},
+    "AVGO":  {"name": "Broadcom", "domain": "broadcom.com", "sector": "Semiconductors",
+              "desc": "Semiconductor giant making networking, wireless and infrastructure chips, also growing in enterprise software."},
+    "COST":  {"name": "Costco", "domain": "costco.com", "sector": "Retail",
+              "desc": "Membership-based warehouse retail chain; steady revenue and strong customer loyalty."},
+    "PEP":   {"name": "PepsiCo", "domain": "pepsico.com", "sector": "Consumer Staples",
+              "desc": "Beverage and snack giant owning global brands such as Pepsi, Lay's and Gatorade."},
+    "SHOP":  {"name": "Shopify", "domain": "shopify.com", "sector": "Software",
+              "desc": "Cloud-based commerce platform providing e-commerce infrastructure for small and mid-sized businesses."},
+    "UBER":  {"name": "Uber", "domain": "uber.com", "sector": "Technology",
+              "desc": "Global market-leading platform for ride-hailing and food delivery."},
+    "PLTR":  {"name": "Palantir", "domain": "palantir.com", "sector": "Software",
+              "desc": "Big-data analytics and AI software platforms for governments and enterprises."},
+    "SOFI":  {"name": "SoFi", "domain": "sofi.com", "sector": "Fintech",
+              "desc": "Digital finance platform combining lending, investing and banking in one app."},
+    "COIN":  {"name": "Coinbase", "domain": "coinbase.com", "sector": "Fintech",
+              "desc": "One of the largest US-based crypto exchanges; retail and institutional trading."},
+    "SNOW":  {"name": "Snowflake", "domain": "snowflake.com", "sector": "Software",
+              "desc": "Cloud-based data warehouse and analytics platform; pay-as-you-go model."},
+    "SPY":   {"name": "SPDR S&P 500 ETF", "domain": "ssga.com", "sector": "Index ETF",
+              "desc": "The largest and most liquid ETF tracking the S&P 500; covers the 500 largest US public companies."},
+    "QQQ":   {"name": "Invesco QQQ Trust", "domain": "invesco.com", "sector": "Index ETF",
+              "desc": "ETF tracking the Nasdaq-100; made up mostly of technology and growth companies."},
+    "DIA":   {"name": "SPDR Dow Jones Industrial Average ETF", "domain": "ssga.com", "sector": "Index ETF",
+              "desc": "ETF tracking the Dow Jones Industrial Average; follows 30 large, established US companies, price-weighted."},
+    "IWM":   {"name": "iShares Russell 2000 ETF", "domain": "ishares.com", "sector": "Index ETF",
+              "desc": "ETF tracking the Russell 2000; covers small-cap US companies."},
 }
 
 # Swing tarayıcının ek evreni (ad, sektör)
 SCAN_EXTRA = {
-    "MU": ("Micron Technology", "Yarı İletken"), "CRWD": ("CrowdStrike", "Yazılım"),
-    "LITE": ("Lumentum", "Teknoloji"), "RKLB": ("Rocket Lab", "Havacılık"),
-    "MRVL": ("Marvell Technology", "Yarı İletken"), "ORCL": ("Oracle", "Yazılım"),
-    "QCOM": ("Qualcomm", "Yarı İletken"), "TSM": ("Taiwan Semiconductor", "Yarı İletken"),
-    "ARM": ("Arm Holdings", "Yarı İletken"), "PANW": ("Palo Alto Networks", "Yazılım"),
-    "NET": ("Cloudflare", "Yazılım"), "JPM": ("JPMorgan Chase", "Finans"),
-    "V": ("Visa", "Finans"), "GS": ("Goldman Sachs", "Finans"), "LLY": ("Eli Lilly", "Sağlık"),
-    "UNH": ("UnitedHealth", "Sağlık"), "XOM": ("Exxon Mobil", "Enerji"),
-    "CAT": ("Caterpillar", "Sanayi"), "GE": ("GE Aerospace", "Sanayi"), "BA": ("Boeing", "Sanayi"),
-    "WMT": ("Walmart", "Perakende"), "HD": ("Home Depot", "Perakende"), "NKE": ("Nike", "Tüketici"),
-    "DIS": ("Disney", "İletişim"), "ABNB": ("Airbnb", "Tüketici"),
+    "MU": ("Micron Technology", "Semiconductors"), "CRWD": ("CrowdStrike", "Software"),
+    "LITE": ("Lumentum", "Technology"), "RKLB": ("Rocket Lab", "Aerospace"),
+    "MRVL": ("Marvell Technology", "Semiconductors"), "ORCL": ("Oracle", "Software"),
+    "QCOM": ("Qualcomm", "Semiconductors"), "TSM": ("Taiwan Semiconductor", "Semiconductors"),
+    "ARM": ("Arm Holdings", "Semiconductors"), "PANW": ("Palo Alto Networks", "Software"),
+    "NET": ("Cloudflare", "Software"), "JPM": ("JPMorgan Chase", "Financials"),
+    "V": ("Visa", "Financials"), "GS": ("Goldman Sachs", "Financials"), "LLY": ("Eli Lilly", "Healthcare"),
+    "UNH": ("UnitedHealth", "Healthcare"), "XOM": ("Exxon Mobil", "Energy"),
+    "CAT": ("Caterpillar", "Industrials"), "GE": ("GE Aerospace", "Industrials"), "BA": ("Boeing", "Industrials"),
+    "WMT": ("Walmart", "Retail"), "HD": ("Home Depot", "Retail"), "NKE": ("Nike", "Consumer"),
+    "DIS": ("Disney", "Communication"), "ABNB": ("Airbnb", "Consumer"),
 }
-SCAN_UNIVERSE = [t for t, c in COMPANIES.items() if c["sector"] != "Endeks ETF"] + list(SCAN_EXTRA)
+SCAN_UNIVERSE = [t for t, c in COMPANIES.items() if c["sector"] != "Index ETF"] + list(SCAN_EXTRA)
 
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX", "AVGO"]
 
 # Sektör ETF'leri ve en büyük bileşenleri (ticker, kısa ad, yaklaşık ağırlık %)
 SECTORS = [
-    ("Teknoloji", "XLK", [("NVDA", "NVIDIA", 15.0), ("AAPL", "Apple", 13.0), ("MSFT", "Microsoft", 12.0),
+    ("Technology", "XLK", [("NVDA", "NVIDIA", 15.0), ("AAPL", "Apple", 13.0), ("MSFT", "Microsoft", 12.0),
         ("AVGO", "Broadcom", 5.5), ("ORCL", "Oracle", 3.4), ("PLTR", "Palantir", 3.1), ("AMD", "AMD", 2.8),
         ("CSCO", "Cisco", 2.6), ("IBM", "IBM", 2.3), ("CRM", "Salesforce", 2.2), ("MU", "Micron", 2.1),
         ("INTU", "Intuit", 1.9), ("NOW", "ServiceNow", 1.8), ("QCOM", "Qualcomm", 1.6),
         ("AMAT", "Applied Materials", 1.5), ("TXN", "Texas Instruments", 1.5), ("ADBE", "Adobe", 1.4),
         ("LRCX", "Lam Research", 1.3), ("ANET", "Arista Networks", 1.2), ("KLAC", "KLA", 1.1)]),
-    ("Yarı İletken", "SMH", [("NVDA", "NVIDIA", 20.0), ("TSM", "TSMC", 11.0), ("AVGO", "Broadcom", 8.0),
+    ("Semiconductors", "SMH", [("NVDA", "NVIDIA", 20.0), ("TSM", "TSMC", 11.0), ("AVGO", "Broadcom", 8.0),
         ("AMD", "AMD", 5.0), ("ASML", "ASML", 4.5), ("MU", "Micron", 4.5), ("QCOM", "Qualcomm", 4.0),
         ("AMAT", "Applied Materials", 4.0), ("LRCX", "Lam Research", 4.0), ("KLAC", "KLA", 4.0),
         ("TXN", "Texas Instruments", 3.8), ("INTC", "Intel", 3.5), ("ADI", "Analog Devices", 3.3),
         ("MRVL", "Marvell", 2.6), ("ARM", "Arm Holdings", 2.4), ("SNPS", "Synopsys", 2.2), ("CDNS", "Cadence", 2.2)]),
-    ("Finans", "XLF", [("BRK-B", "Berkshire Hathaway", 12.0), ("JPM", "JPMorgan Chase", 10.5), ("V", "Visa", 7.8),
+    ("Financials", "XLF", [("BRK-B", "Berkshire Hathaway", 12.0), ("JPM", "JPMorgan Chase", 10.5), ("V", "Visa", 7.8),
         ("MA", "Mastercard", 6.3), ("BAC", "Bank of America", 4.5), ("WFC", "Wells Fargo", 3.6),
         ("GS", "Goldman Sachs", 3.1), ("MS", "Morgan Stanley", 2.6), ("AXP", "American Express", 2.5),
         ("SPGI", "S&P Global", 2.3), ("C", "Citigroup", 2.2), ("SCHW", "Charles Schwab", 2.0),
         ("BLK", "BlackRock", 2.0), ("PGR", "Progressive", 1.9), ("CB", "Chubb", 1.6)]),
-    ("Enerji", "XLE", [("XOM", "Exxon Mobil", 23.0), ("CVX", "Chevron", 17.0), ("COP", "ConocoPhillips", 7.0),
+    ("Energy", "XLE", [("XOM", "Exxon Mobil", 23.0), ("CVX", "Chevron", 17.0), ("COP", "ConocoPhillips", 7.0),
         ("EOG", "EOG Resources", 4.5), ("WMB", "Williams", 4.5), ("SLB", "Schlumberger", 4.0),
         ("PSX", "Phillips 66", 3.8), ("KMI", "Kinder Morgan", 3.7), ("MPC", "Marathon Petroleum", 3.6),
         ("OKE", "ONEOK", 3.2), ("VLO", "Valero", 3.1), ("OXY", "Occidental", 2.6)]),
-    ("Sağlık", "XLV", [("LLY", "Eli Lilly", 13.0), ("JNJ", "Johnson & Johnson", 8.5), ("ABBV", "AbbVie", 7.0),
+    ("Healthcare", "XLV", [("LLY", "Eli Lilly", 13.0), ("JNJ", "Johnson & Johnson", 8.5), ("ABBV", "AbbVie", 7.0),
         ("UNH", "UnitedHealth", 6.0), ("MRK", "Merck", 4.5), ("TMO", "Thermo Fisher", 4.0), ("ABT", "Abbott", 4.0),
         ("ISRG", "Intuitive Surgical", 3.8), ("AMGN", "Amgen", 3.3), ("BSX", "Boston Scientific", 3.0),
         ("DHR", "Danaher", 2.7), ("PFE", "Pfizer", 2.6), ("GILD", "Gilead", 2.5), ("SYK", "Stryker", 2.4)]),
-    ("Sanayi", "XLI", [("GE", "GE Aerospace", 6.5), ("CAT", "Caterpillar", 5.5), ("RTX", "RTX", 4.8),
+    ("Industrials", "XLI", [("GE", "GE Aerospace", 6.5), ("CAT", "Caterpillar", 5.5), ("RTX", "RTX", 4.8),
         ("UBER", "Uber", 4.0), ("HON", "Honeywell", 3.2), ("BA", "Boeing", 3.1), ("UNP", "Union Pacific", 3.0),
         ("ETN", "Eaton", 3.0), ("DE", "Deere", 2.8), ("LMT", "Lockheed Martin", 2.3), ("ADP", "ADP", 2.3),
         ("GD", "General Dynamics", 1.9), ("WM", "Waste Management", 1.8), ("PH", "Parker-Hannifin", 1.8)]),
-    ("Tüketici (İsteğe Bağlı)", "XLY", [("AMZN", "Amazon", 22.0), ("TSLA", "Tesla", 16.0), ("HD", "Home Depot", 6.5),
+    ("Consumer (Discretionary)", "XLY", [("AMZN", "Amazon", 22.0), ("TSLA", "Tesla", 16.0), ("HD", "Home Depot", 6.5),
         ("MCD", "McDonald's", 4.2), ("BKNG", "Booking", 4.0), ("TJX", "TJX", 3.4), ("LOW", "Lowe's", 3.0),
         ("SBUX", "Starbucks", 2.2), ("NKE", "Nike", 2.0), ("ORLY", "O'Reilly", 2.0), ("CMG", "Chipotle", 1.6),
         ("ABNB", "Airbnb", 1.5), ("GM", "General Motors", 1.4), ("MAR", "Marriott", 1.4)]),
-    ("Tüketici (Temel)", "XLP", [("WMT", "Walmart", 11.0), ("COST", "Costco", 10.0), ("PG", "Procter & Gamble", 8.5),
+    ("Consumer (Staples)", "XLP", [("WMT", "Walmart", 11.0), ("COST", "Costco", 10.0), ("PG", "Procter & Gamble", 8.5),
         ("KO", "Coca-Cola", 6.5), ("PM", "Philip Morris", 6.0), ("PEP", "PepsiCo", 4.5), ("MDLZ", "Mondelez", 3.5),
         ("MO", "Altria", 3.4), ("CL", "Colgate-Palmolive", 3.0), ("KMB", "Kimberly-Clark", 2.0),
         ("TGT", "Target", 2.0), ("KR", "Kroger", 2.0), ("KDP", "Keurig Dr Pepper", 1.8)]),
-    ("Hizmet", "XLU", [("NEE", "NextEra Energy", 11.0), ("SO", "Southern", 7.5), ("DUK", "Duke Energy", 7.0),
+    ("Utilities", "XLU", [("NEE", "NextEra Energy", 11.0), ("SO", "Southern", 7.5), ("DUK", "Duke Energy", 7.0),
         ("CEG", "Constellation", 6.5), ("VST", "Vistra", 5.0), ("AEP", "AEP", 4.6), ("SRE", "Sempra", 4.0),
         ("D", "Dominion", 3.8), ("EXC", "Exelon", 3.5), ("XEL", "Xcel Energy", 3.3), ("PCG", "PG&E", 3.0),
         ("PEG", "PSEG", 3.0)]),
-    ("Hammadde", "XLB", [("LIN", "Linde", 17.0), ("SHW", "Sherwin-Williams", 7.0), ("ECL", "Ecolab", 6.0),
+    ("Materials", "XLB", [("LIN", "Linde", 17.0), ("SHW", "Sherwin-Williams", 7.0), ("ECL", "Ecolab", 6.0),
         ("APD", "Air Products", 5.5), ("NEM", "Newmont", 5.5), ("FCX", "Freeport-McMoRan", 5.0),
         ("CTVA", "Corteva", 4.5), ("MLM", "Martin Marietta", 3.5), ("VMC", "Vulcan Materials", 3.5),
         ("NUE", "Nucor", 3.3), ("DD", "DuPont", 3.0), ("PPG", "PPG", 2.8)]),
-    ("İletişim", "XLC", [("META", "Meta Platforms", 20.0), ("GOOGL", "Alphabet A", 11.0), ("GOOG", "Alphabet C", 9.0),
+    ("Communication", "XLC", [("META", "Meta Platforms", 20.0), ("GOOGL", "Alphabet A", 11.0), ("GOOG", "Alphabet C", 9.0),
         ("NFLX", "Netflix", 7.0), ("TMUS", "T-Mobile", 4.5), ("DIS", "Disney", 4.5), ("T", "AT&T", 4.4),
         ("VZ", "Verizon", 4.3), ("CMCSA", "Comcast", 4.0), ("EA", "Electronic Arts", 3.0),
         ("TTWO", "Take-Two", 2.8), ("CHTR", "Charter", 2.5)]),
-    ("Gayrimenkul", "XLRE", [("PLD", "Prologis", 9.0), ("AMT", "American Tower", 8.0), ("WELL", "Welltower", 8.0),
+    ("Real Estate", "XLRE", [("PLD", "Prologis", 9.0), ("AMT", "American Tower", 8.0), ("WELL", "Welltower", 8.0),
         ("EQIX", "Equinix", 7.0), ("SPG", "Simon Property", 5.0), ("O", "Realty Income", 4.8),
         ("PSA", "Public Storage", 4.3), ("DLR", "Digital Realty", 4.3), ("CCI", "Crown Castle", 4.0),
         ("CBRE", "CBRE", 3.8), ("VICI", "VICI Properties", 3.0), ("EXR", "Extra Space", 2.8)]),
 ]
 
 _FX_LIST = [
-    ("EUR/USD", "EURUSD=X", "Euro / ABD Doları", "Majör", 1.16380, 5),
-    ("GBP/USD", "GBPUSD=X", "Sterlin / ABD Doları", "Majör", 1.33520, 5),
-    ("USD/JPY", "USDJPY=X", "ABD Doları / Japon Yeni", "Majör", 151.284, 3),
-    ("USD/CHF", "USDCHF=X", "ABD Doları / İsviçre Frangı", "Majör", 0.79412, 5),
-    ("AUD/USD", "AUDUSD=X", "Avustralya Doları / ABD Doları", "Majör", 0.65518, 5),
-    ("USD/CAD", "USDCAD=X", "ABD Doları / Kanada Doları", "Majör", 1.37905, 5),
-    ("NZD/USD", "NZDUSD=X", "Yeni Zelanda Doları / ABD Doları", "Majör", 0.59840, 5),
-    ("EUR/GBP", "EURGBP=X", "Euro / Sterlin", "Çapraz", 0.87160, 5),
-    ("EUR/JPY", "EURJPY=X", "Euro / Japon Yeni", "Çapraz", 176.050, 3),
-    ("GBP/JPY", "GBPJPY=X", "Sterlin / Japon Yeni", "Çapraz", 201.980, 3),
-    ("AUD/JPY", "AUDJPY=X", "Avustralya Doları / Japon Yeni", "Çapraz", 99.120, 3),
-    ("USD/TRY", "USDTRY=X", "ABD Doları / Türk Lirası", "Egzotik", 43.1250, 4),
-    ("USD/ZAR", "USDZAR=X", "ABD Doları / G. Afrika Randı", "Egzotik", 17.2400, 4),
-    ("USD/MXN", "USDMXN=X", "ABD Doları / Meksika Pesosu", "Egzotik", 18.3900, 4),
-    ("XAU/USD", "GC=F", "Altın / ABD Doları", "Metal", 4128.40, 2),
-    ("XAG/USD", "SI=F", "Gümüş / ABD Doları", "Metal", 49.880, 3),
+    ("EUR/USD", "EURUSD=X", "Euro / US Dollar", "Majors", 1.16380, 5),
+    ("GBP/USD", "GBPUSD=X", "British Pound / US Dollar", "Majors", 1.33520, 5),
+    ("USD/JPY", "USDJPY=X", "US Dollar / Japanese Yen", "Majors", 151.284, 3),
+    ("USD/CHF", "USDCHF=X", "US Dollar / Swiss Franc", "Majors", 0.79412, 5),
+    ("AUD/USD", "AUDUSD=X", "Australian Dollar / US Dollar", "Majors", 0.65518, 5),
+    ("USD/CAD", "USDCAD=X", "US Dollar / Canadian Dollar", "Majors", 1.37905, 5),
+    ("NZD/USD", "NZDUSD=X", "New Zealand Dollar / US Dollar", "Majors", 0.59840, 5),
+    ("EUR/GBP", "EURGBP=X", "Euro / British Pound", "Crosses", 0.87160, 5),
+    ("EUR/JPY", "EURJPY=X", "Euro / Japanese Yen", "Crosses", 176.050, 3),
+    ("GBP/JPY", "GBPJPY=X", "British Pound / Japanese Yen", "Crosses", 201.980, 3),
+    ("AUD/JPY", "AUDJPY=X", "Australian Dollar / Japanese Yen", "Crosses", 99.120, 3),
+    ("USD/TRY", "USDTRY=X", "US Dollar / Turkish Lira", "Exotics", 43.1250, 4),
+    ("USD/ZAR", "USDZAR=X", "US Dollar / South African Rand", "Exotics", 17.2400, 4),
+    ("USD/MXN", "USDMXN=X", "US Dollar / Mexican Peso", "Exotics", 18.3900, 4),
+    ("XAU/USD", "GC=F", "Gold / US Dollar", "Metal", 4128.40, 2),
+    ("XAG/USD", "SI=F", "Silver / US Dollar", "Metal", 49.880, 3),
 ]
-FX_CATEGORIES = ["Tümü", "Majör", "Çapraz", "Egzotik", "Metal", "Makro"]
+FX_CATEGORIES = ["All", "Majors", "Crosses", "Exotics", "Metal", "Macro"]
 
 _MACRO = [
-    ("Dolar Endeksi", "DXY", "DX-Y.NYB", 98.42, 2),
-    ("ABD 10Y Tahvil", "US10Y", "^TNX", 4.38, 2),
-    ("Altın", "XAUUSD", "GC=F", 4128.40, 2),
-    ("Brent Petrol", "UKOIL", "BZ=F", 64.85, 2),
-    ("Dolar / TL", "USDTRY", "USDTRY=X", 43.1250, 4),
+    ("Dollar Index", "DXY", "DX-Y.NYB", 98.42, 2),
+    ("US 10Y Treasury", "US10Y", "^TNX", 4.38, 2),
+    ("Gold", "XAUUSD", "GC=F", 4128.40, 2),
+    ("Brent Oil", "UKOIL", "BZ=F", 64.85, 2),
+    ("Dollar / TRY", "USDTRY", "USDTRY=X", 43.1250, 4),
     ("Bitcoin", "BTCUSD", "BTC-USD", 108420.0, 0),
 ]
 
@@ -283,8 +283,8 @@ _MACRO = [
 BT_QUICK = [
     ("AAPL", "AAPL", "Apple Inc."), ("NVDA", "NVDA", "NVIDIA Corp."),
     ("SPX", "^GSPC", "S&P 500"), ("XU100", "XU100.IS", "BIST 100"),
-    ("THYAO", "THYAO.IS", "Türk Hava Yolları"), ("MU", "MU", "Micron Technology"),
-    ("EURUSD", "EURUSD=X", "Euro / ABD Doları"), ("BTCUSD", "BTC-USD", "Bitcoin"),
+    ("THYAO", "THYAO.IS", "Turkish Airlines"), ("MU", "MU", "Micron Technology"),
+    ("EURUSD", "EURUSD=X", "Euro / US Dollar"), ("BTCUSD", "BTC-USD", "Bitcoin"),
 ]
 
 
@@ -295,16 +295,16 @@ def _build_names():
     for t, (n, s) in SCAN_EXTRA.items():
         names.setdefault(t, (n, s))
     for sname, etf, cons in SECTORS:
-        names.setdefault(etf, (f"{sname} sektör ETF'i", "Sektör ETF"))
+        names.setdefault(etf, (f"{sname} sector ETF", "Sector ETF"))
         for t, n, _w in cons:
             names.setdefault(t, (n, sname))
     for p, sym, n, cat, _b, _d in _FX_LIST:
-        names.setdefault(sym, (f"{p} · {n}", "Emtia" if cat == "Metal" else "Döviz"))
+        names.setdefault(sym, (f"{p} · {n}", "Commodities" if cat == "Metal" else "FX"))
     for n, _code, sym, _b, _d in _MACRO:
-        names.setdefault(sym, (n, "Makro"))
+        names.setdefault(sym, (n, "Macro"))
     for _code, sym, n in BT_QUICK:
         names.setdefault(sym, (n, ""))
-    names.setdefault("^VIX", ("CBOE Volatilite Endeksi (VIX)", "Endeks"))
+    names.setdefault("^VIX", ("CBOE Volatility Index (VIX)", "Index"))
     return names
 
 
@@ -450,6 +450,20 @@ def _batch_long(tickers, period="1mo"):
     return _download(tickers, period, "1d")
 
 
+@_ttl_cache(3600, fail_ttl=120)
+def get_history_max(t):
+    """Tüm günlük geçmiş (lookback = MAX). Gelmezse ~6 yıllık geçmişe düşer."""
+    if _HAS_YF:
+        try:
+            df = _clean_ohlc(yf.Ticker(t).history(period="max", auto_adjust=False))
+            if len(df) > 30:
+                df.attrs["src"] = "real"
+                return df
+        except Exception:
+            pass
+    return get_history(t)
+
+
 @_ttl_cache(1800, fail_ttl=90)
 def get_history(t):
     """~6 yıllık günlük OHLCV. Gerçek → bilinen sembolde mock → yoksa boş."""
@@ -478,7 +492,8 @@ def get_ohlc(t, days=180):
 
 
 _INTRA_MIN = {"1m": 1, "2m": 2, "5m": 5, "15m": 15, "30m": 30, "60m": 60, "1h": 60, "90m": 90}
-_PERIOD_DAYS = {"1d": 1, "2d": 2, "5d": 5, "1mo": 22, "3mo": 66, "6mo": 126, "1y": 252, "2y": 504}
+_PERIOD_DAYS = {"1d": 1, "2d": 2, "5d": 5, "7d": 5, "1mo": 22, "60d": 42, "3mo": 66, "6mo": 126, "1y": 252,
+                "2y": 504, "730d": 504}
 
 
 def _synth_intraday(t, period="5d", interval="5m"):
@@ -638,9 +653,9 @@ def _ts(v):
 
 def _type_desc(qt, name):
     qt = (qt or "").upper()
-    return {"CURRENCY": f"{name} döviz kuru.", "CRYPTOCURRENCY": f"{name} — kripto para.",
-            "INDEX": f"{name} endeksi.", "FUTURE": f"{name} — vadeli kontrat (emtia/finansal).",
-            "ETF": f"{name} — borsa yatırım fonu (ETF).", "MUTUALFUND": f"{name} — yatırım fonu."}.get(qt, "")
+    return {"CURRENCY": f"{name} exchange rate.", "CRYPTOCURRENCY": f"{name} — cryptocurrency.",
+            "INDEX": f"{name} index.", "FUTURE": f"{name} — futures contract (commodity/financial).",
+            "ETF": f"{name} — exchange-traded fund (ETF).", "MUTUALFUND": f"{name} — investment fund."}.get(qt, "")
 
 
 def _real_detail(t):
@@ -754,18 +769,18 @@ _NEG = re.compile(r"\b(plung\w*|slump\w*|fall[s]?|fallen|fell|drop\w*|sink[s]?|s
 
 def _sentiment(text):
     p, n = len(_POS.findall(text or "")), len(_NEG.findall(text or ""))
-    return "Yükseliş" if p > n else "Düşüş" if n > p else "Nötr"
+    return "Bullish" if p > n else "Bearish" if n > p else "Neutral"
 
 
 def _age(ts):
     if not ts:
-        return 60, "1 sa önce", "1 sa"
+        return 60, "1 h ago", "1 h"
     mins = max(1, int((time.time() - float(ts)) / 60))
     if mins < 60:
-        return mins, f"{mins} dk önce", f"{mins} dk"
+        return mins, f"{mins} min ago", f"{mins} min"
     if mins < 1440:
-        return mins, f"{mins // 60} sa önce", f"{mins // 60} sa"
-    return mins, f"{mins // 1440} gün önce", f"{mins // 1440} g"
+        return mins, f"{mins // 60} h ago", f"{mins // 60} h"
+    return mins, f"{mins // 1440} d ago", f"{mins // 1440} d"
 
 
 def _thumb_url(th):
@@ -858,18 +873,18 @@ def _search_news(query, n=10):
     return out
 
 
-NEWS_CATEGORIES = ["Tümü", "Forex", "Merkez Bankaları", "Emtia", "Türkiye"]
-_NEWS_Q = {"Forex": ["forex dollar euro currency"], "Merkez Bankaları": ["Federal Reserve ECB central bank rates"],
-           "Emtia": ["gold oil prices commodities"], "Türkiye": ["Turkey lira Turkish central bank"]}
+NEWS_CATEGORIES = ["All", "Forex", "Central Banks", "Commodities", "Turkey"]
+_NEWS_Q = {"Forex": ["forex dollar euro currency"], "Central Banks": ["Federal Reserve ECB central bank rates"],
+           "Commodities": ["gold oil prices commodities"], "Turkey": ["Turkey lira Turkish central bank"]}
 _YF2PAIR = {"EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY", "JPY=X": "USD/JPY",
             "USDCHF=X": "USD/CHF", "AUDUSD=X": "AUD/USD", "USDCAD=X": "USD/CAD", "CAD=X": "USD/CAD",
             "USDTRY=X": "USD/TRY", "TRY=X": "USD/TRY", "GC=F": "XAU/USD", "SI=F": "XAG/USD",
             "CL=F": "WTI", "BZ=F": "UKOIL", "DX-Y.NYB": "DXY", "BTC-USD": "BTC/USD"}
-_CAT_SYM = {"Forex": "EURUSD=X", "Merkez Bankaları": "DX-Y.NYB", "Emtia": "GC=F", "Türkiye": "USDTRY=X"}
+_CAT_SYM = {"Forex": "EURUSD=X", "Central Banks": "DX-Y.NYB", "Commodities": "GC=F", "Turkey": "USDTRY=X"}
 
 @_ttl_cache(900, fail_ttl=120)
-def get_forex_news(category="Tümü"):
-    cats = [c for c in NEWS_CATEGORIES if c != "Tümü"] if category == "Tümü" else [category]
+def get_forex_news(category="All"):
+    cats = [c for c in NEWS_CATEGORIES if c != "All"] if category == "All" else [category]
     items = []
     for cat in cats:
         for q in _NEWS_Q.get(cat, []):
@@ -908,28 +923,28 @@ def get_forex_news(category="Tümü"):
 # ======================================================================
 # Ekonomik takvim (ForexFactory haftalık JSON → TradingEconomics → mock)
 # ======================================================================
-CAL_DAYS = ["Dün", "Bugün", "Yarın", "Bu Hafta"]
-CAL_IMPACTS = ["Tümü", "Yüksek", "Orta +"]
-_TR_DAYS = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
-_TR_MON = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül",
-           "Ekim", "Kasım", "Aralık"]
+CAL_DAYS = ["Yesterday", "Today", "Tomorrow", "This Week"]
+CAL_IMPACTS = ["All", "High", "Medium +"]
+_TR_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_TR_MON = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+           "October", "November", "December"]
 _IMPACT_N = {"high": 3, "medium": 2, "low": 1}
 _COUNTRY_CUR = {"united states": "USD", "euro area": "EUR", "germany": "EUR", "france": "EUR",
                 "italy": "EUR", "united kingdom": "GBP", "japan": "JPY", "canada": "CAD",
                 "australia": "AUD", "switzerland": "CHF", "china": "CNY", "new zealand": "NZD",
                 "turkey": "TRY"}
 _CAL_MOCK = [
-    ("08:00", "EUR", 2, "Almanya GfK Tüketici Güveni", "-22,4", "-21,8", "-22,3"),
-    ("10:00", "EUR", 3, "Euro Bölgesi İmalat PMI", "49,9", "49,6", "49,8"),
-    ("10:30", "GBP", 3, "BK Hizmet PMI", "50,4", "51,0", "50,8"),
-    ("14:00", "TRY", 3, "TCMB Faiz Kararı", "—", "%38,50", "%40,50"),
-    ("14:30", "USD", 3, "İşsizlik Maaşı Başvuruları", "—", "232K", "228K"),
-    ("16:00", "USD", 1, "İkinci El Konut Satışları", "—", "4,06M", "4,00M"),
+    ("08:00", "EUR", 2, "Germany GfK Consumer Confidence", "-22.4", "-21.8", "-22.3"),
+    ("10:00", "EUR", 3, "Eurozone Manufacturing PMI", "49.9", "49.6", "49.8"),
+    ("10:30", "GBP", 3, "UK Services PMI", "50.4", "51.0", "50.8"),
+    ("14:00", "TRY", 3, "CBRT Rate Decision", "—", "38.50%", "40.50%"),
+    ("14:30", "USD", 3, "Initial Jobless Claims", "—", "232K", "228K"),
+    ("16:00", "USD", 1, "Existing Home Sales", "—", "4.06M", "4.00M"),
 ]
 
 
 def tr_date_label(ts):
-    return f"{_TR_DAYS[ts.weekday()]} · {ts.day} {_TR_MON[ts.month - 1]}"
+    return f"{_TR_DAYS[ts.weekday()]} · {_TR_MON[ts.month - 1]} {ts.day}"
 
 
 @_ttl_cache(1800, fail_ttl=300)
@@ -977,22 +992,22 @@ def _calendar_all():
         for t, cur, imp, ev, a, f, p in _CAL_MOCK:
             hh, mm = map(int, t.split(":"))
             rows.append({"dt": today + pd.Timedelta(hours=hh, minutes=mm), "time": t, "cur": cur,
-                         "impact": imp, "event": ev + " (örnek)", "actual": a, "forecast": f,
+                         "impact": imp, "event": ev + " (sample)", "actual": a, "forecast": f,
                          "previous": p, "src": "mock"})
     rows.sort(key=lambda x: x["dt"])
     return rows
 
 
-def get_calendar_rows(day="Bugün", impact="Tümü"):
+def get_calendar_rows(day="Today", impact="All"):
     rows = _calendar_all()
     now = pd.Timestamp.now(tz=TZ)
     today = now.normalize()
-    target = {"Dün": today - pd.Timedelta(days=1), "Bugün": today, "Yarın": today + pd.Timedelta(days=1)}.get(day)
+    target = {"Yesterday": today - pd.Timedelta(days=1), "Today": today, "Tomorrow": today + pd.Timedelta(days=1)}.get(day)
     if target is not None:
         rows = [r for r in rows if r["dt"].normalize() == target]
-    if impact == "Yüksek":
+    if impact == "High":
         rows = [r for r in rows if r["impact"] >= 3]
-    elif impact == "Orta +":
+    elif impact == "Medium +":
         rows = [r for r in rows if r["impact"] >= 2]
     nxt = next((r for r in rows if r["dt"] >= now), None)
     out = []
@@ -1030,10 +1045,10 @@ def get_macro_strip():
 
 # Makro şeritte görünen ama parite listesinde olmayan semboller — grafikte açılabilsin diye
 _FX_EXTRA = [
-    ("DXY", "DX-Y.NYB", "ABD Dolar Endeksi", "Makro", 98.42, 2),
-    ("US10Y", "^TNX", "ABD 10 Yıllık Tahvil Faizi", "Makro", 4.38, 3),
-    ("UKOIL", "BZ=F", "Brent Petrol (vadeli)", "Makro", 64.85, 2),
-    ("BTC/USD", "BTC-USD", "Bitcoin / ABD Doları", "Makro", 108420.0, 0),
+    ("DXY", "DX-Y.NYB", "US Dollar Index", "Macro", 98.42, 2),
+    ("US10Y", "^TNX", "US 10-Year Treasury Yield", "Macro", 4.38, 3),
+    ("UKOIL", "BZ=F", "Brent Oil (futures)", "Macro", 64.85, 2),
+    ("BTC/USD", "BTC-USD", "Bitcoin / US Dollar", "Macro", 108420.0, 0),
 ]
 
 
@@ -1058,14 +1073,14 @@ def fx_meta(pair):
     for p, sym, n, c, b, d in fx_all():
         if p == pair:
             return {"pair": p, "symbol": sym, "name": n, "category": c, "base": b, "dec": d}
-    return {"pair": pair, "symbol": "EURUSD=X", "name": "", "category": "Majör", "base": 1.0, "dec": 5}
+    return {"pair": pair, "symbol": "EURUSD=X", "name": "", "category": "Majors", "base": 1.0, "dec": 5}
 
 
-def get_fx_list(category="Tümü"):
+def get_fx_list(category="All"):
     q = get_quotes(tuple(sorted(sym for _, sym, *_ in fx_all())))
     out = []
     for p, sym, name, cat, base, dec in fx_all():
-        if category != "Tümü" and cat != category:
+        if category != "All" and cat != category:
             continue
         qq = q.get(sym) or {"last": base, "change_pct": 0.0, "src": "none"}
         out.append({"pair": p, "symbol": sym, "name": name, "category": cat, "last": qq["last"],
@@ -1254,8 +1269,8 @@ def _mock_ipos():
             ("Helios Energy", "HELE", "NYSE", 9, "$22 – $25", 8.0),
             ("Quantio Compute", "QNTO", "NASDAQ", 12, "$30 – $34", 15.2),
             ("Verdant Biotech", "VRDB", "NASDAQ", 16, "$14 – $16", 6.4)]
-    df = pd.DataFrame([{"Company": f"{n} (örnek)", "Symbol": s, "Exchange": e,
-                        "Expected Date": (today + pd.Timedelta(days=d)).strftime("%d.%m.%Y"),
+    df = pd.DataFrame([{"Company": f"{n} (sample)", "Symbol": s, "Exchange": e,
+                        "Expected Date": (today + pd.Timedelta(days=d)).strftime("%b %d, %Y"),
                         "Price Range": p, "Shares (M)": sh} for n, s, e, d, p, sh in rows])
     df.attrs["src"] = "mock"
     return df
@@ -1272,7 +1287,7 @@ def get_upcoming_ipos():
                                      "to": (today + pd.Timedelta(days=45)).strftime("%Y-%m-%d"), "token": key},
                              timeout=12)
             rows = [{"Company": x.get("name", ""), "Symbol": x.get("symbol", ""), "Exchange": x.get("exchange", ""),
-                     "Expected Date": pd.Timestamp(x["date"]).strftime("%d.%m.%Y") if x.get("date") else "",
+                     "Expected Date": pd.Timestamp(x["date"]).strftime("%b %d, %Y") if x.get("date") else "",
                      "Price Range": f'${x["price"]}' if x.get("price") else "—",
                      "Shares (M)": round(float(x["numberOfShares"]) / 1e6, 2) if x.get("numberOfShares") else np.nan}
                     for x in r.json().get("ipoCalendar", []) if x.get("status") in (None, "expected", "filed", "priced")]
@@ -1366,10 +1381,10 @@ def get_value_stocks():
                     continue
                 peg = _num(_g(info, "trailingPegRatio", "pegRatio"))
                 margin, growth = _num(_g(info, "profitMargins")), _num(_g(info, "earningsGrowth"))
-                rows.append({"Ticker": sym, "Şirket": q.get("shortName") or sym,
+                rows.append({"Ticker": sym, "Company": q.get("shortName") or sym,
                              "PEG": round(peg, 2) if peg else np.nan, "Forward PE": round(fpe, 1),
                              "Profit Margin %": round(margin * 100, 1) if margin is not None else np.nan,
-                             "EPS Büyüme %": round(growth * 100, 1) if growth is not None else np.nan})
+                             "EPS Growth %": round(growth * 100, 1) if growth is not None else np.nan})
             if len(rows) >= 4:
                 df = pd.DataFrame(rows).sort_values("Forward PE").head(10).reset_index(drop=True)
                 df.attrs["src"] = "real"
@@ -1379,7 +1394,7 @@ def get_value_stocks():
     rows = [("GOOGL", "Alphabet", 1.1, 18.4, 27.0, 14.5), ("META", "Meta Platforms", 0.9, 20.1, 33.2, 16.0),
             ("PEP", "PepsiCo", 1.4, 16.8, 10.1, 7.2), ("CRM", "Salesforce", 1.0, 22.0, 15.6, 18.9),
             ("UBER", "Uber", 0.8, 21.5, 6.2, 30.1), ("ADBE", "Adobe", 1.1, 19.9, 28.5, 13.8)]
-    df = pd.DataFrame(rows, columns=["Ticker", "Şirket", "PEG", "Forward PE", "Profit Margin %", "EPS Büyüme %"])
+    df = pd.DataFrame(rows, columns=["Ticker", "Company", "PEG", "Forward PE", "Profit Margin %", "EPS Growth %"])
     df = df.sort_values("Forward PE").reset_index(drop=True)
     df.attrs["src"] = "mock"
     return df
@@ -1388,22 +1403,22 @@ def get_value_stocks():
 # ======================================================================
 # Sembol arama (yerel + Yahoo Search)
 # ======================================================================
-_TYPE_TR = {"EQUITY": "Hisse", "ETF": "ETF", "INDEX": "Endeks", "CURRENCY": "Döviz",
-            "CRYPTOCURRENCY": "Kripto", "FUTURE": "Vadeli", "MUTUALFUND": "Fon"}
+_TYPE_TR = {"EQUITY": "Stock", "ETF": "ETF", "INDEX": "Index", "CURRENCY": "FX",
+            "CRYPTOCURRENCY": "Crypto", "FUTURE": "Futures", "MUTUALFUND": "Fund"}
 
 
 def _local_type(t):
     if t.endswith("=X"):
-        return "Döviz"
+        return "FX"
     if t.endswith("=F"):
-        return "Vadeli"
+        return "Futures"
     if t.endswith("-USD"):
-        return "Kripto"
+        return "Crypto"
     if t.startswith("^"):
-        return "Endeks"
-    if company_sector(t) in ("Endeks ETF", "Sektör ETF"):
+        return "Index"
+    if company_sector(t) in ("Index ETF", "Sector ETF"):
         return "ETF"
-    return "Hisse"
+    return "Stock"
 
 
 @_ttl_cache(600, fail_ttl=60)
@@ -1449,11 +1464,11 @@ def get_data_health():
         a = q.get("AAPL")
         if a and a["src"] == "real":
             h["yf_ok"] = True
-            h["yf_msg"] = f"yfinance {ver} · AAPL son fiyat {a['last']:.2f}"
+            h["yf_msg"] = f"yfinance {ver} · AAPL last price {a['last']:.2f}"
         else:
-            h["yf_msg"] = f"yfinance {ver} kurulu ama Yahoo veri vermedi (geçici rate-limit olabilir)"
+            h["yf_msg"] = f"yfinance {ver} is installed but Yahoo returned no data (could be a temporary rate limit)"
     else:
-        h["yf_msg"] = "yfinance import edilemedi — requirements.txt'te 'yfinance' satırı yok"
+        h["yf_msg"] = "yfinance could not be imported — the 'yfinance' line is missing from requirements.txt"
     h["cnn_ok"] = get_fear_greed().get("src") == "real"
     cal = _calendar_all()
     h["cal_ok"] = bool(cal) and cal[0].get("src") == "real"
@@ -1745,7 +1760,8 @@ def get_analyst(t):
     """
     nan = float("nan")
     out = {"growth_next_y": nan, "growth_0y": nan, "growth_1y": nan, "growth_5y": nan,
-           "eps_next_y": nan, "eps_last_fy": nan, "fy0": None, "fy0_left": 0.5, "fy": [],
+           "eps_next_y": nan, "eps_last_fy": nan, "fy0": None, "fy0_left": 0.5, "fy0_end": None, "fy": [],
+           "rev_fy": [], "rev_growth_0y": nan, "revisions": {},
            "fwd_eps": nan, "trailing_eps": nan,
            "target_mean": nan, "target_high": nan, "target_low": nan,
            "n": 0, "src": "none"}
@@ -1770,6 +1786,7 @@ def get_analyst(t):
         try:
             left = (pd.Timestamp(nfe, unit="s") - pd.Timestamp.now()).days / 365.25
             out["fy0_left"] = float(min(1.0, max(0.0, left)))
+            out["fy0_end"] = str(pd.Timestamp(nfe, unit="s").date())
         except Exception:
             pass
     try:
@@ -1792,6 +1809,35 @@ def get_analyst(t):
                     ya = _num(row.get("yearAgoEps"))
                     if ya is not None:
                         out["eps_last_fy"] = float(ya)
+    except Exception:
+        pass
+    try:
+        re_ = getattr(tk, "revenue_estimate", None)
+        if re_ is not None and hasattr(re_, "empty") and not re_.empty and "avg" in re_.columns:
+            for i, idx in enumerate(("0y", "+1y")):
+                if idx not in re_.index:
+                    continue
+                row = re_.loc[idx]
+                avg = _num(row.get("avg"))
+                if avg is None or avg <= 0:
+                    continue
+                lo, hi = _num(row.get("low")), _num(row.get("high"))
+                ya = _num(row.get("yearAgoRevenue"))
+                g = (avg / ya - 1) * 100 if ya else _pct_val(row.get("growth"))
+                out["rev_fy"].append({"fy": fy0 + i, "avg": float(avg), "low": float(lo or avg),
+                                      "high": float(hi or avg), "growth": g})
+            if out["rev_fy"] and out["rev_fy"][0].get("growth") is not None:
+                out["rev_growth_0y"] = float(out["rev_fy"][0]["growth"])
+    except Exception:
+        pass
+    try:
+        et = getattr(tk, "eps_trend", None)
+        if et is not None and hasattr(et, "empty") and not et.empty and "current" in et.columns:
+            for idx in ("0y", "+1y"):
+                if idx in et.index:
+                    cur_, old_ = _num(et.loc[idx, "current"]), _num(et.loc[idx].get("90daysAgo"))
+                    if cur_ is not None and old_ and old_ > 0:
+                        out["revisions"][idx] = (cur_ / old_ - 1) * 100
     except Exception:
         pass
     try:
@@ -1836,36 +1882,65 @@ def get_analyst(t):
 
 # Sektör ETF'leri çok geniş (MU ile PLTR aynı ETF'de). Burada aynı ürünü satan, gerçekten
 # rekabet eden şirketler tutulur — yabancı borsalardakiler dahil. "cyc" döngüsel sektör demek.
+# "vtype" değerleme tipi (engine.VTYPES); None ise endüstri ve finansal ölçütlere bakılır.
 PEER_GROUPS = [
-    {"name": "Bellek ve depolama", "cyc": True,
+    {"name": "Memory and storage", "vtype": "cyclical", "cyc": True,
      "syms": ["MU", "000660.KS", "005930.KS", "2408.TW", "SNDK", "285A.T", "WDC", "STX"],
      "core": {"MU": ["000660.KS", "005930.KS", "2408.TW", "SNDK", "285A.T"],
               "SNDK": ["285A.T", "MU", "005930.KS", "000660.KS", "WDC"],
               "WDC": ["STX", "SNDK", "MU", "285A.T"],
               "STX": ["WDC", "SNDK", "MU"]}},
-    {"name": "GPU ve hızlandırıcı", "cyc": False,
+    {"name": "GPUs and accelerators", "vtype": "capital", "cyc": False,
      "syms": ["NVDA", "AMD", "AVGO", "INTC", "MRVL", "QCOM", "ARM"]},
-    {"name": "Dökümhane", "cyc": True, "syms": ["TSM", "INTC", "GFS", "UMC", "005930.KS"]},
-    {"name": "Yarı iletken ekipman", "cyc": True,
+    {"name": "Foundry", "vtype": "capital", "cyc": True, "syms": ["TSM", "INTC", "GFS", "UMC", "005930.KS"]},
+    {"name": "Semiconductor equipment", "vtype": "capital", "cyc": True,
      "syms": ["ASML", "AMAT", "LRCX", "KLAC", "8035.T", "TER"]},
-    {"name": "Analog ve mikrodenetleyici", "cyc": True,
+    {"name": "Analog and microcontrollers", "vtype": "capital", "cyc": True,
      "syms": ["TXN", "ADI", "NXPI", "MCHP", "ON", "STM", "IFNNY"]},
-    {"name": "Bulut ve yazılım devleri", "cyc": False,
+    {"name": "Cloud and software giants", "vtype": "growth", "cyc": False,
      "syms": ["MSFT", "ORCL", "CRM", "SAP", "ADBE", "NOW"]},
-    {"name": "İnternet ve reklam", "cyc": False, "syms": ["GOOGL", "META", "AMZN", "SNAP", "PINS", "TTD"]},
-    {"name": "Akıllı telefon ve donanım", "cyc": False, "syms": ["AAPL", "005930.KS", "1810.HK", "DELL", "HPQ"]},
-    {"name": "Elektrikli araç ve otomotiv", "cyc": True,
+    {"name": "Internet and advertising", "vtype": "growth", "cyc": False, "syms": ["GOOGL", "META", "AMZN", "SNAP", "PINS", "TTD"]},
+    {"name": "Smartphones and hardware", "vtype": "capital", "cyc": False, "syms": ["AAPL", "005930.KS", "1810.HK", "DELL", "HPQ"]},
+    {"name": "EVs and automotive", "vtype": "cyclical", "cyc": True,
      "syms": ["TSLA", "BYDDY", "TM", "GM", "F", "RIVN", "LI", "NIO", "STLA"]},
-    {"name": "Büyük bankalar", "cyc": True, "syms": ["JPM", "BAC", "C", "WFC", "GS", "MS"]},
-    {"name": "Ödeme ağları", "cyc": False, "syms": ["V", "MA", "AXP", "PYPL", "FI"]},
-    {"name": "Petrol devleri", "cyc": True, "syms": ["XOM", "CVX", "SHEL", "BP", "TTE", "COP"]},
-    {"name": "İlaç", "cyc": False, "syms": ["LLY", "NVO", "JNJ", "MRK", "PFE", "ABBV", "AZN"]},
-    {"name": "Perakende", "cyc": False, "syms": ["WMT", "COST", "TGT", "AMZN", "HD", "LOW"]},
-    {"name": "Yayın ve eğlence", "cyc": False, "syms": ["NFLX", "DIS", "WBD", "ROKU", "SPOT"]},
-    {"name": "Havayolu", "cyc": True, "syms": ["DAL", "UAL", "AAL", "LUV", "ALK"]},
-    {"name": "Çelik ve metal", "cyc": True, "syms": ["NUE", "STLD", "CLF", "X", "FCX", "AA"]},
-    {"name": "Kimya", "cyc": True, "syms": ["DOW", "LYB", "DD", "CE", "EMN"]},
+    {"name": "Big banks", "vtype": "cyclical", "cyc": True, "syms": ["JPM", "BAC", "C", "WFC", "GS", "MS"]},
+    {"name": "Payment networks", "vtype": None, "cyc": False, "syms": ["V", "MA", "AXP", "PYPL", "FI"]},
+    {"name": "Oil majors", "vtype": "cyclical", "cyc": True, "syms": ["XOM", "CVX", "SHEL", "BP", "TTE", "COP"]},
+    {"name": "Pharma", "vtype": "defensive", "cyc": False, "syms": ["LLY", "NVO", "JNJ", "MRK", "PFE", "ABBV", "AZN"]},
+    {"name": "Retail", "vtype": None, "cyc": False, "syms": ["WMT", "COST", "TGT", "AMZN", "HD", "LOW"]},
+    {"name": "Streaming and entertainment", "vtype": "growth", "cyc": False, "syms": ["NFLX", "DIS", "WBD", "ROKU", "SPOT"]},
+    {"name": "Airlines", "vtype": "cyclical", "cyc": True, "syms": ["DAL", "UAL", "AAL", "LUV", "ALK"]},
+    {"name": "Steel and metals", "vtype": "cyclical", "cyc": True, "syms": ["NUE", "STLD", "CLF", "X", "FCX", "AA"]},
+    {"name": "Chemicals", "vtype": "cyclical", "cyc": True, "syms": ["DOW", "LYB", "DD", "CE", "EMN"]},
 ]
+
+
+@_ttl_cache(21600, fail_ttl=600)
+def get_dividends(t):
+    """Hisse başı temettü geçmişi (tarih → tutar). Yoksa boş seri."""
+    if _HAS_YF:
+        try:
+            s = yf.Ticker(t).dividends
+            if s is not None and len(s):
+                return s.astype(float)
+        except Exception:
+            pass
+    return pd.Series(dtype=float)
+
+
+@_ttl_cache(3600, fail_ttl=300)
+def get_risk_free():
+    """ABD 10 yıllık tahvil faizi (%) — CAPM'deki risksiz faiz. Gelmezse 4,3."""
+    try:
+        h = get_history("^TNX")
+        if h is not None and len(h) and h.attrs.get("src") == "real":
+            v = float(h["Close"].dropna().iloc[-1])
+            v = v / 10.0 if v > 20 else v
+            if 0.5 < v < 15:
+                return round(v, 2), "real"
+    except Exception:
+        pass
+    return 4.3, "default"
 
 
 def peer_group(t):
@@ -1916,8 +1991,8 @@ def peer_source(t):
     if snap is not None and len(snap) and "industry" in snap.columns:
         row = snap[snap["ticker"] == t]
         if len(row) and str(row["industry"].iloc[0]):
-            return f'{row["industry"].iloc[0]} (NASDAQ endüstri sınıfı)'
-    return "Sektör ETF bileşenleri"
+            return f'{row["industry"].iloc[0]} (NASDAQ industry class)'
+    return "Sector ETF constituents"
 
 
 @_ttl_cache(1800, fail_ttl=300)
@@ -1988,7 +2063,7 @@ def get_valuation(t):
     nan = float("nan")
     out = {"ticker": t, "name": company_name(t), "market_cap": nan, "pe": nan, "fwd_pe": nan,
            "peg": nan, "ev_ebitda": nan, "growth": nan, "rev_growth": nan, "net_margin": nan,
-           "currency": "USD", "src": "none"}
+           "ev_sales": nan, "pb": nan, "currency": "USD", "src": "none"}
     if not _HAS_YF:
         return out
     try:
