@@ -1,7 +1,11 @@
-# Pulse — Piyasa Paneli (Streamlit) · v3.4
+# Pulse — Market Dashboard (Streamlit) · v3.6
 
-Koyu temalı swing-trade paneli. Bölümler: **Piyasalar · Değer Analizi · Long Term · Short Term ·
-Backtest · Forex & Haberler**.
+Koyu temalı swing-trade paneli. **Arayüz İngilizce** (v3.5). Bölümler: **Markets · Valuation ·
+Long Term · Short Term · Backtest · Forex & News**. Eski Türkçe bağlantılar
+(`?sec=Piyasalar` vb.) yeni bölümlere yönlenir.
+
+Sayılar İngilizce biçimde gösterilir (1,234.56 · +6.76%), tarihler "Oct 26, 2026" şeklinde.
+Koddaki açıklama satırları Türkçe kaldı; yalnızca ekranda görünen metinler çevrildi.
 
 ## Dosyalar — hepsi birlikte yüklenmeli
 
@@ -21,8 +25,14 @@ Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda
 
 ## Grafik
 
-- **Mum aralığı** (küçükten büyüğe): 1dk · 5dk · 15dk · 30dk · 1sa · 4sa · Gün · Hafta · Ay.
-  Grafiğin üstünde, mum türü düğmesinin solundaki saat ikonundan da seçilebilir.
+- **Lookback period ve mum aralığı ayrı.** Üstteki *Lookback period* (1D · 5D · 1M · 3M · 6M ·
+  YTD · 1Y · 2Y · 5Y · MAX) grafikte görünen dönemi seçer; yanındaki *Candle interval*
+  (1m · 5m · 15m · 30m · 1H · 4H · 1D · 1W · 1M) o dönemin hangi mumlarla çizileceğini.
+  Örnek: 1M + 4H = son bir ayın 4 saatlik mumları. Grafik açılışta tam o dönemi gösterir,
+  geriye kaydırırsan daha eski veri de vardır. Altta dönemin açılış/yüksek/düşük/kapanışı ve
+  **dönem getirisi** yazar. Yahoo'nun gün içi veri sınırı (1m ≈ 7 gün, 5–30m ≈ 60 gün,
+  1H/4H ≈ 2 yıl) lookback'ten kısaysa grafik eldeki veriyi gösterir ve bunu bir notla söyler.
+  Aynı kontrol Forex grafiğinde de var. Mum aralığı grafiğin içindeki saat ikonundan da seçilebilir.
   4 saatlik mumlar saatlik veriden seans başından itibaren 4'erli toplanır; haftalık ve
   aylık mumlar günlükten türetilir.
 - **Çizim araçları** (sol şerit): Trend Tools (Lines, Channels, Pitchfork, Fibonacci),
@@ -87,7 +97,48 @@ yayımlanmadığından o sembollerde yalnızca fiyat tabanlı bölümler çalı�
 büyüme oranları (ciro ve EPS, bir önceki yıla göre), borç ve nakit, hissedar getirisi (geri alım +
 temettü). Altında cari oran, net borç/FAVÖK, faiz karşılama, aktif kârlılığı, kazanç kalitesi.
 
-**02 Gelecek Yılların Değeri.** Mali yıl bazında kurulur ve çarpanla kâr hep aynı döneme aittir:
+**02 Valuation Model — şirket tipine göre değerleme (v3.6).** Önce şirket dört tipten birine
+otomatik atanır; tip panelin başında gerekçeleriyle (endüstri, ciro büyümesi, capex/ciro, Ar-Ge/ciro,
+beta, temettü verimi, marj aralığı) yazar ve *Valuation model* kutusundan elle değiştirilebilir
+(hisse başına saklanır).
+
+Sınıflandırma sırası: (1) elle derlenmiş rakip grubu — ör. Memory → Cyclical, GPU/foundry/ekipman/
+analog → Capital Intensive, bulut-yazılım ve internet → Growth Tech, ilaç → Defensive; (2) Yahoo endüstrisi
+(çelik, petrol, kimya, otomotiv, havayolu, banka → Cyclical; içecek, ev ürünleri, tütün, kamu hizmetleri,
+REIT, sigorta → Defensive; yazılım, internet → Growth Tech; yarı iletken, donanım, telekom, havacılık-uzay
+→ Capital Intensive); (3) ikisi de yoksa finansal ölçütler. Düzeltmeler: büyümesi %25+ ve Ar-Ge'si
+%10+ olan "defansif" (ör. LLY) → Growth; betası 1,5+ olan "defansif" endüstri şirketi (ör. SoFi) →
+ölçütlere göre; büyümesi %10'un altında, Ar-Ge'si düşük "growth" endüstrisi şirketi → temettü/capex'e göre.
+
+İskonto oranı **CAPM**: ABD 10 yıllık tahvil faizi (canlı, `^TNX`) + beta × %5 hisse risk primi.
+Firma düzeyindeki yöntemlerde WACC (özkaynak/borç ağırlığı, borç maliyeti = faiz gideri ÷ borç, %21 vergi).
+
+| Tip | Yöntemler (değer aralığı) | Kontroller |
+|-----|---------------------------|------------|
+| Cyclical & Commodity | Döngü ortası kâr (medyan net marj × trend ciro × döngü ortası P/E), P/B ↔ döngü ortası ROE | Marjın kendi aralığındaki yeri, 90 günlük tahmin revizyonu, P/B'nin geçmişteki yeri, net borç/FAVÖK, zarar yılları |
+| Defensive | 2 aşamalı temettü indirgeme, temettü verimi bandı, P/E'nin kendi geçmişi, serbest nakit akışı DCF | Ciro ve EPS büyümesi hızlanıyor mu, brüt/faaliyet/net marj eğilimi, kâr sürekliliği, dağıtım oranı, FCF'nin temettüyü karşılaması, net borç/FAVÖK, temettü büyümesi |
+| Growth Tech | Hedef marj DCF (ciro azalan hızla büyür, FCF marjı hedefe yaklaşır), rakiplerde EV/Satış ~ büyüme doğrusu | Rule of 40, büyüme eğilimi, brüt marj, Ar-Ge, hisse bazlı ödeme, seyreltme, nakit pisti, tekrarlayan gelir göstergesi; ters DCF: fiyatın ima ettiği büyüme |
+| Capital Intensive & Hardware | FD/FAVÖK (rakip + kendi geçmişi), ROIC − WACC ekonomik kâr, sahip kazancı DCF (bakım capex'i ≈ amortisman) | Net borç/FAVÖK ve eğilimi, borç/özkaynak, faiz karşılama, **kâr büyümesi vs borç büyümesi**, FCF sürekliliği, FAVÖK marjı istikrarı, capex yoğunluğu, ROIC vs WACC, **tekrarlayan gelir göstergesi** |
+
+*Tekrarlayan gelir göstergesi*: Yahoo abonelik payı vermediği için bilançodaki ertelenmiş gelir
+(peşin tahsil edilen abonelik/bakım) ciroya oranlanır ve büyümesi ciro büyümesiyle karşılaştırılır.
+
+**Harman değer**: yöntemlerin ağırlıklı ortalaması (ağırlıklar tabloda). Sonucu bugünkü fiyatın 6
+katından uzak olan yöntem bozuk girdiye işaret ettiği için harmana katılmaz ("excluded"). "Market-implied
+path" (analist EPS × bugünkü ileri çarpan) yalnızca referanstır. Grafikler: yöntem aralıkları (futbol sahası)
+ve tipe özel tek grafik — Cyclical: uzun dönem fiyat döngüleri; Defensive: temettü verimi bandı ve 10Y faiz;
+Growth: hedef marj DCF patikası; Capital: FAVÖK, toplam borç ve net borç/FAVÖK.
+
+**Döngü zamanlaması (Cyclical).** İki bağımsız tahmin: (1) fiyat döngüsü — uzun fiyat geçmişinde en az
+%25–45'lik (oynaklığa göre) dönüşlerle bulunan tepe/diplerin medyan süresinden sıradaki dönüş penceresi;
+(2) kâr döngüsü — analistlerin FY0/FY+1 EPS büyümesi (yavaşlıyorsa kâr zirvesi yakın), marjın kendi
+aralığındaki yeri ve tahmin revizyonları; fiyat genelde kâr dönüşünden 3–9 ay önce döner. İki pencere
+örtüşürse tek pencere, örtüşmezse ikisi ayrı gösterilir. Aşama: Early/Mid/Late upswing, Early downswing
+(fiyat kârdan önce dönmüş), Downswing, Bottoming. Kâr zirvesi tahmini değer patikasının varsayılan zirve
+yılı olur. Bu bir tarih kehaneti değil, aralıktır.
+
+**Analist tahmini değer patikası** (açılır bölüm, Cyclical'da açık gelir). Mali yıl bazında kurulur ve
+çarpanla kâr hep aynı döneme aittir:
 
 * **EPS:** ilk iki yıl analistlerin mali yıl tahminleri (`0y` = içinde bulunulan mali yıl,
   `+1y` = sonraki). Taban = ortalama, kötümser = en düşük, iyimser = en yüksek tahmin. Sonraki
