@@ -33,7 +33,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Piyasa Paneli", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -155,7 +155,8 @@ WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
-           "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending"] + WIDGET_KEYS
+           "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending",
+           "vp_cfg", "peer_ovr"] + WIDGET_KEYS
 
 
 def _qp(key, default=None):
@@ -204,7 +205,7 @@ for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journa
                "acct": 100000.0, "draws": {}, "alerts": {}, "ch_cfg": copy.deepcopy(ch.DEFAULT_CFG),
                "ch_type": "candles", "ch_rev": 1, "ch_n": None, "tf_pending": None, "ch_tfkey": "w_tf",
                "theme": "gece", "notes": [], "notes_seen": 0, "notes_gone": [], "ai_auto": False,
-               "saved_filters": [], "flt_pending": None,
+               "saved_filters": [], "flt_pending": None, "vp_cfg": {}, "peer_ovr": {},
                "ai_nonce": 0, "w_aiauto": False,
                **BT_WIDGETS}.items():
     ss.setdefault(_k, copy.deepcopy(_v))
@@ -382,9 +383,10 @@ def col(x):
         return SOFT
 
 
-def avatar(t, size=34):
+def avatar(t, size=34, name=None):
     tt = str(t or "?")
-    ini = re.sub(r"[^A-Z0-9]", "", tt.upper().replace("=X", "").replace("-USD", "").replace("^", ""))[:2] or "?"
+    src = tt if not (name and tt[:1].isdigit()) else str(name)
+    ini = re.sub(r"[^A-Z0-9]", "", src.upper().replace("=X", "").replace("-USD", "").replace("^", ""))[:2] or "?"
     hue = sum(ord(c) for c in tt) % 360
     fs = max(9, int(size * 0.33))
     logo = md.logo_url(tt)
@@ -1468,7 +1470,7 @@ def render_piyasalar():
 # BÖLÜM: DEĞER ANALİZİ
 # ======================================================================
 @st.cache_data(ttl=1800, show_spinner="Finansal tablolar çekiliyor…")
-def value_bundle(sym, token):
+def value_bundle(sym, token, peer_ovr=()):
     """Değer analizi için gereken her şey tek yerde — hepsi gerçek veriden."""
     d = md.get_company_detail(sym)
     if not d:
@@ -1478,7 +1480,8 @@ def value_bundle(sym, token):
     px = md.get_history(sym)
     bench = md.get_history("SPY")
     an = md.get_analyst(sym)
-    peers = md.get_peers(sym, 5)
+    peers = [p for p in peer_ovr if p != sym] if peer_ovr else md.get_peers(sym, 5)
+    peer_src = "Senin listen" if peer_ovr else md.peer_source(sym)
     vals = md.get_valuations([sym] + peers)
     r = en.fin_ratios(f, d) if f else {}
     pe_now = d.get("pe")
@@ -1496,26 +1499,108 @@ def value_bundle(sym, token):
         xs = [v[k] for v in pv if en._ok(v.get(k)) and v[k] > -1e6]
         pm[k] = float(np.median(xs)) if xs else float("nan")
     grade = en.value_grade(r, pm, band, fsc, zsc, cons, cyc, an, d) if f else None
-    # adil değer patikası: büyüme = analist > EPS CAGR > ciro CAGR; çarpan = ileri F/K > rakip medyanı
-    g = next((x for x in (an.get("growth_next_y"), r.get("eps_cagr"), r.get("rev_cagr"))
-              if en._ok(x)), 8.0)
-    mult = next((x for x in (d.get("fwd_pe"), pm.get("fwd_pe"), pm.get("pe"), d.get("pe"))
-                 if en._ok(x) and x > 0), 18.0)
-    eps0 = next((x for x in (d.get("eps"), (f["eps"][-1] if f else None)) if en._ok(x) and x > 0), None)
-    path = en.fair_value_path(eps0, g, mult, 5, d.get("last")) if eps0 else None
-    sens = en.sensitivity(eps0, [round(g * k, 1) for k in (0.5, 0.75, 1.0, 1.25, 1.5)],
-                          [round(mult * k, 1) for k in (0.7, 0.85, 1.0, 1.15, 1.3)], 5) if eps0 else None
+    # model varsayılanları (kullanıcı değer patikası panelinden değiştirebilir)
+    is_cyc = md.is_cyclical_industry(sym) or bool(cyc and cyc.get("label") in ("Döngüsel", "Yüksek döngüsel"))
+    cap_hi = 20.0 if is_cyc else 25.0
+    g_lt = next((max(-5.0, min(cap_hi, x)) for x in (an.get("growth_5y"), r.get("eps_cagr"), r.get("rev_cagr"))
+                 if en._ok(x)), 8.0)
+    drop_hist = en.hist_eps_drop(f["eps"]) if f else None
+    eps_last = next((x for x in (an.get("eps_last_fy"), d.get("eps"), (f["eps"][-1] if f else None))
+                     if en._ok(x)), None)
     dcfv = rdcf = None
     if f and en._ok(f["fcf"][-1]) and en._ok(f["shares"][-1]) and f["fcf"][-1] > 0:
-        dcfv = en.dcf(f["fcf"][-1], f["shares"][-1], g, 10, 9.0, 2.5, f["net_debt"][-1])
+        dcfv = en.dcf(f["fcf"][-1], f["shares"][-1], g_lt, 10, 9.0, 2.5, f["net_debt"][-1])
         rdcf = en.reverse_dcf(d["last"], f["fcf"][-1], f["shares"][-1], 10, 9.0, 2.5, f["net_debt"][-1])
-    return {"d": d, "f": f, "r": r, "an": an, "peers": peers, "vals": vals, "pm": pm, "band": band,
-            "fsc": fsc, "zsc": zsc, "cons": cons, "cyc": cyc, "sea": sea, "grade": grade,
-            "path": path, "sens": sens, "dcf": dcfv, "rdcf": rdcf, "g": g, "mult": mult,
-            "eps0": eps0, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
+    return {"d": d, "f": f, "r": r, "an": an, "peers": peers, "peer_src": peer_src, "vals": vals, "pm": pm,
+            "band": band, "fsc": fsc, "zsc": zsc, "cons": cons, "cyc": cyc, "sea": sea, "grade": grade,
+            "dcf": dcfv, "rdcf": rdcf, "g_lt": g_lt, "is_cyc": is_cyc, "drop_hist": drop_hist,
+            "eps_last": eps_last, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
             "px": px.tail(1300) if px is not None else None,
             "bench": bench.tail(1300) if bench is not None else None,
             "pe_ser": en.pe_series(px.tail(1300), f) if (f and px is not None) else None}
+
+
+MULT_MODES = ["Bugünkü piyasa çarpanı", "Rakiplerin ileri F/K medyanı", "Kendi F/K medyanı", "Elle"]
+
+
+def value_cfg(b, sym):
+    """Değer patikası ayarları — hisse başına saklanır."""
+    an, d = b["an"], b["d"]
+    fy0 = an.get("fy0") or int(pd.Timestamp.now().year)
+    n_est = len(an.get("fy") or [])
+    est = an.get("fy") or []
+    peak0 = int(np.argmax([e["avg"] for e in est])) if est else 0
+    dh = b.get("drop_hist")
+    drop0 = float(round(min(80.0, max(30.0, dh if en._ok(dh) else 45.0)) / 5) * 5) if b["is_cyc"] else 45.0
+    defaults = {"cyc": bool(b["is_cyc"]), "peak": peak0, "drop": drop0, "glt": float(round(b["g_lt"])),
+                "mmode": MULT_MODES[0], "mult": float(round(b.get("pe_now") or 15.0, 1))
+                if en._ok(b.get("pe_now")) else 15.0, "win": 1}
+    saved = dict(defaults)
+    saved.update((ss.get("vp_cfg") or {}).get(sym) or {})
+    if saved.get("mmode") not in MULT_MODES:
+        saved["mmode"] = MULT_MODES[0]
+    if saved.get("peak") not in range(0, 4):
+        saved["peak"] = defaults["peak"]
+    if saved.get("win") not in (1, 2):
+        saved["win"] = 1
+    for k, lo, hi in (("drop", 0.0, 90.0), ("glt", -5.0, 30.0), ("mult", 1.0, 80.0)):
+        try:
+            saved[k] = float(min(hi, max(lo, float(saved[k]))))
+        except (TypeError, ValueError):
+            saved[k] = defaults[k]
+    keys = {k: f"vp_{k}_{sym}" for k in defaults}
+    for k, wk in keys.items():
+        if wk not in ss:
+            ss[wk] = saved[k]
+    fy_opts = list(range(0, 4))
+    with st.container(border=True):
+        H('<div class="panel-title">Model Ayarları</div><div class="muted small">Varsayılanlar analist '
+          'tahminlerinden ve şirketin geçmişinden geliyor; değiştirdiğin her şey bu hisse için saklanır.</div>')
+        c = st.columns([1, 1, 1.25, 1.25, 1.5, 1], gap="small")
+        with c[0]:
+            cyc = toggle("Döngüsel mod", keys["cyc"], help="Kâr bir zirveye çıkar, sonra geri çekilir.")
+        with c[1]:
+            peak = st.selectbox("Kâr zirvesi", fy_opts, key=keys["peak"], disabled=not cyc,
+                                format_func=lambda i: f"FY{fy0 + i}",
+                                help="Döngünün kâr zirvesi yapacağı mali yıl.")
+        with c[2]:
+            drop = st.slider("Zirve sonrası düşüş", 0.0, 90.0, step=5.0, key=keys["drop"], disabled=not cyc,
+                             format="%.0f%%",
+                             help="Zirveden dibe EPS kaybı (2 yılda). Şirketin geçmiş döngülerinde: "
+                                  + (f"%{tr(dh, 0)}" if en._ok(dh) else "veri yok"))
+        with c[3]:
+            glt = st.slider("Uzun vade büyüme", -5.0, 30.0, step=1.0, key=keys["glt"], format="%.0f%%",
+                            help="Analist tahmini biten yıllardan sonraki yıllık EPS büyümesi.")
+        with c[4]:
+            mmode = st.selectbox("Hedef çarpan", MULT_MODES, key=keys["mmode"],
+                                 help="Bugünkü çarpan: piyasa bu hisseyi bugün nasıl fiyatlıyorsa öyle "
+                                      "devam eder. Diğerleri çarpanı 3 yılda o değere taşır.")
+            if mmode == "Elle":
+                st.number_input("İleri F/K", 1.0, 80.0, step=0.5, key=keys["mult"])
+        with c[5]:
+            win = st.selectbox("Piyasanın ufku", [1, 2], key=keys["win"], format_func=lambda x: f"{x} yıl",
+                               help="Fiyat önümüzdeki kaç yılın kârını yansıtıyor. 2 yıl seçilirse "
+                                    "döngü dönüşü fiyata daha erken yansır.")
+    cur = {k: ss.get(wk) for k, wk in keys.items()}
+    allc = dict(ss.get("vp_cfg") or {})
+    allc[sym] = cur
+    ss.vp_cfg = dict(list(allc.items())[-40:])
+    tm = None
+    if mmode == MULT_MODES[1]:
+        tm = b["pm"].get("fwd_pe")
+    elif mmode == MULT_MODES[2]:
+        tm = (b.get("band") or {}).get("median")
+    elif mmode == "Elle":
+        tm = cur["mult"]
+    tm = tm if en._ok(tm) and tm > 0 else None
+    return {"cyclical": bool(cyc), "peak_idx": int(peak), "drop": float(drop), "g_lt": float(glt),
+            "target_mult": tm, "fy0": fy0, "fy0_left": an.get("fy0_left", 0.5), "window": int(win),
+            "g_near": max(-10.0, min(40.0, b["r"]["eps_cagr"])) if en._ok(b["r"].get("eps_cagr")) else None,
+            "_mmode": mmode, "_n_est": n_est}
+
+
+def _model_kwargs(cfg):
+    return {k: v for k, v in cfg.items() if not k.startswith("_")}
 
 
 def fin_bar_chart(f, keys, names, colors, height=240, pct=False):
@@ -1593,20 +1678,32 @@ def line_fig(series, height=240, suffix="", hlines=None, legend=True):
 
 
 def eps_proj_fig(f, path, height=250):
-    """Gerçekleşen EPS (çubuk) + üç senaryonun EPS projeksiyonu (çizgi)."""
+    """Gerçekleşen EPS (çubuk) + mali yıl bazında senaryolar (analist yılları dolu nokta)."""
     fig = go.Figure()
-    yrs = [str(y) for y in f["years"]]
+    yrs = [f"FY{y}" for y in f["years"]]
     fig.add_trace(go.Bar(x=yrs, y=_clean(f["eps"]), name="Gerçekleşen", marker_color="#4A515C",
                          hovertemplate="%{x}: %{y:.2f}<extra></extra>"))
-    last_y = str(f["years"][-1])
-    last_e = next((v for v in reversed(f["eps"]) if en._ok(v)), path["eps0"])
-    fut = [str(r["year"]) for r in path["rows"]]
+    er = path["eps_rows"]
+    fut = [r["label"] for r in er]
+    last_y = yrs[-1] if yrs else None
+    last_e = next((v for v in reversed(f["eps"]) if en._ok(v)), path["eps_last"])
+    if last_y in fut:
+        last_y = None
     for key, name, c, dash in (("bull", "İyimser", "#6EE7B7", "dot"), ("base", "Taban", ACCENT, None),
                                ("bear", "Kötümser", "#F0883E", "dot")):
-        fig.add_trace(go.Scatter(x=[last_y] + fut, y=[last_e] + [r["eps"][key] for r in path["rows"]],
-                                 mode="lines+markers", name=name,
+        xs = ([last_y] if last_y else []) + fut
+        ys = ([last_e] if last_y else []) + [r["eps"][key] for r in er]
+        sym_ = (["circle"] if last_y else []) + ["circle" if r["src"] == "analist" else "circle-open" for r in er]
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=name,
                                  line=dict(color=c, width=2 if key == "base" else 1.3, dash=dash),
-                                 marker=dict(size=5), hovertemplate=f"{name} %{{x}}: %{{y:.2f}}<extra></extra>"))
+                                 marker=dict(size=6, symbol=sym_),
+                                 hovertemplate=f"{name} %{{x}}: %{{y:.2f}}<extra></extra>"))
+    pk = path.get("peak_fy")
+    cats = yrs + [x for x in fut if x not in yrs]
+    if path.get("cyclical") and f"FY{pk}" in cats:
+        fig.add_vline(x=cats.index(f"FY{pk}"), line=dict(color=WARN, width=1, dash="dot"),
+                      annotation_text="kâr zirvesi", annotation_position="top",
+                      annotation_font=dict(color=WARN, size=10))
     return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=24, b=4))
 
 
@@ -1642,31 +1739,62 @@ def peer_scatter(sym, vals, peers, height=300):
         customdata=[[big(p[3], "")] for p in pts], showlegend=False,
         hovertemplate="<b>%{text}</b><br>Büyüme %{x:.1f}%<br>İleri F/K %{y:.1f}<br>"
                       "Piyasa değeri %{customdata[0]}<extra></extra>"))
-    fig.update_xaxes(title="Beklenen büyüme", ticksuffix="%")
+    fig.update_xaxes(title="İleri EPS büyümesi", ticksuffix="%")
     fig.update_yaxes(title="İleri F/K", ticksuffix="x")
     return _layout(fig, height, margin=dict(l=8, r=40, t=10, b=34))
 
 
 def fair_path_chart(path, px, price, height=300):
-    """Geçmiş fiyat + önümüzdeki yılların adil değer bandı."""
+    """Geçmiş fiyat + önümüzdeki yılların değer bandı (aralık dolgulu)."""
     fig = go.Figure()
     if px is not None and len(px) > 20:
         h = px.tail(500)
         fig.add_trace(go.Scatter(x=h.index, y=h["Close"], mode="lines", name="Fiyat",
                                  line=dict(color=SOFT, width=1.5)))
-    xs = [pd.Timestamp(year=r["year"], month=12, day=31) for r in path["rows"]]
     x0 = px.index[-1] if (px is not None and len(px)) else pd.Timestamp.today()
+    try:
+        x0 = pd.Timestamp(x0).tz_localize(None)
+    except (TypeError, AttributeError):
+        x0 = pd.Timestamp(x0)
+    xs = [x0 + pd.DateOffset(years=r["k"]) for r in path["rows"]]
+    td = path["today"]["value"]
+    allx = [x0] + xs
+    bear = [td["bear"]] + [r["value"]["bear"] for r in path["rows"]]
+    bull = [td["bull"]] + [r["value"]["bull"] for r in path["rows"]]
+    fig.add_trace(go.Scatter(x=allx, y=bull, mode="lines", line=dict(width=0), hoverinfo="skip",
+                             showlegend=False))
+    fig.add_trace(go.Scatter(x=allx, y=bear, mode="lines", line=dict(width=0), fill="tonexty",
+                             fillcolor=rgba(ACCENT, 0.10), hoverinfo="skip", showlegend=False))
     for key, name, c, dash in (("bull", "İyimser", "#6EE7B7", "dot"), ("base", "Taban", ACCENT, None),
                                ("bear", "Kötümser", "#F0883E", "dot")):
-        fig.add_trace(go.Scatter(x=[x0] + xs, y=[price] + [r["value"][key] for r in path["rows"]],
-                                 mode="lines+markers", name=name,
-                                 line=dict(color=c, width=2 if key == "base" else 1.3, dash=dash),
-                                 marker=dict(size=5)))
+        ys = [price if key == "base" else td[key]] + [r["value"][key] for r in path["rows"]]
+        fig.add_trace(go.Scatter(x=allx, y=ys, mode="lines+markers", name=name,
+                                 line=dict(color=c, width=2.2 if key == "base" else 1.3, dash=dash),
+                                 marker=dict(size=5),
+                                 hovertemplate=f"{name} %{{x|%b %Y}}: %{{y:.2f}}<extra></extra>"))
     fig.add_hline(y=price, line=dict(color=MUT, width=1, dash="dash"),
-                  annotation_text=f"bugün {tr(price)}", annotation_position="left",
+                  annotation_text=f"bugün {tr(price)}", annotation_position="top left",
                   annotation_font=dict(color=MUT, size=10))
     fig.update_layout(legend=dict(orientation="h", y=1.16, x=0))
     return _layout(fig, height, legend=True, margin=dict(l=4, r=10, t=28, b=4))
+
+
+def path_mult_fig(path, height=220):
+    """Her yıl kullanılan ileri kâr ve çarpan — patikanın nereden geldiği."""
+    yrs = [str(path["today"]["year"])] + [str(r["year"]) for r in path["rows"]]
+    rows = [path["today"]] + path["rows"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=yrs, y=[r["fwd_eps"]["base"] for r in rows], name="İleri 12 ay EPS (taban)",
+                         marker_color=rgba(ACCENT, 0.55), hovertemplate="%{x}: %{y:.2f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=yrs, y=[r["mult"]["base"] for r in rows], name="Çarpan", yaxis="y2",
+                             mode="lines+markers", line=dict(color=WARN, width=2),
+                             hovertemplate="%{x}: %{y:.1f}x<extra></extra>"))
+    fig.update_layout(yaxis2=dict(overlaying="y", side="right", showgrid=False, ticksuffix="x",
+                                  tickfont=dict(color=MUT, size=10)),
+                      legend=dict(orientation="h", y=1.2, x=0))
+    fig = _layout(fig, height, legend=True, margin=dict(l=36, r=36, t=26, b=4))
+    fig.update_layout(yaxis=dict(side="left"))
+    return fig
 
 
 def _cell(v, med, dec=1, lower_better=True, suffix=""):
@@ -1693,7 +1821,8 @@ def render_value():
     H(f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
       f'<span class="muted small">İzleme listen:</span>{chips}'
       f'<span class="muted small">· başka bir sembol için üstteki aramayı kullan</span></div>')
-    b = value_bundle(sym, md.tr_date_label(pd.Timestamp.now(tz=md.TZ)) + sym)
+    ovr = tuple((ss.get("peer_ovr") or {}).get(sym) or ())
+    b = value_bundle(sym, md.tr_date_label(pd.Timestamp.now(tz=md.TZ)) + sym, ovr)
     if not b:
         H(f'<div class="muted">{esc(sym)} için veri alınamadı.</div>')
         return
@@ -1761,6 +1890,9 @@ def render_value_head(b, sym):
                      ("FD/FAVÖK", tr(r.get("ev_ebitda"))),
                      ("PEG", tr(b["vals"].get(sym, {}).get("peg"))),
                      ("EPS (ttm)", tr(d.get("eps"))),
+                     ("Analist EPS büyümesi", " · ".join(
+                         f'{e["label"]} {pct(e["growth"]) if e.get("growth") is not None else "—"}'
+                         for e in (an.get("fy") or [])[:2]) or "—"),
                      ("Ciro büyümesi (yıllık bileşik)", f'%{tr(r.get("rev_cagr"), 1)}'),
                      ("EPS büyümesi (yıllık bileşik)", f'%{tr(r.get("eps_cagr"), 1)}'),
                      ("Net marj", f'%{tr(r.get("net_m"), 1)}'), ("Özkaynak kârlılığı", f'%{tr(r.get("roe"), 1)}'),
@@ -3183,25 +3315,53 @@ def main():
 
 
 def render_value_future(b):
-    path, sens, d = b["path"], b["sens"], b["d"]
-    dec = pdec(d["ticker"], d["last"])
+    d, an = b["d"], b["an"]
+    sym = d.get("ticker") or ACTIVE
+    dec = pdec(sym, d["last"])
     H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">02</span>'
-      '<h3>Gelecek Yılların Adil Değeri</h3><span class="muted">EPS büyür, hedef çarpanla çarpılır — '
-      'üç senaryo</span></div>')
-    if not path:
-        H('<div class="muted">EPS ya da çarpan verisi olmadığı için hedef değer hesaplanamadı.</div>')
+      '<h3>Gelecek Yılların Değeri</h3><span class="muted">Analist EPS tahminleri → döngü → '
+      'ileri çarpan · üç senaryo</span></div>')
+    if not en._ok(b.get("eps_last")):
+        H('<div class="muted">EPS verisi olmadığı için hedef değer hesaplanamadı.</div>')
         return
+    cfg = value_cfg(b, sym)
+    est = an.get("fy") or []
+    path = en.value_path(d["last"], b["eps_last"], est, years=5, **_model_kwargs(cfg))
+    if not path:
+        H('<div class="muted">İleri kâr negatif olduğu için çarpana dayalı değer kurulamıyor.</div>')
+        return
+    b["path"] = path
     c1, c2 = st.columns([1.7, 1], gap="medium")
     with c1:
         with st.container(border=True):
-            H(f'<div class="panel-title">Değer Patikası</div><div class="muted small">Başlangıç EPS '
-              f'{tr(path["eps0"], 2)} · büyüme %{tr(path["growth"], 1)} · hedef çarpan '
-              f'{tr(path["multiple"], 1)}x</div>')
+            n_an = an.get("n") or max([e.get("n") or 0 for e in est] or [0])
+            src = (f'{", ".join(e["label"] for e in est)} analist tahmini'
+                   f'{" (" + str(n_an) + " analist)" if n_an else ""}'
+                   if est else "Analist tahmini yok — geçmiş EPS büyümesiyle")
+            mtxt = (f'çarpan bugünkü fiyata kalibre: <b>{tr(path["m_cal"], 1)}x</b> ileri kâr'
+                    if not path["rerated"] else
+                    f'çarpan {tr(path["m_cal"], 1)}x → 3 yılda <b>{tr(path["m_target"], 1)}x</b>')
+            H(f'<div class="panel-title">Değer Patikası</div><div class="muted small">{esc(src)} · {mtxt}'
+              f'{" · kâr zirvesi FY" + str(path["peak_fy"]) + ", sonra %" + tr(path["drop"], 0) + " düşüş" if path["cyclical"] else ""}'
+              f'</div>')
             plot(fair_path_chart(path, b["px"], d["last"]), key="v_path")
-            sc = path["scenarios"]
-            H(f'<div class="muted small">Kötümser: büyüme %{tr(sc["bear"]["growth"], 1)}, çarpan '
-              f'{tr(sc["bear"]["multiple"], 1)}x · İyimser: büyüme %{tr(sc["bull"]["growth"], 1)}, çarpan '
-              f'{tr(sc["bull"]["multiple"], 1)}x</div>')
+            sc = path["scen"]
+            H(f'<div class="muted small">Kötümser: en düşük analist tahmini'
+              f'{", zirve sonrası %" + tr(sc["bear"]["drop"], 0) + " düşüş" if path["cyclical"] else ""}, '
+              f'sonra %{tr(sc["bear"]["g"], 0)} büyüme, çarpan −%15 · İyimser: en yüksek tahmin'
+              f'{", %" + tr(sc["bull"]["drop"], 0) + " düşüş" if path["cyclical"] else ""}, '
+              f'sonra %{tr(sc["bull"]["g"], 0)} büyüme, çarpan +%15. Fiyat her noktada '
+              f'<i>önümüzdeki 12 ayın</i> kârını yansıtır.</div>')
+            # tek cümlelik okuma
+            pk_y, pk_v = path["price_peak_year"], path["price_peak_value"]
+            if path["cyclical"] and pk_y > path["today"]["year"]:
+                up = (pk_v / d["last"] - 1) * 100
+                H(f'<div class="gtext">Taban senaryoda fiyat zirvesi <b>{pk_y}</b> civarında '
+                  f'(<b>{tr(pk_v, dec)}</b>, {pct(up)}); kâr zirvesi FY{path["peak_fy"]}. Döngüsellerde '
+                  f'piyasa dönüşü önceden fiyatladığı için fiyat, kârdan önce tepe yapar.</div>')
+            elif path["cyclical"]:
+                H('<div class="gtext">Taban senaryoda fiyat bugün tepe bölgesinde: ileri kâr, kâr zirvesine '
+                  'yaklaşırken düşmeye başlıyor. Zirve yılını ya da düşüş oranını değiştirerek dene.</div>')
     with c2:
         with st.container(border=True):
             H('<div class="panel-title">Yıl Yıl</div>')
@@ -3214,29 +3374,59 @@ def render_value_future(b):
                          f'<td style="color:{SOFT}">{tr(row["value"]["bull"], dec)}</td>'
                          f'<td style="color:{col(up) if up is not None else MUT}">'
                          f'{pct(up) if up is not None else "—"}</td>'
-                         f'<td style="color:{MUT}">{pct(row.get("cagr")) if row.get("cagr") is not None else "—"}'
-                         f'</td></tr>')
+                         f'<td style="color:{MUT}">{tr(row["mult"]["base"], 1)}x</td></tr>')
             H(f'<table class="ptab"><thead><tr><th>Yıl</th><th>Kötümser</th><th>Taban</th><th>İyimser</th>'
-              f'<th>Getiri</th><th>Yıllık</th></tr></thead><tbody>{rows}</tbody></table>')
-            H('<div class="muted small" style="margin-top:8px">Getiri, bugünkü fiyata göre taban '
-              'senaryonun potansiyeli; son sütun bunun yıllık bileşik karşılığı.</div>')
+              f'<th>Getiri</th><th>Çarpan</th></tr></thead><tbody>{rows}</tbody></table>')
+            erows = ""
+            for e in path["eps_rows"]:
+                g_ = e.get("growth")
+                tag = ('<span class="badge" style="color:#6EE7B7;background:#6EE7B71F">analist</span>'
+                       if e["src"] == "analist" else '<span class="muted small">model</span>')
+                erows += (f'<tr><td>{e["label"]}</td><td style="color:{SOFT}">{tr(e["eps"]["bear"], 2)}</td>'
+                          f'<td>{tr(e["eps"]["base"], 2)}</td><td style="color:{SOFT}">{tr(e["eps"]["bull"], 2)}</td>'
+                          f'<td style="color:{col(g_) if g_ is not None else MUT}">'
+                          f'{pct(g_) if g_ is not None else "—"}</td><td>{tag}</td></tr>')
+            H(f'<div class="panel-title" style="margin-top:12px">EPS (mali yıl)</div>'
+              f'<table class="ptab"><thead><tr><th>Yıl</th><th>Kötümser</th><th>Taban</th><th>İyimser</th>'
+              f'<th>Büyüme</th><th></th></tr></thead><tbody>{erows}</tbody></table>'
+              f'<div class="muted small" style="margin-top:6px">Başlangıç: son mali yıl EPS '
+              f'{tr(path["eps_last"], 2)}. Getiri, taban senaryonun bugünkü fiyata göre potansiyeli.</div>')
+    sens = None
+    try:
+        key = "drop" if cfg["cyclical"] else "g_lt"
+        base_v = cfg[key]
+        rv = ([max(0.0, min(90.0, base_v + dlt)) for dlt in (-20, -10, 0, 10, 20)] if key == "drop"
+              else [round(base_v + dlt, 1) for dlt in (-6, -3, 0, 3, 6)])
+        rv = list(dict.fromkeys(rv))
+        m0 = path["m_target"]
+        mults = [round(m0 * k, 1) for k in (0.7, 0.85, 1.0, 1.15, 1.3)]
+        kw = _model_kwargs(cfg)
+        kw.pop("target_mult", None)
+        sens = en.value_sensitivity(d["last"], b["eps_last"], est, kw, rv, mults, 5)
+    except Exception:
+        sens = None
+    b["sens"] = sens
     c3, c4 = st.columns([1.3, 1], gap="medium")
     with c3:
         with st.container(border=True):
+            lab = "zirve sonrası düşüş" if (sens and sens["key"] == "drop") else "uzun vade büyüme"
             H(f'<div class="panel-title">Duyarlılık</div><div class="muted small">'
-              f'{sens["years"] if sens else 5} yıl sonraki adil değer — satır: büyüme, sütun: çarpan</div>')
+              f'{sens["years"] if sens else 5} yıl sonraki taban değer — satır: {lab}, sütun: hedef çarpan</div>')
             if sens:
                 head = "".join(f"<th>{tr(m, 1)}x</th>" for m in sens["multiples"])
                 body = ""
-                for g, row in zip(sens["growths"], sens["grid"]):
+                for g, row in zip(sens["rows"], sens["grid"]):
                     cells = ""
                     for v in row:
+                        if not en._ok(v):
+                            cells += f'<td style="color:{MUT}">—</td>'
+                            continue
                         up = (v / d["last"] - 1) * 100
                         c_ = UP if up >= 25 else WARN if up >= 0 else DOWN
                         cells += f'<td style="color:{c_}">{tr(v, 0)}</td>'
-                    body += f'<tr><td>%{tr(g, 1)}</td>{cells}</tr>'
-                H(f'<table class="ptab"><thead><tr><th>Büyüme</th>{head}</tr></thead>'
-                  f'<tbody>{body}</tbody></table>')
+                    body += f'<tr><td>%{tr(g, 0)}</td>{cells}</tr>'
+                H(f'<table class="ptab"><thead><tr><th>{"Düşüş" if sens["key"] == "drop" else "Büyüme"}</th>'
+                  f'{head}</tr></thead><tbody>{body}</tbody></table>')
             else:
                 H('<div class="muted">Hesaplanamadı.</div>')
     with c4:
@@ -3252,6 +3442,10 @@ def render_value_future(b):
                   f'<div class="muted small">%{tr(dv["discount"], 1)} iskonto · %{tr(dv["terminal"], 1)} '
                   f'uç büyüme · başlangıç büyümesi %{tr(dv["growth"], 1)}, 10 yılda uç değere iniyor · '
                   f'değerin %{tr(dv["terminal_share"], 0)}\'i uç değerden geliyor.</div>')
+                if b.get("is_cyc"):
+                    H('<div class="muted small" style="margin-top:4px">Döngüsel şirkette başlangıç nakit '
+                      'akışı döngünün neresinde olunduğuna bağlıdır — DCF\'yi yukarıdaki patikayla '
+                      'birlikte oku.</div>')
             else:
                 H('<div class="muted small">Serbest nakit akışı pozitif olmadığı için DCF kurulamadı.</div>')
             if rd:
@@ -3274,8 +3468,12 @@ def render_value_future(b):
     with c5:
         with st.container(border=True):
             H('<div class="panel-title">Hisse Başı Kâr: Geçmiş ve Projeksiyon</div>'
-              '<div class="muted small">Çubuklar gerçekleşen EPS, çizgiler senaryolar</div>')
+              '<div class="muted small">Çubuklar gerçekleşen EPS · dolu nokta analist tahmini, boş nokta '
+              'model</div>')
             plot(eps_proj_fig(b["f"], path), key="v_eps")
+            H('<div class="panel-title" style="margin-top:10px">Patikanın Yapı Taşları</div>'
+              '<div class="muted small">Her yıl: önümüzdeki 12 ayın EPS\'i × o yılın çarpanı = değer</div>')
+            plot(path_mult_fig(path), key="v_pmult")
     with c6:
         with st.container(border=True):
             band, ps = b["band"], b.get("pe_ser")
@@ -3293,10 +3491,62 @@ def render_value_future(b):
                 H('<div class="muted" style="padding:20px 0">F/K geçmişi için yeterli veri yok.</div>')
 
 
+_PEER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
+
+
+def parse_peers(txt, sym):
+    out = []
+    for t in re.split(r"[,\s;]+", str(txt or "").upper()):
+        t = t.strip()
+        if t and t != sym and _PEER_RE.match(t) and t not in out:
+            out.append(t)
+    return out[:8]
+
+
+def render_peer_editor(b, sym):
+    """Rakip listesi: kaynağını göster, kullanıcı değiştirebilsin."""
+    ovr = (ss.get("peer_ovr") or {}).get(sym)
+    names = []
+    for t in b["peers"]:
+        v = b["vals"].get(t) or {}
+        nm = v.get("name") or md.company_name(t)
+        names.append(f"{t} ({nm})" if nm and nm != t else t)
+    H(f'<div class="muted small" style="margin:-4px 0 6px">Rakip kaynağı: <b>{esc(b.get("peer_src") or "—")}</b>'
+      f' · {esc(", ".join(names)) or "—"}</div>')
+    with st.expander("Rakipleri düzenle"):
+        H('<div class="muted small">Virgülle ayır. Yabancı borsalar Yahoo sembolüyle: SK Hynix '
+          '<span class="mono">000660.KS</span>, Samsung <span class="mono">005930.KS</span>, Nanya '
+          '<span class="mono">2408.TW</span>, Kioxia <span class="mono">285A.T</span>. Piyasa değerleri '
+          'dolara çevrilir. Borsada işlem görmeyen şirketler (ör. CXMT) eklenemez.</div>')
+        wk = f"peer_txt_{sym}"
+        if wk not in ss:
+            ss[wk] = ", ".join(b["peers"])
+        st.text_input("Rakipler", key=wk, label_visibility="collapsed")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Uygula", key=f"peer_apply_{sym}", **_wkw(st.button)):
+                lst = parse_peers(ss.get(wk), sym)
+                po = dict(ss.get("peer_ovr") or {})
+                if lst:
+                    po[sym] = lst
+                else:
+                    po.pop(sym, None)
+                ss.peer_ovr = po
+                st.rerun()
+        with c2:
+            if st.button("Varsayılana dön", key=f"peer_reset_{sym}", disabled=not ovr, **_wkw(st.button)):
+                po = dict(ss.get("peer_ovr") or {})
+                po.pop(sym, None)
+                ss.peer_ovr = po
+                ss.pop(wk, None)
+                st.rerun()
+
+
 def render_value_peers(b, sym):
     vals, peers, pm = b["vals"], b["peers"], b["pm"]
     H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">03</span>'
       '<h3>Rakiplere Göre Konum</h3><span class="muted">Çizginin üstü: büyümesine göre pahalı</span></div>')
+    render_peer_editor(b, sym)
     if not peers:
         H('<div class="muted">Bu sembol için rakip listesi oluşturulamadı.</div>')
         return
@@ -3308,14 +3558,14 @@ def render_value_peers(b, sym):
             fig = peer_scatter(sym, vals, peers)
             if fig is not None:
                 plot(fig, key="v_scatter")
-                H('<div class="muted small">Yatay: beklenen büyüme · Dikey: 12 ay ileri F/K. '
-                  'Kesikli çizgi rakiplerin ortalama eğilimi.</div>')
+                H('<div class="muted small">Yatay: ileri EPS büyümesi (önümüzdeki mali yıl tahmini ÷ son 12 ay) · '
+                  'Dikey: ileri F/K. Kesikli çizgi rakiplerin ortalama eğilimi.</div>')
             else:
                 H('<div class="muted">Yeterli rakip verisi yok.</div>')
     with c2:
         with st.container(border=True):
             H('<div class="sec-head"><h3 style="font-size:15px">Çarpan Karşılaştırması</h3>'
-              '<span class="muted small" style="margin-left:auto">Sektör medyanına göre renklendirildi</span>'
+              '<span class="muted small" style="margin-left:auto">Rakip medyanına göre renklendirildi</span>'
               '</div>')
             rows = ""
             for t in [sym] + list(peers):
@@ -3323,9 +3573,12 @@ def render_value_peers(b, sym):
                 if not v:
                     continue
                 me = " me" if t == sym else ""
+                nm = v.get("name") or ""
+                nm = (nm[:16] + "…") if len(nm) > 17 else nm
                 rows += (f'<tr class="{me.strip()}"><td><span style="display:flex;align-items:center;gap:9px">'
-                         f'{avatar(t, 26)}<span><b>{esc(t)}</b><div class="muted small">'
-                         f'{big(v.get("market_cap"), "")}</div></span></span></td>'
+                         f'{avatar(t, 26, nm)}<span><b>{esc(t)}</b><div class="muted small">'
+                         f'{esc(nm) + " · " if nm and nm != t else ""}{big(v.get("market_cap"), "USD")}</div>'
+                         f'</span></span></td>'
                          + _cell(v.get("pe"), pm.get("pe"))
                          + _cell(v.get("fwd_pe"), pm.get("fwd_pe"))
                          + _cell(v.get("peg"), pm.get("peg"), 2)
@@ -3333,13 +3586,13 @@ def render_value_peers(b, sym):
                          + _cell(v.get("growth"), pm.get("growth"), 0, False, "%")
                          + _cell(v.get("net_margin"), pm.get("net_margin"), 0, False, "%")
                          + "</tr>")
-            med = ("<tr class='med'><td>Sektör medyanı</td>"
+            med = ("<tr class='med'><td>Rakip medyanı</td>"
                    + "".join(f'<td>{tr(pm.get(k), 2 if k == "peg" else (0 if k in ("growth", "net_margin") else 1))}'
                              f'{"%" if k in ("growth", "net_margin") else ""}</td>'
                              for k in ("pe", "fwd_pe", "peg", "ev_ebitda", "growth", "net_margin"))
                    + "</tr>")
             H(f'<div style="overflow-x:auto"><table class="ptab"><thead><tr><th>Şirket</th><th>F/K</th>'
-              f'<th>İleri F/K</th><th>PEG</th><th>FD/FAVÖK</th><th>Büyüme</th><th>Net marj</th></tr></thead>'
+              f'<th>İleri F/K</th><th>PEG</th><th>FD/FAVÖK</th><th title="Analistlerin önümüzdeki mali yıl EPS tahmini ÷ son 12 ay EPS">İleri EPS büyümesi</th><th>Net marj</th></tr></thead>'
               f'<tbody>{rows}{med}</tbody></table></div>')
             me = vals.get(sym, {})
             note = "Karşılaştırma için yeterli rakip çarpanı yok."
@@ -3380,7 +3633,7 @@ def render_value_peers(b, sym):
     with c4:
         with st.container(border=True):
             H('<div class="panel-title">Büyüme ve Net Marj</div><div class="muted small">Yüzde</div>')
-            plot(bar_fig(names, [("Beklenen büyüme", [vals[t].get("growth") for t in names], ACCENT),
+            plot(bar_fig(names, [("İleri EPS büyümesi", [vals[t].get("growth") for t in names], ACCENT),
                                  ("Net marj", [vals[t].get("net_margin") for t in names], "#6EE7B7")],
                          height=240, suffix="%"), key="v_pgm")
 
