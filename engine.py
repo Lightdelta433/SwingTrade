@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.4"
+ENGINE_VERSION = "3.6"
 NAN = float("nan")
 
 
@@ -39,8 +39,7 @@ def fmt_num(v, dec=None):
             dec = 1
         else:
             dec = 2
-    s = f"{v:,.{dec}f}"
-    return s.replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"{v:,.{dec}f}"
 
 
 def _last(s):
@@ -160,74 +159,74 @@ def _const(df, v):
 #   kind: price | osc | pct | ratio | days  (değer biçimlendirme için)
 # ======================================================================
 INDICATORS = {
-    "Fiyat": {"fn": lambda df, ctx: df["Close"], "group": "Fiyat", "kind": "price",
-              "desc": "Son kapanış fiyatı."},
+    "Price": {"fn": lambda df, ctx: df["Close"], "group": "Price", "kind": "price",
+              "desc": "Last closing price."},
     "SMA 20": {"fn": lambda df, ctx: sma(df["Close"], 20), "group": "Trend", "kind": "price",
-               "desc": "20 günlük basit hareketli ortalama — kısa vadeli trend."},
+               "desc": "20-day simple moving average — short-term trend."},
     "SMA 50": {"fn": lambda df, ctx: sma(df["Close"], 50), "group": "Trend", "kind": "price",
-               "desc": "50 günlük basit hareketli ortalama — swing trader'ların en çok izlediği orta vadeli trend."},
+               "desc": "50-day simple moving average — the medium-term trend swing traders watch most."},
     "SMA 200": {"fn": lambda df, ctx: sma(df["Close"], 200), "group": "Trend", "kind": "price",
-                "desc": "200 günlük ortalama — fiyat üstündeyse uzun vadeli boğa rejimi kabul edilir."},
+                "desc": "200-day average — price above it is considered a long-term bull regime."},
     "EMA 20": {"fn": lambda df, ctx: ema(df["Close"], 20), "group": "Trend", "kind": "price",
-               "desc": "20 günlük üssel ortalama — son fiyatlara daha fazla ağırlık verir."},
+               "desc": "20-day exponential average — gives more weight to recent prices."},
     "EMA 50": {"fn": lambda df, ctx: ema(df["Close"], 50), "group": "Trend", "kind": "price",
-               "desc": "50 günlük üssel ortalama."},
+               "desc": "50-day exponential average."},
     "RSI (14)": {"fn": lambda df, ctx: rsi(df["Close"], 14), "group": "Momentum", "kind": "osc",
-                 "desc": "Göreceli Güç Endeksi (0–100). 70 üstü aşırı alım, 30 altı aşırı satım; "
-                         "40–60 bandı trend içi geri çekilmeye işaret eder."},
-    "Stokastik %K (14)": {"fn": lambda df, ctx: stoch_k(df, 14), "group": "Momentum", "kind": "osc",
-                          "desc": "Kapanışın son 14 günlük aralıktaki yeri (0–100). 80 üstü aşırı alım, "
-                                  "20 altı aşırı satım."},
+                 "desc": "Relative Strength Index (0–100). Above 70 overbought, below 30 oversold; "
+                         "the 40–60 band points to a pullback within a trend."},
+    "Stochastic %K (14)": {"fn": lambda df, ctx: stoch_k(df, 14), "group": "Momentum", "kind": "osc",
+                          "desc": "Where the close sits in the last 14-day range (0–100). Above 80 overbought, "
+                                  "below 20 oversold."},
     "Williams %R (14)": {"fn": lambda df, ctx: williams_r(df, 14), "group": "Momentum", "kind": "osc",
-                         "desc": "−100 ile 0 arası. −20 üstü aşırı alım, −80 altı aşırı satım."},
+                         "desc": "Between −100 and 0. Above −20 overbought, below −80 oversold."},
     "CCI (20)": {"fn": lambda df, ctx: cci(df, 20), "group": "Momentum", "kind": "osc",
-                 "desc": "Emtia Kanal Endeksi. +100 üstü güçlü yükseliş, −100 altı güçlü düşüş."},
-    "MFI (14)": {"fn": lambda df, ctx: mfi(df, 14), "group": "Hacim", "kind": "osc",
-                 "desc": "Para Akışı Endeksi — hacim ağırlıklı RSI (0–100). 80 üstü aşırı alım, 20 altı aşırı satım."},
-    "MACD çizgisi": {"fn": lambda df, ctx: macd(df["Close"])[0], "group": "Momentum", "kind": "price",
-                     "desc": "EMA 12 − EMA 26. Sıfır üstü yükseliş momentumu."},
-    "MACD sinyal": {"fn": lambda df, ctx: macd(df["Close"])[1], "group": "Momentum", "kind": "price",
-                    "desc": "MACD çizgisinin 9 günlük üssel ortalaması."},
+                 "desc": "Commodity Channel Index. Above +100 strong uptrend, below −100 strong downtrend."},
+    "MFI (14)": {"fn": lambda df, ctx: mfi(df, 14), "group": "Volume", "kind": "osc",
+                 "desc": "Money Flow Index — volume-weighted RSI (0–100). Above 80 overbought, below 20 oversold."},
+    "MACD line": {"fn": lambda df, ctx: macd(df["Close"])[0], "group": "Momentum", "kind": "price",
+                     "desc": "EMA 12 − EMA 26. Above zero is upward momentum."},
+    "MACD signal": {"fn": lambda df, ctx: macd(df["Close"])[1], "group": "Momentum", "kind": "price",
+                    "desc": "9-day exponential average of the MACD line."},
     "MACD histogram": {"fn": lambda df, ctx: macd(df["Close"])[2], "group": "Momentum", "kind": "price",
-                       "desc": "MACD − sinyal. Sıfırı yukarı kesmesi alım momentumunun başladığını gösterir."},
-    "Bollinger %B (20,2)": {"fn": lambda df, ctx: boll_pctb(df["Close"]), "group": "Oynaklık", "kind": "ratio",
-                            "desc": "Fiyatın Bollinger bandı içindeki yeri: 0 alt bant, 1 üst bant. "
-                                    "0 altı aşırı satım, 1 üstü aşırı alım."},
-    "ATR % (14)": {"fn": lambda df, ctx: atr(df, 14) / df["Close"] * 100, "group": "Oynaklık", "kind": "pct",
-                   "desc": "Ortalama gerçek aralığın fiyata oranı — günlük oynaklık ölçüsü."},
-    "Göreli hacim (20g)": {"fn": lambda df, ctx: relvol(df, 20), "group": "Hacim", "kind": "ratio",
-                           "desc": "Bugünkü hacim / 20 günlük ortalama hacim. 1,5 üstü güçlü ilgi."},
-    "Günlük değişim %": {"fn": lambda df, ctx: pct_ret(df["Close"], 1), "group": "Getiri", "kind": "pct",
-                         "desc": "Son günün yüzde değişimi."},
-    "1 hafta getiri %": {"fn": lambda df, ctx: pct_ret(df["Close"], 5), "group": "Getiri", "kind": "pct",
-                         "desc": "Son 5 işlem gününün getirisi."},
-    "1 ay getiri %": {"fn": lambda df, ctx: pct_ret(df["Close"], 21), "group": "Getiri", "kind": "pct",
-                      "desc": "Son 21 işlem gününün getirisi (momentum)."},
-    "3 ay getiri %": {"fn": lambda df, ctx: pct_ret(df["Close"], 63), "group": "Getiri", "kind": "pct",
-                      "desc": "Son 63 işlem gününün getirisi."},
-    "52h zirveye uzaklık %": {"fn": lambda df, ctx: (df["Close"] / df["High"].rolling(252, min_periods=20).max() - 1) * 100,
+                       "desc": "MACD − signal. Crossing above zero shows buying momentum starting."},
+    "Bollinger %B (20,2)": {"fn": lambda df, ctx: boll_pctb(df["Close"]), "group": "Volatility", "kind": "ratio",
+                            "desc": "Where price sits inside the Bollinger band: 0 lower band, 1 upper band. "
+                                    "Below 0 oversold, above 1 overbought."},
+    "ATR % (14)": {"fn": lambda df, ctx: atr(df, 14) / df["Close"] * 100, "group": "Volatility", "kind": "pct",
+                   "desc": "Average true range as a share of price — a measure of daily volatility."},
+    "Relative volume (20d)": {"fn": lambda df, ctx: relvol(df, 20), "group": "Volume", "kind": "ratio",
+                           "desc": "Today's volume / 20-day average volume. Above 1.5 means strong interest."},
+    "Daily change %": {"fn": lambda df, ctx: pct_ret(df["Close"], 1), "group": "Returns", "kind": "pct",
+                         "desc": "Percent change on the last day."},
+    "1W return %": {"fn": lambda df, ctx: pct_ret(df["Close"], 5), "group": "Returns", "kind": "pct",
+                         "desc": "Return over the last 5 trading days."},
+    "1M return %": {"fn": lambda df, ctx: pct_ret(df["Close"], 21), "group": "Returns", "kind": "pct",
+                      "desc": "Return over the last 21 trading days (momentum)."},
+    "3M return %": {"fn": lambda df, ctx: pct_ret(df["Close"], 63), "group": "Returns", "kind": "pct",
+                      "desc": "Return over the last 63 trading days."},
+    "Distance to 52W high %": {"fn": lambda df, ctx: (df["Close"] / df["High"].rolling(252, min_periods=20).max() - 1) * 100,
                               "group": "Trend", "kind": "pct",
-                              "desc": "52 haftalık zirveye yüzde uzaklık (0 = zirvede, −10 = zirvenin %10 altında)."},
-    "Göreli güç vs SPY (3 ay)": {"fn": lambda df, ctx: _bench_rs(df, ctx, 63), "group": "Göreli güç", "kind": "pct",
-                                 "desc": "Son 3 ayda hissenin getirisi − S&P 500 (SPY) getirisi (puan). "
-                                         "Pozitifse endeksten güçlü."},
-    "Bilançoya kalan gün": {"fn": lambda df, ctx: _const(df, (ctx or {}).get("earn_days", NAN)),
-                            "group": "Takvim", "kind": "days",
-                            "desc": "Bir sonraki bilanço açıklamasına kalan gün (veri yoksa boş)."},
+                              "desc": "Distance from the 52-week high in percent (0 = at the high, −10 = 10% below it)."},
+    "Relative strength vs SPY (3M)": {"fn": lambda df, ctx: _bench_rs(df, ctx, 63), "group": "Relative strength", "kind": "pct",
+                                 "desc": "Stock return over the last 3 months − S&P 500 (SPY) return (points). "
+                                         "Positive means stronger than the index."},
+    "Days to earnings": {"fn": lambda df, ctx: _const(df, (ctx or {}).get("earn_days", NAN)),
+                            "group": "Calendar", "kind": "days",
+                            "desc": "Days until the next earnings report (empty if no data)."},
 }
 IND_NAMES = list(INDICATORS)
 
 ALIASES = {
-    "rsi": "RSI (14)", "macd": "MACD histogram", "stoch": "Stokastik %K (14)",
-    "stokastik": "Stokastik %K (14)", "bollinger": "Bollinger %B (20,2)", "boll": "Bollinger %B (20,2)",
-    "atr": "ATR % (14)", "oynaklık": "ATR % (14)", "volatilite": "ATR % (14)",
-    "hacim": "Göreli hacim (20g)", "volume": "Göreli hacim (20g)", "sma": "SMA 50", "ema": "EMA 20",
-    "ortalama": "SMA 50", "moving average": "SMA 50", "cci": "CCI (20)", "mfi": "MFI (14)",
-    "williams": "Williams %R (14)", "momentum": "1 ay getiri %", "getiri": "1 ay getiri %",
-    "bilanço": "Bilançoya kalan gün", "bilanco": "Bilançoya kalan gün", "earnings": "Bilançoya kalan gün",
-    "göreli güç": "Göreli güç vs SPY (3 ay)", "relative strength": "Göreli güç vs SPY (3 ay)",
-    "rs": "Göreli güç vs SPY (3 ay)", "zirve": "52h zirveye uzaklık %", "52": "52h zirveye uzaklık %",
-    "fiyat": "Fiyat", "price": "Fiyat",
+    "rsi": "RSI (14)", "macd": "MACD histogram", "stoch": "Stochastic %K (14)",
+    "stochastic": "Stochastic %K (14)", "bollinger": "Bollinger %B (20,2)", "boll": "Bollinger %B (20,2)",
+    "atr": "ATR % (14)", "volatility": "ATR % (14)", "volatility": "ATR % (14)",
+    "volume": "Relative volume (20d)", "volume": "Relative volume (20d)", "sma": "SMA 50", "ema": "EMA 20",
+    "average": "SMA 50", "moving average": "SMA 50", "cci": "CCI (20)", "mfi": "MFI (14)",
+    "williams": "Williams %R (14)", "momentum": "1M return %", "return": "1M return %",
+    "balance sheet": "Days to earnings", "bilanco": "Days to earnings", "earnings": "Days to earnings",
+    "relative strength": "Relative strength vs SPY (3M)", "relative strength": "Relative strength vs SPY (3M)",
+    "rs": "Relative strength vs SPY (3M)", "peak": "Distance to 52W high %", "52": "Distance to 52W high %",
+    "price": "Price", "price": "Price",
 }
 
 
@@ -261,55 +260,55 @@ EARN_FAR = 99.0
 
 def fmt_ind_value(name, v):
     if v is None or v != v:
-        return "veri yok"
+        return "no data"
     kind = INDICATORS.get(name, {}).get("kind", "price")
     if kind == "osc":
         return fmt_num(v, 1)
     if kind == "pct":
-        return ("+" if v >= 0 else "−") + "%" + fmt_num(abs(v), 1)
+        return ("+" if v >= 0 else "−") + fmt_num(abs(v), 1) + "%"
     if kind == "ratio":
-        return fmt_num(v, 2) + ("×" if "hacim" in name.lower() else "")
+        return fmt_num(v, 2) + ("×" if "volume" in name.lower() else "")
     if kind == "days":
-        return "3+ hafta" if v >= EARN_FAR else f"{int(round(v))} gün"
+        return "3+ weeks" if v >= EARN_FAR else f"{int(round(v))} days"
     return fmt_num(v, 2)
 
 
 # ======================================================================
 # KOŞUL MOTORU
 # ======================================================================
-OPS = ["<", ">", "≤", "≥", "yukarı keser", "aşağı keser"]
-NUM = "Sayı"
+OPS = ["<", ">", "≤", "≥", "crosses above", "crosses below"]
+NUM = "Number"
 COMPARE_OPTIONS = [NUM] + IND_NAMES
-COND_COLS = ["Aktif", "Gösterge", "Koşul", "Karşılaştır", "Değer"]
+COND_COLS = ["Active", "Indicator", "Condition", "Compare", "Value"]
 
 DEFAULT_FILTER = [
-    {"Aktif": True, "Gösterge": "Fiyat", "Koşul": ">", "Karşılaştır": "SMA 50", "Değer": 0.0},
-    {"Aktif": True, "Gösterge": "SMA 50", "Koşul": ">", "Karşılaştır": "SMA 200", "Değer": 0.0},
-    {"Aktif": True, "Gösterge": "RSI (14)", "Koşul": "≥", "Karşılaştır": NUM, "Değer": 40.0},
-    {"Aktif": True, "Gösterge": "RSI (14)", "Koşul": "≤", "Karşılaştır": NUM, "Değer": 60.0},
-    {"Aktif": True, "Gösterge": "Göreli hacim (20g)", "Koşul": ">", "Karşılaştır": NUM, "Değer": 1.5},
-    {"Aktif": True, "Gösterge": "Göreli güç vs SPY (3 ay)", "Koşul": ">", "Karşılaştır": NUM, "Değer": 0.0},
+    {"Active": True, "Indicator": "Price", "Condition": ">", "Compare": "SMA 50", "Value": 0.0},
+    {"Active": True, "Indicator": "SMA 50", "Condition": ">", "Compare": "SMA 200", "Value": 0.0},
+    {"Active": True, "Indicator": "RSI (14)", "Condition": "≥", "Compare": NUM, "Value": 40.0},
+    {"Active": True, "Indicator": "RSI (14)", "Condition": "≤", "Compare": NUM, "Value": 60.0},
+    {"Active": True, "Indicator": "Relative volume (20d)", "Condition": ">", "Compare": NUM, "Value": 1.5},
+    {"Active": True, "Indicator": "Relative strength vs SPY (3M)", "Condition": ">", "Compare": NUM, "Value": 0.0},
 ]
 
 # Bir indikatör filtreye/backtest'e eklendiğinde mantıklı varsayılan koşul
 SUGGESTED = {
-    "RSI (14)": (">", NUM, 50.0), "Stokastik %K (14)": ("<", NUM, 20.0),
+    "RSI (14)": (">", NUM, 50.0), "Stochastic %K (14)": ("<", NUM, 20.0),
     "Williams %R (14)": ("<", NUM, -80.0), "CCI (20)": (">", NUM, 100.0), "MFI (14)": ("<", NUM, 20.0),
-    "MACD histogram": ("yukarı keser", NUM, 0.0), "MACD çizgisi": (">", "MACD sinyal", 0.0),
-    "MACD sinyal": ("<", "MACD çizgisi", 0.0), "Bollinger %B (20,2)": ("<", NUM, 0.0),
-    "ATR % (14)": ("<", NUM, 4.0), "Göreli hacim (20g)": (">", NUM, 1.5),
-    "Günlük değişim %": (">", NUM, 0.0), "1 hafta getiri %": (">", NUM, 0.0),
-    "1 ay getiri %": (">", NUM, 5.0), "3 ay getiri %": (">", NUM, 10.0),
-    "52h zirveye uzaklık %": (">", NUM, -10.0), "Göreli güç vs SPY (3 ay)": (">", NUM, 0.0),
-    "Bilançoya kalan gün": (">", NUM, 10.0), "Fiyat": (">", "SMA 50", 0.0),
-    "SMA 20": ("<", "Fiyat", 0.0), "SMA 50": (">", "SMA 200", 0.0), "SMA 200": ("<", "Fiyat", 0.0),
-    "EMA 20": ("<", "Fiyat", 0.0), "EMA 50": ("<", "Fiyat", 0.0),
+    "MACD histogram": ("crosses above", NUM, 0.0), "MACD line": (">", "MACD signal", 0.0),
+    "MACD signal": ("<", "MACD line", 0.0), "Bollinger %B (20,2)": ("<", NUM, 0.0),
+    "ATR % (14)": ("<", NUM, 4.0), "Relative volume (20d)": (">", NUM, 1.5),
+    "Daily change %": (">", NUM, 0.0), "1W return %": (">", NUM, 0.0),
+    "1M return %": (">", NUM, 5.0), "3M return %": (">", NUM, 10.0),
+    "Distance to 52W high %": (">", NUM, -10.0), "Relative strength vs SPY (3M)": (">", NUM, 0.0),
+    "Days to earnings": (">", NUM, 10.0), "Price": (">", "SMA 50", 0.0),
+    "SMA 20": ("<", "Price", 0.0), "SMA 50": (">", "SMA 200", 0.0), "SMA 200": ("<", "Price", 0.0),
+    "EMA 20": ("<", "Price", 0.0), "EMA 50": ("<", "Price", 0.0),
 }
 
 
 def suggested_condition(name):
     op, cmp_, val = SUGGESTED.get(name, (">", NUM, 0.0))
-    return {"Aktif": True, "Gösterge": name, "Koşul": op, "Karşılaştır": cmp_, "Değer": float(val)}
+    return {"Active": True, "Indicator": name, "Condition": op, "Compare": cmp_, "Value": float(val)}
 
 
 def normalize_conds(rows):
@@ -318,36 +317,36 @@ def normalize_conds(rows):
         try:
             if not isinstance(r, dict):
                 continue
-            g, k = r.get("Gösterge"), r.get("Koşul")
-            c = r.get("Karşılaştır") or NUM
+            g, k = r.get("Indicator"), r.get("Condition")
+            c = r.get("Compare") or NUM
             if g not in INDICATORS or k not in OPS or (c != NUM and c not in INDICATORS):
                 continue
-            v = r.get("Değer")
+            v = r.get("Value")
             try:
                 v = float(v)
                 if v != v:
                     v = 0.0
             except (TypeError, ValueError):
                 v = 0.0
-            a = r.get("Aktif")
+            a = r.get("Active")
             a = True if a is None or a != a else bool(a)
-            out.append({"Aktif": a, "Gösterge": g, "Koşul": k, "Karşılaştır": c, "Değer": v})
+            out.append({"Active": a, "Indicator": g, "Condition": k, "Compare": c, "Value": v})
         except Exception:
             continue
     return out
 
 
 def cond_text(c):
-    rhs = c["Karşılaştır"] if c["Karşılaştır"] != NUM else fmt_num(c["Değer"])
-    return f'{c["Gösterge"]} {c["Koşul"]} {rhs}'
+    rhs = c["Compare"] if c["Compare"] != NUM else fmt_num(c["Value"])
+    return f'{c["Indicator"]} {c["Condition"]} {rhs}'
 
 
 def needed(conds):
     s = set()
     for c in conds:
-        s.add(c["Gösterge"])
-        if c["Karşılaştır"] != NUM:
-            s.add(c["Karşılaştır"])
+        s.add(c["Indicator"])
+        if c["Compare"] != NUM:
+            s.add(c["Compare"])
     return s
 
 
@@ -365,16 +364,16 @@ def compute_series(df, names, ctx=None):
 
 
 def _rhs(c, S, index):
-    if c["Karşılaştır"] == NUM:
-        return pd.Series(float(c["Değer"]), index=index)
-    return S[c["Karşılaştır"]]
+    if c["Compare"] == NUM:
+        return pd.Series(float(c["Value"]), index=index)
+    return S[c["Compare"]]
 
 
 def eval_series(c, S):
     """Koşulun her bar için doğru/yanlış serisi (backtest)."""
-    L = S[c["Gösterge"]]
+    L = S[c["Indicator"]]
     R = _rhs(c, S, L.index)
-    op = c["Koşul"]
+    op = c["Condition"]
     if op == "<":
         m = L < R
     elif op == ">":
@@ -383,26 +382,26 @@ def eval_series(c, S):
         m = L <= R
     elif op == "≥":
         m = L >= R
-    elif op == "yukarı keser":
+    elif op == "crosses above":
         m = (L.shift() < R.shift()) & (L >= R)
     else:
         m = (L.shift() > R.shift()) & (L <= R)
     valid = L.notna() & R.notna()
-    if op in ("yukarı keser", "aşağı keser"):
+    if op in ("crosses above", "crosses below"):
         valid &= L.shift().notna() & R.shift().notna()
     return (m & valid).fillna(False).astype(bool)
 
 
 def eval_last(c, S):
     """Son bar için (durum, sol değer, sağ değer). Veri yoksa durum None."""
-    L = S[c["Gösterge"]]
+    L = S[c["Indicator"]]
     R = _rhs(c, S, L.index)
     if len(L) < 2:
         return None, NAN, NAN
     l1, r1, l0, r0 = L.iloc[-1], R.iloc[-1], L.iloc[-2], R.iloc[-2]
     if pd.isna(l1) or pd.isna(r1):
         return None, float(l1) if pd.notna(l1) else NAN, float(r1) if pd.notna(r1) else NAN
-    op = c["Koşul"]
+    op = c["Condition"]
     if op == "<":
         ok = l1 < r1
     elif op == ">":
@@ -414,31 +413,31 @@ def eval_last(c, S):
     else:
         if pd.isna(l0) or pd.isna(r0):
             return None, float(l1), float(r1)
-        ok = (l0 < r0 and l1 >= r1) if op == "yukarı keser" else (l0 > r0 and l1 <= r1)
+        ok = (l0 < r0 and l1 >= r1) if op == "crosses above" else (l0 > r0 and l1 <= r1)
     return bool(ok), float(l1), float(r1)
 
 
 # ======================================================================
 # SWING TARAYICI
 # ======================================================================
-SETUPS = ["Pullback", "Kırılım", "Destekten dönüş", "Momentum"]
-BASE_NEEDS = ["Fiyat", "SMA 50", "SMA 200", "EMA 20", "RSI (14)", "Göreli hacim (20g)",
-              "1 ay getiri %", "Göreli güç vs SPY (3 ay)", "Günlük değişim %"]
+SETUPS = ["Pullback", "Breakout", "Support bounce", "Momentum"]
+BASE_NEEDS = ["Price", "SMA 50", "SMA 200", "EMA 20", "RSI (14)", "Relative volume (20d)",
+              "1M return %", "Relative strength vs SPY (3M)", "Daily change %"]
 
 
 def classify_setup(df, S):
-    c = _last(S["Fiyat"])
+    c = _last(S["Price"])
     o = float(df["Open"].iloc[-1])
     hi20 = float(df["High"].iloc[-21:-1].max()) if len(df) > 21 else NAN
     lo60 = float(df["Low"].iloc[-60:].min())
-    rv, r = _last(S["Göreli hacim (20g)"]), _last(S["RSI (14)"])
-    m1, e20, s50 = _last(S["1 ay getiri %"]), _last(S["EMA 20"]), _last(S["SMA 50"])
+    rv, r = _last(S["Relative volume (20d)"]), _last(S["RSI (14)"])
+    m1, e20, s50 = _last(S["1M return %"]), _last(S["EMA 20"]), _last(S["SMA 50"])
     if _ok(hi20) and c >= hi20 * 0.995 and (not _ok(rv) or rv >= 1.2):
-        return "Kırılım"
+        return "Breakout"
     if _ok(r) and _ok(m1) and r >= 60 and m1 >= 8:
         return "Momentum"
     if c <= lo60 * 1.06 and c > o:
-        return "Destekten dönüş"
+        return "Support bounce"
     if _ok(s50) and _ok(e20) and c > s50 and abs(c / e20 - 1) <= 0.03:
         return "Pullback"
     return "Momentum" if (_ok(r) and r >= 55) else "Pullback"
@@ -446,13 +445,13 @@ def classify_setup(df, S):
 
 def trade_levels(setup, df, S, a):
     """ATR(14) bazlı giriş bölgesi, stop ve hedef önerisi."""
-    c = _last(S["Fiyat"])
+    c = _last(S["Price"])
     if not _ok(a) or a <= 0:
         a = c * 0.02
     e20 = _last(S["EMA 20"])
     e20 = e20 if _ok(e20) else c
     lo20 = float(df["Low"].tail(20).min())
-    if setup == "Kırılım":
+    if setup == "Breakout":
         lo, hi = c - 0.2 * a, c + 0.2 * a
         mid = (lo + hi) / 2
         stop, tgt = mid - 1.5 * a, mid + 3.5 * a
@@ -461,7 +460,7 @@ def trade_levels(setup, df, S, a):
         lo, hi = base - 0.2 * a, base + 0.3 * a
         mid = (lo + hi) / 2
         stop, tgt = lo - 1.2 * a, mid + 3.0 * a
-    elif setup == "Destekten dönüş":
+    elif setup == "Support bounce":
         lo, hi = c - 0.3 * a, c + 0.1 * a
         mid = (lo + hi) / 2
         stop, tgt = min(lo20 - 0.3 * a, mid - 1.0 * a), mid + 2.5 * a
@@ -474,21 +473,21 @@ def trade_levels(setup, df, S, a):
 
 
 def _score(fit, S):
-    c, s50, s200 = _last(S["Fiyat"]), _last(S["SMA 50"]), _last(S["SMA 200"])
+    c, s50, s200 = _last(S["Price"]), _last(S["SMA 50"]), _last(S["SMA 200"])
     trend = 0.5 * (1 if _ok(s50) and c > s50 else 0) + 0.5 * (1 if _ok(s50) and _ok(s200) and s50 > s200 else 0)
-    rv = _last(S["Göreli hacim (20g)"])
+    rv = _last(S["Relative volume (20d)"])
     vol = min(max((rv - 0.6) / 1.4, 0), 1) if _ok(rv) else 0.3
-    rs = _last(S["Göreli güç vs SPY (3 ay)"])
+    rs = _last(S["Relative strength vs SPY (3M)"])
     rsc = min(max((rs + 10) / 20, 0), 1) if _ok(rs) else 0.5
     return int(round(100 * (0.5 * fit + 0.25 * trend + 0.15 * vol + 0.10 * rsc)))
 
 
-def scan(hist, conds, logic="VE", min_match=None, bench=None, earn_days=None, names=None):
+def scan(hist, conds, logic="AND", min_match=None, bench=None, earn_days=None, names=None):
     """Evren üzerinde filtreyi çalıştırır, eşleşenleri setup/seviye/skorla döndürür.
     hist: {ticker: OHLCV DataFrame}; conds: koşul listesi (normalize edilir)."""
     names = names or {}
     earn_days = earn_days or {}
-    active = [c for c in normalize_conds(conds) if c["Aktif"]]
+    active = [c for c in normalize_conds(conds) if c["Active"]]
     N = len(active)
     need = set(BASE_NEEDS) | needed(active)
     need_min = N if not min_match else max(1, min(int(min_match), N))
@@ -501,10 +500,10 @@ def scan(hist, conds, logic="VE", min_match=None, bench=None, earn_days=None, na
         checks, passes = [], 0
         for c in active:
             st_, lv, _rv = eval_last(c, S)
-            checks.append({"text": cond_text(c), "ok": st_, "val": fmt_ind_value(c["Gösterge"], lv)})
+            checks.append({"text": cond_text(c), "ok": st_, "val": fmt_ind_value(c["Indicator"], lv)})
             passes += 1 if st_ else 0
         if N:
-            ok = passes >= 1 if logic == "VEYA" else passes >= need_min
+            ok = passes >= 1 if logic == "OR" else passes >= need_min
             if not ok:
                 continue
         a = _last(atr(df, 14))
@@ -514,10 +513,10 @@ def scan(hist, conds, logic="VE", min_match=None, bench=None, earn_days=None, na
         nm, sec = names.get(t, (t, ""))
         out.append({
             "ticker": t, "name": nm, "sector": sec, "setup": setup,
-            "price": _last(S["Fiyat"]), "chg": _last(S["Günlük değişim %"]),
+            "price": _last(S["Price"]), "chg": _last(S["Daily change %"]),
             **lv, "score": _score(fit, S), "passes": passes, "n": N, "checks": checks,
-            "rsi": _last(S["RSI (14)"]), "relvol": _last(S["Göreli hacim (20g)"]),
-            "rs": _last(S["Göreli güç vs SPY (3 ay)"]), "earn_days": earn_days.get(t, NAN),
+            "rsi": _last(S["RSI (14)"]), "relvol": _last(S["Relative volume (20d)"]),
+            "rs": _last(S["Relative strength vs SPY (3M)"]), "earn_days": earn_days.get(t, NAN),
             "src": df.attrs.get("src", "real"),
         })
     out.sort(key=lambda x: -x["score"])
@@ -536,22 +535,22 @@ def market_regime(spy_df=None, vix=None, pct_above50=None, leader=None):
         checks.append({"t": "SPX > SMA 200" if above else "SPX < SMA 200", "ok": above})
     if vix is not None and _ok(vix):
         low = vix < 20
-        checks.append({"t": f"VIX {fmt_num(vix, 1)} · 20'nin {'altında' if low else 'üstünde'}", "ok": low})
+        checks.append({"t": f"VIX {fmt_num(vix, 1)} · {'below' if low else 'above'} 20", "ok": low})
     if pct_above50 is not None and _ok(pct_above50):
-        checks.append({"t": f"SMA 50 üstündeki hisse oranı %{fmt_num(pct_above50, 0)}",
+        checks.append({"t": f"Share of stocks above SMA 50: {fmt_num(pct_above50, 0)}%",
                        "ok": pct_above50 >= 50})
     if leader:
-        checks.append({"t": f"Lider sektör: {leader}", "ok": True})
+        checks.append({"t": f"Leading sector: {leader}", "ok": True})
     if above and low is not False:
-        label, badge, tone = "Yükseliş trendi · düşük oynaklık", "SWING İÇİN UYGUN", "good"
+        label, badge, tone = "Uptrend · low volatility", "GOOD FOR SWING", "good"
     elif above:
-        label, badge, tone = "Yükseliş trendi · yüksek oynaklık", "DİKKATLİ", "warn"
+        label, badge, tone = "Uptrend · high volatility", "CAUTIOUS", "warn"
     elif above is False and low:
-        label, badge, tone = "Zayıf trend · düşük oynaklık", "SEÇİCİ OL", "warn"
+        label, badge, tone = "Weak trend · low volatility", "BE SELECTIVE", "warn"
     elif above is False:
-        label, badge, tone = "Düşüş trendi · yüksek oynaklık", "SAVUNMACI", "bad"
+        label, badge, tone = "Downtrend · high volatility", "DEFENSIVE", "bad"
     else:
-        label, badge, tone = "Rejim verisi yok", "—", "warn"
+        label, badge, tone = "No regime data", "—", "warn"
     return {"label": label, "badge": badge, "tone": tone, "checks": checks}
 
 
@@ -562,15 +561,15 @@ def market_regime(spy_df=None, vix=None, pct_above50=None, leader=None):
 # ======================================================================
 IND1 = {
     "RSI": {"fn": lambda df, p: rsi(df["Close"], p), "mirror": lambda v: 100 - v},
-    "Stokastik %K": {"fn": lambda df, p: stoch_k(df, p), "mirror": lambda v: 100 - v},
+    "Stochastic %K": {"fn": lambda df, p: stoch_k(df, p), "mirror": lambda v: 100 - v},
     "MFI": {"fn": lambda df, p: mfi(df, p), "mirror": lambda v: 100 - v},
     "Williams %R": {"fn": lambda df, p: williams_r(df, p), "mirror": lambda v: -100 - v},
     "CCI": {"fn": lambda df, p: cci(df, p), "mirror": lambda v: -v},
 }
-IND1_OFF = "— (kullanma)"
+IND1_OFF = "— (none)"
 IND1_OPTIONS = list(IND1) + [IND1_OFF]
-OPS1 = {"lt": "altında (<)", "gt": "üstünde (>)", "xup": "yukarı keser", "xdn": "aşağı keser"}
-OPS1_SHORT = {"lt": "<", "gt": ">", "xup": "↗ keser", "xdn": "↘ keser"}
+OPS1 = {"lt": "below (<)", "gt": "above (>)", "xup": "crosses above", "xdn": "crosses below"}
+OPS1_SHORT = {"lt": "<", "gt": ">", "xup": "↗ crosses", "xdn": "↘ crosses"}
 _MIR = {"lt": "gt", "gt": "lt", "xup": "xdn", "xdn": "xup"}
 
 BT_DEFAULTS = {"yrs": 3, "ind1": "RSI", "p1": 14, "op1": "lt", "v1": 30.0, "logic": "and",
@@ -594,24 +593,24 @@ def describe(cfg):
     if cfg["ind1"] in IND1:
         parts.append(f'{cfg["ind1"]}({int(cfg["p1"])}) {OPS1_SHORT.get(cfg["op1"], "<")} {fmt_num(cfg["v1"])}')
     if cfg["c2on"]:
-        parts.append(f'Fiyat {">" if cfg["op2"] == "above" else "<"} {str(cfg["src2"]).upper()}({int(cfg["p2"])})')
-    s = (" VE " if cfg["logic"] == "and" else " VEYA ").join(parts)
-    ex = [cond_text(c) for c in normalize_conds(cfg.get("extra")) if c["Aktif"]]
+        parts.append(f'Price {">" if cfg["op2"] == "above" else "<"} {str(cfg["src2"]).upper()}({int(cfg["p2"])})')
+    s = (" AND " if cfg["logic"] == "and" else " OR ").join(parts)
+    ex = [cond_text(c) for c in normalize_conds(cfg.get("extra")) if c["Active"]]
     if ex:
         k = _extra_need(cfg, len(ex))
-        joined = " VE ".join(ex) if k == len(ex) else f"[en az {k}/{len(ex)}: " + " · ".join(ex) + "]"
-        s = (s + " VE " if s else "") + joined
-    s = s or "Koşul yok"
+        joined = " AND ".join(ex) if k == len(ex) else f"[at least {k}/{len(ex)}: " + " · ".join(ex) + "]"
+        s = (s + " AND " if s else "") + joined
+    s = s or "No conditions"
     s += " · " + {"long": "Long", "short": "Short", "both": "Long + Short"}.get(cfg["dir"], "Long")
-    s += " · SL " + (f'%{fmt_num(cfg["slV"], 1)}' if cfg["slMode"] == "pct" else f'{fmt_num(cfg["slV"], 1)}×ATR')
+    s += " · SL " + (f'{fmt_num(cfg["slV"], 1)}%' if cfg["slMode"] == "pct" else f'{fmt_num(cfg["slV"], 1)}×ATR')
     if cfg["tpMode"] == "pct":
-        s += f' · TP %{fmt_num(cfg["tpV"], 1)}'
+        s += f' · TP {fmt_num(cfg["tpV"], 1)}%'
     elif cfg["tpMode"] == "rr":
         s += f' · TP {fmt_num(cfg["tpV"], 1)}R'
     else:
         s += f' · TP {fmt_num(cfg["tpV"], 1)}×ATR'
     if int(cfg["maxBars"]) > 0:
-        s += f' · maks. {int(cfg["maxBars"])}g'
+        s += f' · max. {int(cfg["maxBars"])}d'
     return s
 
 
@@ -621,11 +620,11 @@ def backtest(df, cfg, extra=None, bench=None):
         extra = cfg.get("extra")
     cfg["extra"] = normalize_conds(extra)
     if df is None or len(df) == 0:
-        return {"ok": False, "msg": "Fiyat verisi yok."}
+        return {"ok": False, "msg": "No price data."}
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
     total = len(df)
     if total < 60:
-        return {"ok": False, "msg": "Yetersiz fiyat verisi (en az 60 mum gerekir)."}
+        return {"ok": False, "msg": "Not enough price data (at least 60 candles needed)."}
     N = int(round(float(cfg["yrs"]) * 252))
     N = max(30, min(N, total - 1))
     start = total - N
@@ -636,7 +635,7 @@ def backtest(df, cfg, extra=None, bench=None):
     ind1 = IND1[cfg["ind1"]]["fn"](df, p1).to_numpy(dtype=float) if use1 else None
     ma = (ema if cfg["src2"] == "ema" else sma)(df["Close"], p2).to_numpy(dtype=float)
     av = atr(df, 14).to_numpy(dtype=float)
-    extra_c = [x for x in normalize_conds(extra) if x["Aktif"]]
+    extra_c = [x for x in normalize_conds(extra) if x["Active"]]
     emask = None
     if extra_c:
         S = compute_series(df, needed(extra_c), {"bench": bench})
@@ -712,7 +711,7 @@ def backtest(df, cfg, extra=None, bench=None):
                 elif l[i] <= pos["tp"]:
                     close_pos(i, min(o[i], pos["tp"]), "TP")
             if pos is not None and max_bars > 0 and i - pos["ei"] + 1 >= max_bars:
-                close_pos(i, c[i], "Süre")
+                close_pos(i, c[i], "Time")
         eq[i] = cash + ((1 if pos["long"] else -1) * (c[i] - pos["entry"]) * pos["qty"] if pos else 0.0)
         if pos is None and i < total - 1:
             side = None
@@ -735,7 +734,7 @@ def backtest(df, cfg, extra=None, bench=None):
                     pos = {"long": side, "ei": i + 1, "entry": px, "qty": qty, "risk_amt": qty * sd,
                            "sl": px - sd if side else px + sd, "tp": px + td if side else px - td}
     if pos is not None:
-        close_pos(total - 1, c[total - 1], "Açık")
+        close_pos(total - 1, c[total - 1], "Open")
     eq[total - 1] = cash
 
     # ---- sonuçlar ----
@@ -764,7 +763,7 @@ def backtest(df, cfg, extra=None, bench=None):
         max_streak = max(max_streak, streak)
     good = n >= 10 and pf >= 1.3 and exp_r > 0
     okish = n >= 5 and pf >= 1
-    verdict = "Yetersiz örnek" if n < 5 else "Umut verici" if good else "Sınırda" if okish else "Zayıf"
+    verdict = "Too few samples" if n < 5 else "Promising" if good else "Borderline" if okish else "Weak"
     tone = "warn" if n < 5 else "good" if good else "warn" if okish else "bad"
     kpi = {
         "cap": cap, "final": final, "net": final - cap, "net_pct": (final / cap - 1) * 100,
@@ -838,8 +837,8 @@ def pivot_points(s, left=5, right=5):
     return hi, lo
 
 
-DIV_KINDS = {"reg_bull": ("Yükseliş uyumsuzluğu", "bull"), "hid_bull": ("Gizli yükseliş", "bull"),
-             "reg_bear": ("Düşüş uyumsuzluğu", "bear"), "hid_bear": ("Gizli düşüş", "bear")}
+DIV_KINDS = {"reg_bull": ("Bullish divergence", "bull"), "hid_bull": ("Hidden bullish", "bull"),
+             "reg_bear": ("Bearish divergence", "bear"), "hid_bear": ("Hidden bearish", "bear")}
 
 
 def divergences(df, osc, left=5, right=5, min_gap=5, max_gap=60, hidden=True, limit=14):
@@ -923,11 +922,11 @@ def ranked_sr_zones(df, lookback=300, left=8, right=8, merge_pct=0.6, max_zones=
         pad = max(tol * 0.5, (r["hi"] - r["lo"]) * 0.15)
         kind = "res" if mid > close else "sup"
         weak = pct < float(weak_below)
-        base = "Direnç" if kind == "res" else "Destek"
+        base = "Resistance" if kind == "res" else "Support"
         out.append({"lo": r["lo"] - pad, "hi": r["hi"] + pad, "pct": int(pct), "kind": kind,
                     "weak": bool(weak), "touches": r["touches"],
                     "start": int(r["start"]) + (len(df) - n), "last": int(r["last"]) + (len(df) - n),
-                    "label": ("Zayıf " + base) if weak else base})
+                    "label": ("Weak " + base) if weak else base})
     out.sort(key=lambda z: -z["pct"])
     return out[:int(max_zones)]
 
@@ -1109,9 +1108,9 @@ def chart_patterns(df, left=4, right=4, lookback=180, tol=0.035, limit=4):
             neck = float(H[max(mid, key=lambda j: H[j])]) if mid else float(H[i1:i2 + 1].max())
             if neck > max(L[i1], L[i2]):
                 conf = 0.55 + 0.25 * (1 - rel(L[i1], L[i2]) / tol) + (0.2 if px > neck else 0.0)
-                out.append({"name": "Çift dip", "kind": "bull", "conf": float(round(min(1.0, conf), 2)),
+                out.append({"name": "Double bottom", "kind": "bull", "conf": float(round(min(1.0, conf), 2)),
                             "i": int(i2) + (len(df) - n),
-                            "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px > neck else " henüz kırılmadı")})
+                            "note": "neckline %s%s" % (fmt_num(neck, 2), " broken" if px > neck else " not broken yet")})
     if len(hi_i) >= 2:
         i1, i2 = hi_i[-2], hi_i[-1]
         gap = i2 - i1
@@ -1120,51 +1119,51 @@ def chart_patterns(df, left=4, right=4, lookback=180, tol=0.035, limit=4):
             neck = float(L[min(mid, key=lambda j: L[j])]) if mid else float(L[i1:i2 + 1].min())
             if neck < min(H[i1], H[i2]):
                 conf = 0.55 + 0.25 * (1 - rel(H[i1], H[i2]) / tol) + (0.2 if px < neck else 0.0)
-                out.append({"name": "Çift tepe", "kind": "bear", "conf": float(round(min(1.0, conf), 2)),
+                out.append({"name": "Double top", "kind": "bear", "conf": float(round(min(1.0, conf), 2)),
                             "i": int(i2) + (len(df) - n),
-                            "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px < neck else " henüz kırılmadı")})
+                            "note": "neckline %s%s" % (fmt_num(neck, 2), " broken" if px < neck else " not broken yet")})
     # ---- omuz-baş-omuz / ters OBO
     if len(hi_i) >= 3:
         a, b, c = hi_i[-3], hi_i[-2], hi_i[-1]
         if H[b] > H[a] and H[b] > H[c] and rel(H[a], H[c]) <= tol * 1.8 and (c - a) <= 140:
             mids = [j for j in lo_i if a < j < c]
             neck = float(np.mean([L[j] for j in mids])) if mids else float(L[a:c + 1].min())
-            out.append({"name": "Omuz-baş-omuz", "kind": "bear", "conf": 0.72,
+            out.append({"name": "Head and shoulders", "kind": "bear", "conf": 0.72,
                         "i": int(c) + (len(df) - n),
-                        "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px < neck else "")})
+                        "note": "neckline %s%s" % (fmt_num(neck, 2), " broken" if px < neck else "")})
     if len(lo_i) >= 3:
         a, b, c = lo_i[-3], lo_i[-2], lo_i[-1]
         if L[b] < L[a] and L[b] < L[c] and rel(L[a], L[c]) <= tol * 1.8 and (c - a) <= 140:
             mids = [j for j in hi_i if a < j < c]
             neck = float(np.mean([H[j] for j in mids])) if mids else float(H[a:c + 1].max())
-            out.append({"name": "Ters omuz-baş-omuz", "kind": "bull", "conf": 0.72,
+            out.append({"name": "Inverse head and shoulders", "kind": "bull", "conf": 0.72,
                         "i": int(c) + (len(df) - n),
-                        "note": "boyun %s%s" % (fmt_num(neck, 2), " kırıldı" if px > neck else "")})
+                        "note": "neckline %s%s" % (fmt_num(neck, 2), " broken" if px > neck else "")})
     # ---- üçgen (son 3 tepe / 3 dip eğimi)
     if len(hi_i) >= 3 and len(lo_i) >= 3:
         hs = _slope(hi_i[-3:], [H[j] for j in hi_i[-3:]]) / max(px, 1e-9) * 100
         ls = _slope(lo_i[-3:], [L[j] for j in lo_i[-3:]]) / max(px, 1e-9) * 100
         flat = 0.035
         if hs < -flat and ls > flat:
-            out.append({"name": "Simetrik üçgen", "kind": "neutral", "conf": 0.6,
-                        "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n), "note": "sıkışma — kırılım bekleniyor"})
+            out.append({"name": "Symmetrical triangle", "kind": "neutral", "conf": 0.6,
+                        "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n), "note": "squeeze — breakout pending"})
         elif abs(hs) <= flat and ls > flat:
-            out.append({"name": "Yükselen üçgen", "kind": "bull", "conf": 0.68,
+            out.append({"name": "Ascending triangle", "kind": "bull", "conf": 0.68,
                         "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n),
-                        "note": "yatay direnç %s" % fmt_num(float(np.mean([H[j] for j in hi_i[-3:]])), 2)})
+                        "note": "horizontal resistance %s" % fmt_num(float(np.mean([H[j] for j in hi_i[-3:]])), 2)})
         elif hs < -flat and abs(ls) <= flat:
-            out.append({"name": "Alçalan üçgen", "kind": "bear", "conf": 0.68,
+            out.append({"name": "Descending triangle", "kind": "bear", "conf": 0.68,
                         "i": int(max(hi_i[-1], lo_i[-1])) + (len(df) - n),
-                        "note": "yatay destek %s" % fmt_num(float(np.mean([L[j] for j in lo_i[-3:]])), 2)})
+                        "note": "horizontal support %s" % fmt_num(float(np.mean([L[j] for j in lo_i[-3:]])), 2)})
     # ---- bayrak / flama (sert hareket + sıkışma)
     if n >= 45:
         imp = (C[-20] / C[-40] - 1) * 100 if C[-40] else 0.0
         rng = (H[-15:].max() - L[-15:].min()) / max(px, 1e-9) * 100
         if abs(imp) >= 8 and rng <= max(4.0, abs(imp) * 0.45):
-            out.append({"name": "Boğa bayrağı" if imp > 0 else "Ayı bayrağı",
+            out.append({"name": "Bull flag" if imp > 0 else "Bear flag",
                         "kind": "bull" if imp > 0 else "bear", "conf": 0.6,
                         "i": len(df) - 1,
-                        "note": "%%%s'lik hareket sonrası %%%s bantta sıkışma"
+                        "note": "%s%% move followed by a squeeze in a %s%% band"
                                 % (fmt_num(abs(imp), 1), fmt_num(rng, 1))})
     out.sort(key=lambda p: (-p["conf"], -p["i"]))
     return out[:int(limit)]
@@ -1174,9 +1173,9 @@ def chart_patterns(df, left=4, right=4, lookback=180, tol=0.035, limit=4):
 # A–Z notu — altı grup, kural tabanlı puanlama ve Türkçe yorum
 #   A = en güçlü alım · M/N = nötr · Z = en güçlü satım
 # ======================================================================
-GRADE_GROUPS = [("mom", "Momentum", 25), ("form", "Formasyon & uyumsuzluk", 20),
-                ("vol", "Hacim", 20), ("rr", "Risk / Ödül", 20),
-                ("trend", "Trend & ortalamalar", 10), ("volat", "Volatilite & konum", 5)]
+GRADE_GROUPS = [("mom", "Momentum", 25), ("form", "Pattern & divergence", 20),
+                ("vol", "Volume", 20), ("rr", "Risk / Reward", 20),
+                ("trend", "Trend & averages", 10), ("volat", "Volatility & position", 5)]
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
@@ -1192,20 +1191,20 @@ def _g_momentum(df):
     if _ok(r):
         dr = (r - r5) if _ok(r5) else 0.0
         if r >= 70:
-            s, t = 68, "RSI %s — güçlü ama aşırı alım bölgesinde, geri çekilme riski var" % _f(r, 1)
+            s, t = 68, "RSI %s — strong but overbought, risk of a pullback" % _f(r, 1)
         elif r >= 58:
-            s, t = 90, "RSI %s — momentum alıcıda" % _f(r, 1)
+            s, t = 90, "RSI %s — buyers have the momentum" % _f(r, 1)
         elif r >= 50:
-            s, t = 66, "RSI %s — 50'nin hafif üstünde" % _f(r, 1)
+            s, t = 66, "RSI %s — slightly above 50" % _f(r, 1)
         elif r >= 42:
-            s, t = 40, "RSI %s — 50'nin altında, momentum zayıf" % _f(r, 1)
+            s, t = 40, "RSI %s — below 50, momentum weak" % _f(r, 1)
         elif r > 30:
-            s, t = 24, "RSI %s — satıcı baskın" % _f(r, 1)
+            s, t = 24, "RSI %s — sellers dominate" % _f(r, 1)
         else:
-            s, t = 38, "RSI %s — aşırı satım, tepki yükselişi olabilir" % _f(r, 1)
+            s, t = 38, "RSI %s — oversold, a relief bounce is possible" % _f(r, 1)
         s = min(100, max(0, s + (6 if dr > 4 else -6 if dr < -4 else 0)))
         parts.append((s, 1.1))
-        why.append(t + (" ve son 5 barda yükseliyor" if dr > 4 else " ve son 5 barda zayıflıyor" if dr < -4 else ""))
+        why.append(t + (" and rising over the last 5 bars" if dr > 4 else " and weakening over the last 5 bars" if dr < -4 else ""))
     line, sig, hist = macd(close)
     h, hp = _last(hist), _last(hist.shift(1))
     if _ok(h):
@@ -1215,12 +1214,12 @@ def _g_momentum(df):
                       and np.sign(hv[-k]) != np.sign(hv[-k - 1])), None)
         if h > 0:
             s = 92 if rising else 68
-            t = "MACD histogramı pozitif ve %s" % ("genişliyor" if rising else "daralıyor")
+            t = "MACD histogram positive and %s" % ("widening" if rising else "narrowing")
         else:
             s = 34 if rising else 10
-            t = "MACD histogramı negatif ve %s" % ("toparlıyor" if rising else "derinleşiyor")
+            t = "MACD histogram negative and %s" % ("recovering" if rising else "deepening")
         if cross is not None and cross <= 5:
-            t += " · %d bar önce yön değiştirdi" % cross
+            t += " · turned %d bars ago" % cross
             s = min(100, s + 6) if h > 0 else max(0, s - 6)
         parts.append((s, 1.2))
         why.append(t)
@@ -1228,17 +1227,17 @@ def _g_momentum(df):
     kk, dd = _last(k_s), _last(d_s)
     if _ok(kk) and _ok(dd):
         if kk > 80:
-            s, t = 48, "Stokastik %s — aşırı alım" % _f(kk, 0)
+            s, t = 48, "Stochastic %s — overbought" % _f(kk, 0)
         elif kk < 20:
-            s, t = 52, "Stokastik %s — aşırı satım" % _f(kk, 0)
+            s, t = 52, "Stochastic %s — oversold" % _f(kk, 0)
         elif kk > dd:
-            s, t = 82, "Stokastik %s, sinyalin üstünde" % _f(kk, 0)
+            s, t = 82, "Stochastic %s, above its signal" % _f(kk, 0)
         else:
-            s, t = 28, "Stokastik %s, sinyalin altında" % _f(kk, 0)
+            s, t = 28, "Stochastic %s, below its signal" % _f(kk, 0)
         parts.append((s, 0.8))
         why.append(t)
     if not parts:
-        return 50.0, ["Momentum için yeterli bar yok"]
+        return 50.0, ["Not enough bars for momentum"]
     tot = sum(w for _, w in parts)
     return sum(s * w for s, w in parts) / tot, why
 
@@ -1260,14 +1259,14 @@ def _g_form(df, patterns=None, div_list=None):
     fresh = [d for d in div_list if n - 1 - int(d.get("i2", 0)) <= 12]
     for d in fresh:
         kind = DIV_KINDS.get(d.get("kind"), ("", ""))[1]
-        label = DIV_KINDS.get(d.get("kind"), ("Uyumsuzluk", ""))[0]
+        label = DIV_KINDS.get(d.get("kind"), ("Divergence", ""))[0]
         if kind == "bull":
             bull += 0.55
         elif kind == "bear":
             bear += 0.55
-        why.append("%s — RSI ile fiyat ayrışıyor" % label)
+        why.append("%s — RSI and price are diverging" % label)
     if not pats and not fresh:
-        return 50.0, ["Belirgin formasyon ya da uyumsuzluk yok"]
+        return 50.0, ["No clear pattern or divergence"]
     net = (bull - bear) / max(1.0, bull + bear)
     return 50 + net * 46, why
 
@@ -1279,19 +1278,19 @@ def _g_volume(df):
     if _ok(rv):
         if rv >= 1.5:
             s = 90 if up >= 0 else 14
-            why.append("Hacim ortalamanın %sx üstünde ve bar %s" % (_f(rv, 1), "yükseliş" if up >= 0 else "düşüş"))
+            why.append("Volume %sx above average, %s bar" % (_f(rv, 1), "up" if up >= 0 else "down"))
         elif rv >= 1.0:
             s = 68 if up >= 0 else 34
-            why.append("Hacim ortalamanın hafif üstünde (%sx)" % _f(rv, 1))
+            why.append("Volume slightly above average (%sx)" % _f(rv, 1))
         else:
             s = 44
-            why.append("Hacim ortalamanın altında (%sx) — hareketin teyidi zayıf" % _f(rv, 1))
+            why.append("Volume below average (%sx) — weak confirmation of the move" % _f(rv, 1))
         parts.append((s, 1.2))
     m = _last(mfi(df, 14))
     if _ok(m):
         s = 88 if m >= 60 else 68 if m >= 50 else 34 if m >= 40 else 16
         parts.append((s, 1.0))
-        why.append("Para akışı (MFI) %s" % _f(m, 0))
+        why.append("Money flow (MFI) %s" % _f(m, 0))
     o = obv(df)
     if len(o) > 25:
         ov = o.to_numpy(float)[-21:]
@@ -1300,9 +1299,9 @@ def _g_volume(df):
         rr = sl / base
         s = 86 if rr > 0.25 else 64 if rr > 0.02 else 36 if rr > -0.25 else 14
         parts.append((s, 0.9))
-        why.append("OBV son 20 barda %s" % ("yükseliyor" if rr > 0.02 else "düşüyor" if rr < -0.02 else "yatay"))
+        why.append("OBV %s over the last 20 bars" % ("rising" if rr > 0.02 else "falling" if rr < -0.02 else "flat"))
     if not parts:
-        return 50.0, ["Hacim verisi yok"]
+        return 50.0, ["No volume data"]
     tot = sum(w for _, w in parts)
     return sum(s * w for s, w in parts) / tot, why
 
@@ -1315,7 +1314,7 @@ def _g_rr(df, zones=None):
     levels_up, levels_dn = [], []
     for z in zones or []:
         mid = (z["lo"] + z["hi"]) / 2
-        (levels_up if mid > px else levels_dn).append((mid, z.get("pct", 50), z.get("label", "bant")))
+        (levels_up if mid > px else levels_dn).append((mid, z.get("pct", 50), z.get("label", "band")))
     for p in (50, 200):
         v = _last(sma(df["Close"], p))
         if _ok(v):
@@ -1324,14 +1323,14 @@ def _g_rr(df, zones=None):
     if not levels_up:
         hh = float(df["High"].tail(252).max())
         if hh > px * 1.004:
-            levels_up.append((hh, 50, "52 haftalık zirve"))
-            notes.append("Üstte pivot bandı kalmadı; hedef 52 haftalık zirve")
+            levels_up.append((hh, 50, "52-week high"))
+            notes.append("No pivot band left above; target is the 52-week high")
         else:
-            levels_up.append((px + 2.5 * a, 50, "ATR hedefi"))
-            notes.append("Fiyat zirvede, üstte engel yok — hedef 2,5×ATR")
+            levels_up.append((px + 2.5 * a, 50, "ATR target"))
+            notes.append("Price at its high, no resistance above — target 2.5×ATR")
     if not levels_dn:
-        levels_dn.append((px - 2.0 * a, 50, "ATR stopu"))
-        notes.append("Altta kayıtlı destek yok — stop 2×ATR")
+        levels_dn.append((px - 2.0 * a, 50, "ATR stop"))
+        notes.append("No recorded support below — stop 2×ATR")
     res = min(levels_up, key=lambda x: x[0])
     sup = max(levels_dn, key=lambda x: x[0])
     rew = max(0.0, (res[0] - px) / px * 100)
@@ -1340,10 +1339,10 @@ def _g_rr(df, zones=None):
     # Stop 0,5×ATR'den dar olamaz: gürültü stopu düşürmesin, R/R şişmesin
     risk = max(raw_risk, 0.5 * atr_pct)
     rr = min(10.0, rew / risk) if risk > 0.02 else 0.0
-    why.append("Üstte %s %s (+%%%s), altta %s %s (−%%%s)"
+    why.append("Above %s %s (+%s%%), below %s %s (−%s%%)"
                % (res[2], _f(res[0]), _f(rew, 1), sup[2], _f(sup[0]), _f(raw_risk, 1)))
     if risk > raw_risk + 0.01:
-        notes.append("Destek %s%% uzakta; stop gürültüye takılmasın diye 0,5×ATR (%%%s) tabanına çekildi"
+        notes.append("Support is %s%% away; the stop was pulled to a 0.5×ATR (%s%%) floor so noise doesn't trigger it"
                      % (_f(raw_risk, 1), _f(risk, 1)))
     if rr >= 2.5:
         s = 95
@@ -1357,7 +1356,7 @@ def _g_rr(df, zones=None):
         s = 34
     else:
         s = 14
-    why.append("Risk/ödül 1 : %s%s" % (_f(rr, 2), "+" if rr >= 10 else ""))
+    why.append("Risk/reward 1 : %s%s" % (_f(rr, 2), "+" if rr >= 10 else ""))
     return float(s), why + notes
 
 
@@ -1374,27 +1373,27 @@ def _g_trend(df):
         rev = all(ms[have[i]] <= ms[have[i + 1]] for i in range(len(have) - 1))
         if order and len(have) >= 3:
             s = min(100, s + 12)
-            why.append("Ortalamalar mükemmel dizilişte (20>50>100>200)")
+            why.append("Averages in perfect alignment (20>50>100>200)")
         elif rev and len(have) >= 3:
             s = max(0, s - 12)
-            why.append("Ortalamalar düşüş dizilişinde (20<50<100<200)")
-        why.append("Fiyat %d/%d hareketli ortalamanın üstünde" % (above, len(have)))
+            why.append("Averages in downtrend alignment (20<50<100<200)")
+        why.append("Price above %d/%d moving averages" % (above, len(have)))
         parts.append((s, 1.3))
     try:
         _, sd = supertrend(df, 10, 3.0)
         v = int(sd.iloc[-1])
         parts.append((84 if v > 0 else 16, 1.0))
-        why.append("Supertrend %s" % ("yukarı" if v > 0 else "aşağı"))
+        why.append("Supertrend %s" % ("up" if v > 0 else "down"))
     except Exception:
         pass
     ax, pdi, mdi = adx(df, 14)
     av = _last(ax)
     if _ok(av):
-        why.append("ADX %s — trend %s" % (_f(av, 0), "güçlü" if av >= 25 else "zayıf/yatay"))
+        why.append("ADX %s — trend %s" % (_f(av, 0), "strong" if av >= 25 else "weak/flat"))
         if av < 18 and parts:
             parts = [(50 + (s - 50) * 0.55, w) for s, w in parts]
     if not parts:
-        return 50.0, ["Trend için yeterli bar yok"]
+        return 50.0, ["Not enough bars for trend"]
     tot = sum(w for _, w in parts)
     return sum(s * w for s, w in parts) / tot, why
 
@@ -1406,15 +1405,15 @@ def _g_volat(df):
     b = _last(boll_pctb(close, 20, 2.0))
     if _ok(b):
         if b > 1:
-            s, t = 38, "Bollinger üst bandının dışında — aşırı uzama"
+            s, t = 38, "Outside the upper Bollinger band — overextended"
         elif b >= 0.55:
-            s, t = 82, "Bollinger bandının üst yarısında (%%B %s)" % _f(b * 100, 0)
+            s, t = 82, "In the upper half of the Bollinger band (%%B %s)" % _f(b * 100, 0)
         elif b >= 0.45:
-            s, t = 58, "Bollinger ortasında"
+            s, t = 58, "Mid Bollinger"
         elif b >= 0:
-            s, t = 34, "Bollinger bandının alt yarısında (%%B %s)" % _f(b * 100, 0)
+            s, t = 34, "In the lower half of the Bollinger band (%%B %s)" % _f(b * 100, 0)
         else:
-            s, t = 46, "Bollinger alt bandının dışında — tepki gelebilir"
+            s, t = 46, "Outside the lower Bollinger band — a bounce may come"
         parts.append((s, 1.0))
         why.append(t)
     a = _last(atr(df, 14))
@@ -1423,14 +1422,14 @@ def _g_volat(df):
         ext = (px - s20) / a
         if abs(ext) > 3:
             parts.append((40 if ext > 0 else 50, 0.8))
-            why.append("Fiyat 20 günlük ortalamadan %s ATR uzakta — geri çekilme olası" % _f(abs(ext), 1))
+            why.append("Price is %s ATR away from its 20-day average — a pullback is likely" % _f(abs(ext), 1))
         else:
             parts.append((70 if ext > 0 else 46, 0.8))
     if len(df) > 60:
         lo, hi = float(df["Low"].tail(252).min()), float(df["High"].tail(252).max())
         if hi > lo:
             pos = (px - lo) / (hi - lo) * 100
-            why.append("Son 1 yıllık aralığın %%%s seviyesinde" % _f(pos, 0))
+            why.append("At %s%% of its 1-year range" % _f(pos, 0))
             parts.append((min(100, max(0, pos * 0.8 + 10)), 0.7))
     if not parts:
         return 50.0, []
@@ -1438,7 +1437,7 @@ def _g_volat(df):
     return sum(s * w for s, w in parts) / tot, why
 
 
-def grade(df, zones=None, tf_name="günlük"):
+def grade(df, zones=None, tf_name="daily"):
     """Altı grubu puanlar, 0–100 skoru A–Z harfine çevirir ve Türkçe yorum üretir."""
     if df is None or len(df) < 30:
         return None
@@ -1462,19 +1461,19 @@ def grade(df, zones=None, tf_name="günlük"):
     li = min(25, max(0, li))
     letter = LETTERS[li]
     if li <= 3:
-        action, tone = "Güçlü Al", "bull"
+        action, tone = "Strong Buy", "bull"
     elif li <= 8:
-        action, tone = "Al", "bull"
+        action, tone = "Buy", "bull"
     elif li <= 11:
-        action, tone = "Zayıf Al", "bull"
+        action, tone = "Weak Buy", "bull"
     elif li <= 14:
-        action, tone = "Nötr", "flat"
+        action, tone = "Neutral", "flat"
     elif li <= 17:
-        action, tone = "Zayıf Sat", "bear"
+        action, tone = "Weak Sell", "bear"
     elif li <= 22:
-        action, tone = "Sat", "bear"
+        action, tone = "Sell", "bear"
     else:
-        action, tone = "Güçlü Sat", "bear"
+        action, tone = "Strong Sell", "bear"
     return {"score": round(score, 1), "letter": letter, "action": action, "tone": tone,
             "groups": groups, "patterns": pats, "tf": tf_name,
             "text": _grade_text(df, groups, letter, action, score, tf_name, pats)}
@@ -1487,8 +1486,8 @@ def _grade_text(df, groups, letter, action, score, tf_name, pats):
     out = []
     top = max(groups, key=lambda g: g["score"])
     bot = min(groups, key=lambda g: g["score"])
-    out.append("%s zaman diliminde %s puanla **%s** notu veriyorum — %s."
-               % (tf_name.capitalize(), _f(score, 0), letter, action.lower()))
+    out.append("On the %s timeframe, with %s points, I rate it **%s** — %s."
+               % (tf_name, _f(score, 0), letter, action.lower()))
     mom, trend = gd["mom"], gd["trend"]
     lead = []
     if mom["reasons"]:
@@ -1496,20 +1495,20 @@ def _grade_text(df, groups, letter, action, score, tf_name, pats):
     if trend["reasons"]:
         lead.append(trend["reasons"][-1] if len(trend["reasons"]) > 1 else trend["reasons"][0])
     if lead:
-        out.append("Tabloyu kuran şey: " + "; ".join(lead) + ".")
+        out.append("What drives the picture: " + "; ".join(lead) + ".")
     if gd["form"]["reasons"] and pats:
         bits = [p["name"].lower() + ((" (" + p["note"] + ")") if p.get("note") else "") for p in pats[:2]]
-        out.append("Formasyon tarafında " + ", ".join(bits) + " görünüyor.")
+        out.append("Patterns: " + ", ".join(bits) + ".")
     elif gd["form"]["reasons"]:
         out.append(gd["form"]["reasons"][0] + ".")
     if gd["vol"]["reasons"]:
         out.append(gd["vol"]["reasons"][0] + ".")
     if gd["rr"]["reasons"]:
         out.append(" ".join(r.rstrip(".") + "." for r in gd["rr"]["reasons"][:2]))
-    out.append("En güçlü taraf %s (%s/100), en zayıf taraf %s (%s/100). Son fiyat %s."
+    out.append("Strongest side %s (%s/100), weakest side %s (%s/100). Last price %s."
                % (top["name"].lower(), _f(top["score"], 0), bot["name"].lower(), _f(bot["score"], 0), _f(px)))
     if gd["volat"]["reasons"]:
-        out.append("Risk notu: " + gd["volat"]["reasons"][0] + ".")
+        out.append("Risk note: " + gd["volat"]["reasons"][0] + ".")
     return " ".join(out)
 
 
@@ -1518,10 +1517,10 @@ def _grade_text(df, groups, letter, action, score, tf_name, pats):
 #   Hepsi pivot noktaları üzerinden çalışır; her biri kırılacak SEVİYEYİ döndürür,
 #   böylece 15 dakikalık teyit ve stop/hedef planı aynı seviyeyi kullanabilir.
 # ======================================================================
-SETUP_NAMES = {"triangle_sym": "Simetrik üçgen", "triangle_asc": "Yükselen üçgen",
-               "triangle_desc": "Alçalan üçgen", "rectangle": "Dikdörtgen (yatay kanal)",
-               "ladder": "Merdiven (yükselen zirve/dip)", "breakout": "Kırılım",
-               "breakdown": "Aşağı kırılım"}
+SETUP_NAMES = {"triangle_sym": "Symmetrical triangle", "triangle_asc": "Ascending triangle",
+               "triangle_desc": "Descending triangle", "rectangle": "Rectangle (horizontal channel)",
+               "ladder": "Staircase (higher highs/lows)", "breakout": "Breakout",
+               "breakdown": "Breakdown"}
 
 
 def _fit(xs, ys):
@@ -1611,7 +1610,7 @@ def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
                             "level": float(level), "lower": float(dn_line if kind == "bull" else up_line),
                             "state": st_, "bars_since": 0, "conf": round(min(1.0, conf), 2),
                             "vol_x": round(vx, 2), "start": int(min(hx[0], lx[0])) + (len(df) - n),
-                            "note": "bant %s%% daraldı" % fmt_num((1 - w1 / w0) * 100, 0)})
+                            "note": "band narrowed %s%%" % fmt_num((1 - w1 / w0) * 100, 0)})
 
     # ---------------- 2) DİKDÖRTGEN -------------------------------------------
     # Son tepeler birbirine, son dipler birbirine yakın → yatay sıkışma.
@@ -1635,7 +1634,7 @@ def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
                         "state": st_, "bars_since": 0, "conf": round(min(1.0, conf), 2),
                         "vol_x": round(vx, 2),
                         "start": int(min(hi_i[-len(hs)], lo_i[-len(ls)])) + (len(df) - n),
-                        "note": "%s – %s bandı, yükseklik %%%s"
+                        "note": "%s – %s band, height %s%%"
                                 % (fmt_num(bot, 2), fmt_num(top, 2), fmt_num(height * 100, 1))})
 
     # ---------------- 3) MERDİVEN ---------------------------------------------
@@ -1658,11 +1657,11 @@ def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
                         "level": level, "lower": float(ls[-1] if kind == "bull" else hs[-1]),
                         "state": st_, "bars_since": 0, "conf": round(min(1.0, conf), 2),
                         "vol_x": round(vx, 2), "start": int(min(hi_i[-3], lo_i[-3])) + (len(df) - n),
-                        "note": "üç basamakta %%%s" % fmt_num(abs(legs), 1)})
+                        "note": "in three steps %s%%" % fmt_num(abs(legs), 1)})
 
     # ---------------- 4) KIRILIM ----------------------------------------------
     # N barlık zirvenin ATR payıyla üstünde kapanış + hacim teyidi + güçlü kapanış yeri.
-    for N, tag in ((20, "20 günlük"), (55, "55 günlük")):
+    for N, tag in ((20, "20-day"), (55, "55-day")):
         if n < N + 6:
             continue
         prior_h = float(np.nanmax(H[-N - 1:-1]))
@@ -1679,19 +1678,19 @@ def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
             conf = 0.5 + (0.18 if vx >= 1.5 else 0.06 if vx >= 1.1 else -0.08) \
                 + (0.12 if cpos >= 0.65 else 0.0) + (0.1 if rng10 <= 4.5 else 0.0) \
                 + (0.08 if N == 55 else 0.0)
-            out.append({"key": "breakout", "name": "%s zirve kırılımı" % tag, "kind": "bull",
+            out.append({"key": "breakout", "name": "%s high breakout" % tag, "kind": "bull",
                         "level": prior_h, "lower": prior_l, "state": "breakout",
                         "bars_since": int(since), "conf": round(min(1.0, max(0.15, conf)), 2),
                         "vol_x": round(vx, 2), "start": int(n - N - 1) + (len(df) - n),
-                        "note": "%s zirvesi %s aşıldı · hacim %sx%s"
+                        "note": "%s high %s cleared · volume %sx%s"
                                 % (tag, fmt_num(prior_h, 2), fmt_num(vx, 1),
-                                   " · dar sıkışmadan" if rng10 <= 4.5 else "")})
+                                   " · from a tight squeeze" if rng10 <= 4.5 else "")})
             break
         if px < prior_l - 0.25 * a:
-            out.append({"key": "breakdown", "name": "%s dip kırılımı" % tag, "kind": "bear",
+            out.append({"key": "breakdown", "name": "%s low breakdown" % tag, "kind": "bear",
                         "level": prior_l, "lower": prior_h, "state": "breakout", "bars_since": 0,
                         "conf": 0.55, "vol_x": round(vx, 2), "start": int(n - N - 1) + (len(df) - n),
-                        "note": "%s dibi %s kırıldı" % (tag, fmt_num(prior_l, 2))})
+                        "note": "%s low %s broken" % (tag, fmt_num(prior_l, 2))})
             break
 
     out.sort(key=lambda p: (-(p["state"] == "breakout"), -p["conf"]))
@@ -1701,8 +1700,8 @@ def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
 def confirm_15m(df15, level, kind="bull", vol_n=20, window=26):
     """Günlük kırılımın 15 dakikalık grafikte tutup tutmadığı.
     teyitli = seviyenin üstünde + hacimli kesiş + EMA9>EMA21 · bekleniyor = zayıf · bozuldu = altına döndü."""
-    out = {"state": "veri yok", "ok": False, "vol_x": None, "bars_since": None,
-           "note": "15 dakikalık veri alınamadı", "last": None}
+    out = {"state": "no data", "ok": False, "vol_x": None, "bars_since": None,
+           "note": "Could not load 15-minute data", "last": None}
     if df15 is None or len(df15) < 12 or level is None or not _ok(level):
         return out
     c = df15["Close"].to_numpy(float)
@@ -1735,22 +1734,22 @@ def confirm_15m(df15, level, kind="bull", vol_n=20, window=26):
     out["vol_x"] = vx if vx is not None else last_vx
     strong = (vx is not None and vx >= 1.3) or (last_vx is not None and last_vx >= 1.3)
     if not above:
-        out["state"] = "bozuldu"
-        out["note"] = "15dk fiyat %s seviyesinin %s döndü" % (fmt_num(level, 2),
-                                                              "altına" if kind == "bull" else "üstüne")
+        out["state"] = "failed"
+        out["note"] = "15m price turned back through the %s level (%s)" % (fmt_num(level, 2),
+                                                              "below" if kind == "bull" else "above")
         return out
     if strong and aligned:
-        out["state"], out["ok"] = "teyitli", True
-        out["note"] = "15dk %s üstünde tutuyor · hacim %sx · EMA9>EMA21" \
+        out["state"], out["ok"] = "confirmed", True
+        out["note"] = "15m holding above %s · volume %sx · EMA9>EMA21" \
             % (fmt_num(level, 2), fmt_num(out["vol_x"] or 1, 1))
     else:
-        out["state"] = "bekleniyor"
+        out["state"] = "pending"
         eksik = []
         if not strong:
-            eksik.append("hacim zayıf")
+            eksik.append("volume weak")
         if not aligned:
-            eksik.append("EMA dizilimi henüz dönmedi")
-        out["note"] = "15dk seviyenin üstünde ama " + " ve ".join(eksik)
+            eksik.append("EMA alignment has not turned yet")
+        out["note"] = "15m above the level but " + " and ".join(eksik)
     return out
 
 
@@ -1770,42 +1769,42 @@ def swing_plan(df, zones, level=None, kind="bull", tp1_part=0.40):
     sup.sort(key=lambda z: -(z["lo"] + z["hi"]) / 2)
     res.sort(key=lambda z: (z["lo"] + z["hi"]) / 2)
     if kind == "bull":
-        cands = [("son günlük mum", last_low - 0.08 * a)]
+        cands = [("last daily candle", last_low - 0.08 * a)]
         if sup:
-            cands.append(("destek bandı", float(sup[0]["lo"]) - 0.08 * a))
+            cands.append(("support band", float(sup[0]["lo"]) - 0.08 * a))
         if level is not None and _ok(level):
-            cands.append(("kırılım seviyesi", float(level) - 0.5 * a))
+            cands.append(("breakout level", float(level) - 0.5 * a))
         name, stop = min(cands, key=lambda x: x[1])
         if px - stop > 3.2 * a:                       # çok geniş stop → ATR'ye çek
-            name, stop = "2×ATR (bantlar çok uzak)", px - 2.0 * a
+            name, stop = "2×ATR (bands too far)", px - 2.0 * a
         risk = max(px - stop, 0.15 * a)
-        t1_src = "direnç bandı"
+        t1_src = "resistance band"
         tp1 = float(res[0]["lo"]) if res else px + 2.0 * risk
         if not res:
-            t1_src = "2R hedefi"
+            t1_src = "2R target"
         if tp1 <= px + 0.35 * risk:                   # bant çok yakınsa bir sonrakine geç
             if len(res) > 1:
                 tp1 = float(res[1]["lo"])
             else:
-                tp1, t1_src = px + 2.0 * risk, "2R hedefi"
-        t2_src = "üstteki ikinci bant"
+                tp1, t1_src = px + 2.0 * risk, "2R target"
+        t2_src = "the second band above"
         nxt = [z for z in res if float(z["lo"]) > tp1 * 1.001]
         tp2 = float(nxt[0]["lo"]) if nxt else px + 3.5 * risk
         if not nxt:
-            t2_src = "3,5R hedefi"
+            t2_src = "3.5R target"
     else:
-        cands = [("son günlük mum", last_high + 0.08 * a)]
+        cands = [("last daily candle", last_high + 0.08 * a)]
         if res:
-            cands.append(("direnç bandı", float(res[0]["hi"]) + 0.08 * a))
+            cands.append(("resistance band", float(res[0]["hi"]) + 0.08 * a))
         name, stop = max(cands, key=lambda x: x[1])
         if stop - px > 3.2 * a:
-            name, stop = "2×ATR (bantlar çok uzak)", px + 2.0 * a
+            name, stop = "2×ATR (bands too far)", px + 2.0 * a
         risk = max(stop - px, 0.15 * a)
         tp1 = float(sup[0]["hi"]) if sup else px - 2.0 * risk
-        t1_src = "destek bandı" if sup else "2R hedefi"
+        t1_src = "support band" if sup else "2R target"
         nxt = [z for z in sup if float(z["hi"]) < tp1 * 0.999]
         tp2 = float(nxt[0]["hi"]) if nxt else px - 3.5 * risk
-        t2_src = "alttaki ikinci bant" if nxt else "3,5R hedefi"
+        t2_src = "the second band below" if nxt else "3.5R target"
     rr1 = abs(tp1 - px) / risk if risk > 0 else 0.0
     rr2 = abs(tp2 - px) / risk if risk > 0 else 0.0
     part = float(min(0.9, max(0.1, tp1_part)))
@@ -1814,8 +1813,8 @@ def swing_plan(df, zones, level=None, kind="bull", tp1_part=0.40):
             "rr1": round(rr1, 2), "rr2": round(rr2, 2), "atr": round(float(a), 4),
             "stop_src": name, "tp1_src": t1_src, "tp2_src": t2_src,
             "part1": part, "part2": round(1 - part, 2),
-            "rule": ("TP1'de %%%d sat, kalan %%%d trendi takip etsin; TP1 görüldükten sonra "
-                     "kalanın stopu TP1 (%s) seviyesine çekilir."
+            "rule": ("Sell %d%% at TP1 and let the remaining %d%% ride the trend; once TP1 is hit "
+                     "the stop on the rest moves up to TP1 (%s)."
                      % (round(part * 100), round((1 - part) * 100), fmt_num(tp1, 2)))}
 
 
@@ -1837,7 +1836,7 @@ AI_FILTER = {
     "tp1_part": 0.40,        # TP1'de satılacak oran
 }
 AI_STATE_PTS = {"breakout": 20.0, "retest": 12.0, "forming": 5.0}
-AI_C15_PTS = {"teyitli": 20.0, "bekleniyor": 8.0, "veri yok": 6.0, "bozuldu": 0.0}
+AI_C15_PTS = {"confirmed": 20.0, "pending": 8.0, "no data": 6.0, "failed": 0.0}
 
 
 def ai_cfg(over=None):
@@ -1872,14 +1871,14 @@ def ai_regime(idx, n=50):
 def ai_prefilter(snap, cfg=None):
     """Anlık görüntüde ucuz filtreler; hacme göre azalan sırada döndürür."""
     c = ai_cfg(cfg)
-    steps = {"evren": 0, "fiyat": 0, "degisim": 0, "piyasa_degeri": 0, "capless": True}
+    steps = {"evren": 0, "price": 0, "degisim": 0, "piyasa_degeri": 0, "capless": True}
     if snap is None or len(snap) == 0:
         return snap, steps
     capless = bool((getattr(snap, "attrs", None) or {}).get("capless"))
     d = snap.copy()
     steps["evren"] = len(d)
     d = d[d["last"].astype(float) >= c["min_price"]]
-    steps["fiyat"] = len(d)
+    steps["price"] = len(d)
     d = d[d["change_pct"].astype(float) > c["min_change"]]
     steps["degisim"] = len(d)
     if not capless:
@@ -1936,7 +1935,7 @@ def ai_fresh_breakout(r, max_bars=1):
         return False
     if int(b.get("bars_since") or 0) > max_bars:
         return False
-    return bool(r.get("ema_ok")) and bool(c15 and c15.get("state") in ("teyitli", "bekleniyor"))
+    return bool(r.get("ema_ok")) and bool(c15 and c15.get("state") in ("confirmed", "pending"))
 
 
 def ai_apply_15m(r, c15):
@@ -1956,15 +1955,15 @@ def ai_summary(r):
     b, p, c = r.get("best"), r.get("plan"), r.get("c15")
     bits = []
     if b:
-        durum = {"breakout": "kırılım gerçekleşti", "retest": "seviyeyi geri test ediyor",
-                 "forming": "henüz oluşuyor"}.get(b["state"], b["state"])
+        durum = {"breakout": "breakout happened", "retest": "retesting the level",
+                 "forming": "still forming"}.get(b["state"], b["state"])
         bits.append("%s — %s (%s)" % (b["name"], durum, b["note"]))
     else:
-        bits.append("Net bir formasyon yok, yalnızca trend ve hacim şartlarını geçti")
+        bits.append("No clear pattern, it only passed the trend and volume conditions")
     if c:
-        bits.append("15 dakikalık teyit: %s — %s" % (c["state"], c["note"]))
+        bits.append("15-minute confirmation: %s — %s" % (c["state"], c["note"]))
     if p:
-        bits.append("Giriş %s · stop %s (%s, −%%%s) · TP1 %s (%s, R/R 1:%s)"
+        bits.append("Entry %s · stop %s (%s, −%s%%) · TP1 %s (%s, R/R 1:%s)"
                     % (fmt_num(p["entry"], 2), fmt_num(p["stop"], 2), p["stop_src"],
                        fmt_num(p["risk_pct"], 1), fmt_num(p["tp1"], 2), p["tp1_src"],
                        fmt_num(p["rr1"], 2)))
@@ -1988,6 +1987,10 @@ INC_ROWS = {
     "pretax": ("Pretax Income",),
     "shares": ("Diluted Average Shares", "Basic Average Shares"),
     "eps": ("Diluted EPS", "Basic EPS"),
+    "rnd": ("Research And Development", "Research Development"),
+    "da_inc": ("Reconciled Depreciation", "Depreciation And Amortization In Income Statement",
+               "Depreciation Amortization Depletion Income Statement"),
+    "tax_rate": ("Tax Rate For Calcs",),
 }
 BAL_ROWS = {
     "assets": ("Total Assets",),
@@ -1999,6 +2002,9 @@ BAL_ROWS = {
     "debt": ("Total Debt", "Long Term Debt"),
     "retained": ("Retained Earnings",),
     "working_cap": ("Working Capital",),
+    "deferred_rev": ("Current Deferred Revenue", "Deferred Revenue Current", "Deferred Revenue"),
+    "deferred_rev_nc": ("Non Current Deferred Revenue", "Non Current Deferred Liabilities"),
+    "shares_out": ("Ordinary Shares Number", "Share Issued"),
 }
 CF_ROWS = {
     "ocf": ("Operating Cash Flow", "Total Cash From Operating Activities"),
@@ -2006,6 +2012,8 @@ CF_ROWS = {
     "fcf_rep": ("Free Cash Flow",),
     "buyback": ("Repurchase Of Capital Stock",),
     "dividends_paid": ("Cash Dividends Paid", "Common Stock Dividend Paid"),
+    "da_cf": ("Depreciation And Amortization", "Depreciation Amortization Depletion"),
+    "sbc": ("Stock Based Compensation",),
 }
 
 
@@ -2061,7 +2069,7 @@ def financials(stmts, years=5):
     n = len(cols)
     if n < 2:
         return None
-    f = {"n": n, "years": [int(pd.Timestamp(c).year) for c in cols]}
+    f = {"n": n, "years": [int(pd.Timestamp(c).year) for c in cols], "dates": [pd.Timestamp(c) for c in cols]}
     for k, names in INC_ROWS.items():
         f[k] = _vals(_row(inc, *names), n)
     for k, names in BAL_ROWS.items():
@@ -2081,6 +2089,10 @@ def financials(stmts, years=5):
     f["roa"] = [_d(x, a) * 100 for x, a in zip(f["net_income"], f["assets"])]
     if not any(v == v for v in f["eps"]):       # EPS yoksa net kâr / hisse adedi
         f["eps"] = [_d(x, s) for x, s in zip(f["net_income"], f["shares"])]
+    # amortisman: önce nakit akışı tablosu, yoksa gelir tablosu, o da yoksa FAVÖK − FVÖK
+    f["da"] = [a if a == a else (b if b == b else ((e - o) if (e == e and o == o and e > o) else NAN))
+               for a, b, e, o in zip(f["da_cf"], f["da_inc"], f["ebitda"], f["op_income"])]
+    f["shares"] = [s_ if s_ == s_ else so for s_, so in zip(f["shares"], f["shares_out"])]
     return f
 
 
@@ -2146,24 +2158,24 @@ def piotroski(f):
     cur_now, cur_prev = _d(f["cur_assets"][i], f["cur_liab"][i]), _d(f["cur_assets"][j], f["cur_liab"][j])
     turn_now, turn_prev = _d(f["revenue"][i], f["assets"][i]), _d(f["revenue"][j], f["assets"][j])
     checks = [
-        ("Net kâr pozitif", roa_now == roa_now and roa_now > 0, "Aktif kârlılığı %s" % fmt_num(roa_now * 100, 1)),
-        ("Faaliyet nakit akışı pozitif", f["ocf"][i] == f["ocf"][i] and f["ocf"][i] > 0, ""),
-        ("Aktif kârlılığı artıyor", roa_now == roa_now and roa_prev == roa_prev and roa_now > roa_prev, ""),
-        ("Nakit akışı kârdan büyük", (f["ocf"][i] == f["ocf"][i] and f["net_income"][i] == f["net_income"][i]
-                                      and f["ocf"][i] > f["net_income"][i]), "kazanç kalitesi"),
-        ("Borç/aktif düşüyor", lev_now == lev_now and lev_prev == lev_prev and lev_now <= lev_prev, ""),
-        ("Cari oran artıyor", cur_now == cur_now and cur_prev == cur_prev and cur_now > cur_prev,
-         "Cari oran %s" % fmt_num(cur_now, 2)),
-        ("Hisse adedi artmıyor", (f["shares"][i] == f["shares"][i] and f["shares"][j] == f["shares"][j]
+        ("Net income positive", roa_now == roa_now and roa_now > 0, "Return on assets %s" % fmt_num(roa_now * 100, 1)),
+        ("Operating cash flow positive", f["ocf"][i] == f["ocf"][i] and f["ocf"][i] > 0, ""),
+        ("Return on assets rising", roa_now == roa_now and roa_prev == roa_prev and roa_now > roa_prev, ""),
+        ("Cash flow above earnings", (f["ocf"][i] == f["ocf"][i] and f["net_income"][i] == f["net_income"][i]
+                                      and f["ocf"][i] > f["net_income"][i]), "earnings quality"),
+        ("Debt/assets falling", lev_now == lev_now and lev_prev == lev_prev and lev_now <= lev_prev, ""),
+        ("Current ratio rising", cur_now == cur_now and cur_prev == cur_prev and cur_now > cur_prev,
+         "Current ratio %s" % fmt_num(cur_now, 2)),
+        ("Share count not rising", (f["shares"][i] == f["shares"][i] and f["shares"][j] == f["shares"][j]
                                   and f["shares"][i] <= f["shares"][j] * 1.002),
-         ("%%%s yıllık" % fmt_num(_d(f["shares"][i], f["shares"][j]) * 100 - 100, 1))
-         if (f["shares"][i] == f["shares"][i] and f["shares"][j] == f["shares"][j]) else "veri yok"),
-        ("Brüt marj artıyor", (f["gross_m"][i] == f["gross_m"][i] and f["gross_m"][j] == f["gross_m"][j]
+         ("%s%% annual" % fmt_num(_d(f["shares"][i], f["shares"][j]) * 100 - 100, 1))
+         if (f["shares"][i] == f["shares"][i] and f["shares"][j] == f["shares"][j]) else "no data"),
+        ("Gross margin rising", (f["gross_m"][i] == f["gross_m"][i] and f["gross_m"][j] == f["gross_m"][j]
                                and f["gross_m"][i] > f["gross_m"][j]), ""),
-        ("Aktif devir hızı artıyor", turn_now == turn_now and turn_prev == turn_prev and turn_now > turn_prev, ""),
+        ("Asset turnover rising", turn_now == turn_now and turn_prev == turn_prev and turn_now > turn_prev, ""),
     ]
     score = sum(1 for _, ok, _ in checks if ok)
-    label = "Güçlü" if score >= 7 else "Orta" if score >= 4 else "Zayıf"
+    label = "Strong" if score >= 7 else "Moderate" if score >= 4 else "Weak"
     return {"score": score, "max": 9, "label": label,
             "checks": [{"t": t, "ok": bool(ok), "note": nt} for t, ok, nt in checks]}
 
@@ -2189,10 +2201,10 @@ def altman_z(f, market_cap):
         return None
     z = (1.2 * (x1 if x1 == x1 else 0) + 1.4 * (x2 if x2 == x2 else 0) + 3.3 * (x3 if x3 == x3 else 0)
          + 0.6 * (x4 if x4 == x4 else 0) + 1.0 * (x5 if x5 == x5 else 0))
-    zone = "Güvenli" if z >= 2.99 else "Gri bölge" if z >= 1.81 else "Riskli"
+    zone = "Safe" if z >= 2.99 else "Grey zone" if z >= 1.81 else "Risky"
     return {"z": round(float(z), 2), "zone": zone,
-            "parts": {"İşletme sermayesi/Aktif": x1, "Dağıtılmamış kâr/Aktif": x2,
-                      "FVÖK/Aktif": x3, "Piyasa değeri/Borç": x4, "Satışlar/Aktif": x5}}
+            "parts": {"Working capital/Assets": x1, "Retained earnings/Assets": x2,
+                      "EBIT/Assets": x3, "Market cap/Debt": x4, "Sales/Assets": x5}}
 
 
 def consistency(f):
@@ -2205,27 +2217,27 @@ def consistency(f):
             return None
         return sum(1 for a, b in zip(v, v[1:]) if b >= a * (1 - tol)), len(v) - 1
     rows = []
-    for key, name, tol in (("revenue", "Ciro her yıl arttı", 0.0), ("net_income", "Net kâr her yıl arttı", 0.0),
-                           ("fcf", "Serbest nakit akışı her yıl arttı", 0.0),
-                           ("gross_m", "Brüt marj korundu", 0.05), ("equity", "Özkaynak büyüdü", 0.0)):
+    for key, name, tol in (("revenue", "Revenue grew every year", 0.0), ("net_income", "Net income grew every year", 0.0),
+                           ("fcf", "Free cash flow grew every year", 0.0),
+                           ("gross_m", "Gross margin held", 0.05), ("equity", "Equity grew", 0.0)):
         r = _up(key, tol)
         if r:
             rows.append({"t": name, "hit": r[0], "of": r[1], "ok": r[0] == r[1]})
     pos_fcf = sum(1 for x in f["fcf"] if x == x and x > 0)
     n_fcf = sum(1 for x in f["fcf"] if x == x)
     if n_fcf:
-        rows.append({"t": "Serbest nakit akışı hep pozitif", "hit": pos_fcf, "of": n_fcf,
+        rows.append({"t": "Free cash flow always positive", "hit": pos_fcf, "of": n_fcf,
                      "ok": pos_fcf == n_fcf})
     pos_ni = sum(1 for x in f["net_income"] if x == x and x > 0)
     n_ni = sum(1 for x in f["net_income"] if x == x)
     if n_ni:
-        rows.append({"t": "Net kâr hep pozitif", "hit": pos_ni, "of": n_ni, "ok": pos_ni == n_ni})
+        rows.append({"t": "Net income always positive", "hit": pos_ni, "of": n_ni, "ok": pos_ni == n_ni})
     hit = sum(r["hit"] for r in rows)
     of = sum(r["of"] for r in rows)
     pct = _d(hit, of) * 100
     return {"rows": rows, "hit": hit, "of": of, "pct": pct,
-            "label": "Çok istikrarlı" if pct >= 85 else "İstikrarlı" if pct >= 65
-            else "Dalgalı" if pct >= 45 else "Düzensiz"}
+            "label": "Very stable" if pct >= 85 else "Stable" if pct >= 65
+            else "Choppy" if pct >= 45 else "Irregular"}
 
 
 # ---------------------------------------------------------------- değerleme
@@ -2352,7 +2364,7 @@ def value_path(price, eps_last, est=None, g_lt=8.0, years=5, cyclical=False, pea
     eps_rows = []
     for i in range(years + 1):
         eps_rows.append({"fy": fy0 + i, "label": f"FY{fy0 + i}",
-                         "src": "analist" if i < len(est) else "model",
+                         "src": "analyst" if i < len(est) else "model",
                          "eps": {key: round(eps[key][i], 3) for key in SCEN_KEYS},
                          "growth": round((eps["base"][i] / (eps["base"][i - 1] if i else eps_last) - 1) * 100, 1)
                          if (eps["base"][i - 1] if i else eps_last) > 0 else None})
@@ -2431,7 +2443,7 @@ def reverse_dcf(price, fcf0, shares, years=10, discount=9.0, terminal=2.5, net_d
 
 
 def pe_band(px, f, pe_now=None):
-    """Hissenin kendi tarihsel F/K aralığı ve bugünkü konumu (yüzdelik dilim)."""
+    """Hissenin kendi tarihsel P/E aralığı ve bugünkü konumu (yüzdelik dilim)."""
     if px is None or len(px) < 200 or not f:
         return None
     close = px["Close"] if "Close" in getattr(px, "columns", []) else px
@@ -2523,8 +2535,8 @@ def cyclicality(px, bench=None, f=None, days=756):
     pts += 2 if (ev is not None and ev >= 45) else 1 if (ev is not None and ev >= 22) else 0
     pts += 1 if out.get("rev_down_years", 0) >= 1 else 0
     out["score"] = pts
-    out["label"] = "Yüksek döngüsel" if pts >= 5 else "Döngüsel" if pts >= 3 else \
-        "Karma" if pts >= 2 else "Savunmacı"
+    out["label"] = "Highly cyclical" if pts >= 5 else "Cyclical" if pts >= 3 else \
+        "Mixed" if pts >= 2 else "Defensive"
     return out
 
 
@@ -2550,9 +2562,9 @@ def seasonality(px, years=10):
 
 
 # ---------------------------------------------------------------- değer notu
-VALUE_GROUPS = [("peer", "Rakiplere göre çarpan", 25), ("own", "Kendi geçmişine göre", 15),
-                ("growth", "Büyüme", 20), ("quality", "Bilanço & kalite", 20),
-                ("cash", "Nakit üretimi", 20)]
+VALUE_GROUPS = [("peer", "Multiples vs peers", 25), ("own", "Versus own history", 15),
+                ("growth", "Growth", 20), ("quality", "Balance sheet & quality", 20),
+                ("cash", "Cash generation", 20)]
 
 
 def _score_band(v, bands, default=50.0):
@@ -2571,36 +2583,36 @@ def value_grade(ratios, peers_med, band, fscore, zs, cons, cyc, analyst=None, de
     g, why = {}, {}
     # 1) rakiplere göre
     w, prem_txt = [], []
-    for key, label in (("pe", "F/K"), ("fwd_pe", "İleri F/K"), ("ev_ebitda", "FD/FAVÖK")):
+    for key, label in (("pe", "P/E"), ("fwd_pe", "Fwd P/E"), ("ev_ebitda", "EV/EBITDA")):
         mine = d.get(key) if key in ("pe", "fwd_pe") else ratios.get("ev_ebitda")
         med = (peers_med or {}).get(key)
         if _ok(mine) and _ok(med) and med > 0 and mine > 0:
             prem = (mine / med - 1) * 100
             w.append(_score_band(prem, [(-30, 95), (-15, 85), (0, 72), (15, 55), (35, 35), (60, 20), (1e9, 8)]))
             prem_txt.append("%s %s (%s vs %s)" % (
-                label, ("%%%s primli" % fmt_num(prem, 0)) if prem >= 0 else ("%%%s iskontolu" % fmt_num(-prem, 0)),
+                label, ("%s%% premium" % fmt_num(prem, 0)) if prem >= 0 else ("%s%% discount" % fmt_num(-prem, 0)),
                 fmt_num(mine, 1), fmt_num(med, 1)))
     g["peer"] = float(np.mean(w)) if w else 50.0
-    why["peer"] = prem_txt or ["Rakip çarpanları hesaplanamadı"]
+    why["peer"] = prem_txt or ["Peer multiples could not be calculated"]
     # 2) kendi geçmişi
     if band and band.get("pctile") is not None:
         p = band["pctile"]
         g["own"] = _score_band(p, [(10, 95), (25, 85), (45, 70), (60, 55), (75, 38), (90, 20), (1e9, 8)])
-        why["own"] = ["Son yılların F/K dağılımında %%%s dilimde (medyan %s)" %
+        why["own"] = ["At the %sth percentile of its recent P/E distribution (median %s)" %
                       (fmt_num(p, 0), fmt_num(band["median"], 1))]
     else:
-        g["own"], why["own"] = 50.0, ["Tarihsel F/K bandı hesaplanamadı"]
+        g["own"], why["own"] = 50.0, ["Historical P/E band could not be calculated"]
     # 3) büyüme
     gr = []
-    for v, lbl in ((ratios.get("rev_cagr"), "Ciro"), (ratios.get("eps_cagr"), "EPS")):
+    for v, lbl in ((ratios.get("rev_cagr"), "Revenue"), (ratios.get("eps_cagr"), "EPS")):
         if _ok(v):
             gr.append(_score_band(v, [(0, 12), (5, 35), (10, 58), (18, 78), (30, 92), (1e9, 96)]))
     fg = (analyst or {}).get("growth_next_y")
     if _ok(fg):
         gr.append(_score_band(fg, [(0, 15), (5, 38), (12, 62), (22, 82), (1e9, 93)]))
     g["growth"] = float(np.mean(gr)) if gr else 50.0
-    why["growth"] = ["Ciro %s yıllık %%%s, EPS %%%s" %
-                     ("bileşik", fmt_num(ratios.get("rev_cagr"), 1), fmt_num(ratios.get("eps_cagr"), 1))]
+    why["growth"] = ["Revenue %s annual %s%%, EPS %s%%" %
+                     ("compound", fmt_num(ratios.get("rev_cagr"), 1), fmt_num(ratios.get("eps_cagr"), 1))]
     # 4) kalite
     q = []
     if fscore:
@@ -2611,30 +2623,30 @@ def value_grade(ratios, peers_med, band, fscore, zs, cons, cyc, analyst=None, de
         why.setdefault("quality", []).append("Altman Z %s (%s)" % (fmt_num(zs["z"], 2), zs["zone"]))
     if cons:
         q.append(cons["pct"])
-        why.setdefault("quality", []).append("Süreklilik %s/%s kontrol" % (cons["hit"], cons["of"]))
+        why.setdefault("quality", []).append("Consistency %s/%s checks" % (cons["hit"], cons["of"]))
     de = ratios.get("debt_equity")
     if _ok(de):
         q.append(_score_band(de, [(0.3, 92), (0.8, 75), (1.5, 55), (2.5, 35), (1e9, 15)]))
     g["quality"] = float(np.mean(q)) if q else 50.0
-    why.setdefault("quality", ["Yeterli bilanço verisi yok"])
+    why.setdefault("quality", ["Not enough balance-sheet data"])
     # 5) nakit üretimi
     c = []
     fy = ratios.get("fcf_yield")
     if _ok(fy):
         c.append(_score_band(-fy, [(-8, 95), (-5, 85), (-3, 70), (-1.5, 52), (0, 32), (1e9, 12)]))
-        why.setdefault("cash", []).append("Serbest nakit akışı getirisi %%%s" % fmt_num(fy, 1))
+        why.setdefault("cash", []).append("Free cash flow yield %s%%" % fmt_num(fy, 1))
     ac = ratios.get("accrual")
     if _ok(ac):
         c.append(_score_band(-ac, [(-1.2, 92), (-0.9, 78), (-0.6, 58), (-0.3, 35), (1e9, 15)]))
-        why.setdefault("cash", []).append("Nakit akışı/net kâr %s" % fmt_num(ac, 2))
+        why.setdefault("cash", []).append("Cash flow/net income %s" % fmt_num(ac, 2))
     sc = ratios.get("share_chg")
     if _ok(sc):
         c.append(_score_band(sc, [(-5, 92), (-1, 78), (1, 60), (4, 38), (1e9, 18)]))
         why.setdefault("cash", []).append(
-            "Hisse adedi tablolar boyunca %%%s %s"
-            % (fmt_num(abs(sc), 1), "arttı — seyreltme" if sc > 0 else "azaldı — geri alım"))
+            "Share count changed %s%% across the statements (%s)"
+            % (fmt_num(abs(sc), 1), "rose — dilution" if sc > 0 else "fell — buybacks"))
     g["cash"] = float(np.mean(c)) if c else 50.0
-    why.setdefault("cash", ["Nakit akışı verisi yok"])
+    why.setdefault("cash", ["No cash-flow data"])
 
     groups, total = [], 0.0
     for key, name, wgt in VALUE_GROUPS:
@@ -2646,21 +2658,21 @@ def value_grade(ratios, peers_med, band, fscore, zs, cons, cyc, analyst=None, de
     li = min(25, max(0, int(round((100 - score) / 4.0))))
     letter = LETTERS[li]
     if li <= 3:
-        action, tone = "Belirgin iskontolu", "bull"
+        action, tone = "Clearly discounted", "bull"
     elif li <= 8:
-        action, tone = "Makul fiyatlı", "bull"
+        action, tone = "Reasonably priced", "bull"
     elif li <= 14:
-        action, tone = "Adil değerinde", "flat"
+        action, tone = "Fairly valued", "flat"
     elif li <= 19:
-        action, tone = "Primli", "bear"
+        action, tone = "Premium", "bear"
     else:
-        action, tone = "Belirgin pahalı", "bear"
+        action, tone = "Clearly expensive", "bear"
     return {"score": round(score, 1), "letter": letter, "action": action, "tone": tone, "groups": groups}
 
 
 # ---------------------------------------------------------------- grafik serileri
 def pe_series(px, f, step=3):
-    """Zaman içinde F/K: her günün fiyatı, o mali yılın EPS'ine bölünür."""
+    """Zaman içinde P/E: her günün fiyatı, o mali yılın EPS'ine bölünür."""
     if px is None or not f or len(px) < 60:
         return None
     eps = {y: e for y, e in zip(f["years"], f["eps"]) if _ok(e) and e > 0}
@@ -2690,6 +2702,1044 @@ def altman_contrib(zs):
     """Altman Z'nin bileşen katkıları (ağırlıklı)."""
     if not zs:
         return []
-    w = {"İşletme sermayesi/Aktif": 1.2, "Dağıtılmamış kâr/Aktif": 1.4, "FVÖK/Aktif": 3.3,
-         "Piyasa değeri/Borç": 0.6, "Satışlar/Aktif": 1.0}
+    w = {"Working capital/Assets": 1.2, "Retained earnings/Assets": 1.4, "EBIT/Assets": 3.3,
+         "Market cap/Debt": 0.6, "Sales/Assets": 1.0}
     return [(k, round(w[k] * v, 3)) for k, v in zs["parts"].items() if _ok(v)]
+
+
+# ======================================================================
+# v3.6 — ŞİRKET TİPİNE GÖRE DEĞERLEME
+#   Döngüsel & emtia · Defansif · Büyüme teknolojisi · Sermaye yoğun & donanım
+#   Sınıflandırma: elle derlenmiş rakip grubu → Yahoo endüstrisi → finansal ölçütler.
+#   İskonto oranı CAPM: risksiz faiz (ABD 10Y) + beta × hisse risk primi.
+# ======================================================================
+VTYPES = {"cyclical": "Cyclical & Commodity", "defensive": "Defensive",
+          "growth": "Growth Tech", "capital": "Capital Intensive & Hardware"}
+VTYPE_ORDER = ["cyclical", "defensive", "growth", "capital"]
+ERP = 5.0          # hisse senedi risk primi (%)
+G_TERM = 3.0       # uzun vade nominal büyüme (%)
+
+_IND_TYPE = {
+    # döngüsel & emtia
+    "steel": "cyclical", "aluminum": "cyclical", "copper": "cyclical", "other industrial metals & mining": "cyclical",
+    "gold": "cyclical", "silver": "cyclical", "other precious metals & mining": "cyclical", "coking coal": "cyclical",
+    "thermal coal": "cyclical", "uranium": "cyclical", "chemicals": "cyclical", "specialty chemicals": "cyclical",
+    "agricultural inputs": "cyclical", "airlines": "cyclical", "marine shipping": "cyclical", "trucking": "cyclical",
+    "building materials": "cyclical", "residential construction": "cyclical", "paper & paper products": "cyclical",
+    "lumber & wood production": "cyclical", "farm & heavy construction machinery": "cyclical",
+    "recreational vehicles": "cyclical", "auto manufacturers": "cyclical", "auto parts": "cyclical",
+    "auto & truck dealerships": "cyclical", "oil & gas e&p": "cyclical", "oil & gas integrated": "cyclical",
+    "oil & gas refining & marketing": "cyclical", "oil & gas equipment & services": "cyclical",
+    "oil & gas drilling": "cyclical", "banks - diversified": "cyclical", "banks - regional": "cyclical",
+    "metal fabrication": "cyclical", "resorts & casinos": "cyclical", "lodging": "cyclical",
+    "travel services": "cyclical", "leisure": "cyclical", "engineering & construction": "cyclical",
+    # defansif
+    "household & personal products": "defensive", "beverages - non-alcoholic": "defensive",
+    "beverages - brewers": "defensive", "beverages - wineries & distilleries": "defensive",
+    "packaged foods": "defensive", "confectioners": "defensive", "tobacco": "defensive",
+    "discount stores": "defensive", "grocery stores": "defensive", "food distribution": "defensive",
+    "drug manufacturers - general": "defensive", "drug manufacturers - specialty & generic": "defensive",
+    "healthcare plans": "defensive", "medical distribution": "defensive",
+    "medical instruments & supplies": "defensive", "pharmaceutical retailers": "defensive",
+    "waste management": "defensive", "oil & gas midstream": "defensive",
+    "financial data & stock exchanges": "defensive", "credit services": "defensive",
+    # büyüme teknolojisi
+    "software - application": "growth", "software - infrastructure": "growth",
+    "internet content & information": "growth", "internet retail": "growth",
+    "electronic gaming & multimedia": "growth", "biotechnology": "growth", "health information services": "growth",
+    "information technology services": "growth",
+    # sermaye yoğun & donanım
+    "semiconductors": "capital", "semiconductor equipment & materials": "capital",
+    "communication equipment": "capital", "computer hardware": "capital", "consumer electronics": "capital",
+    "electronic components": "capital", "scientific & technical instruments": "capital",
+    "telecom services": "capital", "aerospace & defense": "capital", "electrical equipment & parts": "capital",
+    "specialty industrial machinery": "capital", "solar": "capital",
+}
+_IND_PREFIX = [("utilities", "defensive"), ("reit", "defensive"), ("insurance", "defensive"),
+               ("beverages", "defensive"), ("drug manufacturers", "defensive"), ("oil & gas", "cyclical"),
+               ("banks", "cyclical"), ("software", "growth"), ("semiconductor", "capital"), ("auto", "cyclical")]
+_TARGET_FCF_M = {"software - application": 28.0, "software - infrastructure": 28.0,
+                 "internet content & information": 25.0, "electronic gaming & multimedia": 22.0,
+                 "biotechnology": 25.0, "health information services": 20.0, "internet retail": 12.0,
+                 "credit services": 30.0, "information technology services": 15.0}
+
+
+def _med(xs):
+    v = [float(x) for x in xs if _ok(x)]
+    return float(np.median(v)) if v else NAN
+
+
+def _pctl(xs, q):
+    v = [float(x) for x in xs if _ok(x)]
+    return float(np.percentile(v, q)) if v else NAN
+
+
+def _last_ok(xs):
+    for x in reversed(list(xs or [])):
+        if _ok(x):
+            return float(x)
+    return NAN
+
+
+def _industry_type(industry, sector=""):
+    ind = str(industry or "").strip().lower()
+    if ind in _IND_TYPE:
+        return _IND_TYPE[ind]
+    for pre, t in _IND_PREFIX:
+        if ind.startswith(pre):
+            return t
+    sec = str(sector or "").strip().lower()
+    if sec in ("utilities", "consumer defensive"):
+        return "defensive"
+    if sec in ("energy", "basic materials"):
+        return "cyclical"
+    return None
+
+
+def class_metrics(f, r, an, d, cyc):
+    """Sınıflandırmada kullanılan ölçütler (yüzde)."""
+    m = {}
+    rev = f["revenue"] if f else []
+    yo = (r or {}).get("rev_yoy") or []
+    g_last = _last_ok(yo)
+    g_fwd = (an or {}).get("rev_growth_0y", NAN)
+    m["growth"] = g_fwd if _ok(g_fwd) else (g_last if _ok(g_last) else (r or {}).get("rev_cagr", NAN))
+    m["growth_hist"] = (r or {}).get("rev_cagr", NAN)
+    if f:
+        cx = [abs(c) / v * 100 for c, v in zip(f["capex"], rev) if _ok(c) and _ok(v) and v > 0]
+        rd = [x / v * 100 for x, v in zip(f["rnd"], rev) if _ok(x) and _ok(v) and v > 0]
+        om = [x for x in f["op_m"] if _ok(x)]
+        m["capex_int"] = float(np.mean(cx)) if cx else NAN
+        m["rnd_int"] = float(np.mean(rd)) if rd else 0.0
+        m["margin_swing"] = (max(om) - min(om)) if len(om) >= 2 else NAN
+        m["eps_neg_years"] = sum(1 for e in f["eps"] if _ok(e) and e < 0)
+        m["rev_down_years"] = sum(1 for x in yo if _ok(x) and x < -2)
+    else:
+        m.update(capex_int=NAN, rnd_int=0.0, margin_swing=NAN, eps_neg_years=0, rev_down_years=0)
+    b = (d or {}).get("beta")
+    m["beta"] = float(b) if _ok(b) else (cyc or {}).get("beta", NAN)
+    dy = (d or {}).get("div_yield")
+    m["div_yield"] = float(dy) if _ok(dy) else 0.0
+    m["cyc_label"] = (cyc or {}).get("label", "")
+    return m
+
+
+def _metric_scores(m, sector=""):
+    sec = str(sector or "").lower()
+    s = {k: 0.0 for k in VTYPE_ORDER}
+    g, cx, rd = m.get("growth"), m.get("capex_int"), m.get("rnd_int", 0.0)
+    if _ok(g):
+        s["growth"] += 3 if g >= 20 else 1 if g >= 12 else 0
+    s["growth"] += 1 if rd >= 12 else 0
+    if _ok(cx):
+        s["capital"] += 2 if cx >= 10 else 1 if cx >= 6 else 0
+    s["capital"] += 1 if sec in ("technology", "communication services", "industrials") else 0
+    s["cyclical"] += 1 if m.get("rev_down_years", 0) >= 1 else 0
+    s["cyclical"] += 1 if (_ok(m.get("margin_swing")) and m["margin_swing"] >= 12) else 0
+    s["cyclical"] += 1 if m.get("eps_neg_years", 0) >= 1 else 0
+    s["cyclical"] += 1 if (_ok(m.get("beta")) and m["beta"] >= 1.3) else 0
+    s["cyclical"] += 2 if m.get("cyc_label") in ("Cyclical", "Highly cyclical") else 0
+    s["defensive"] += 1 if (_ok(m.get("beta")) and m["beta"] < 0.85) else 0
+    s["defensive"] += 1 if m.get("div_yield", 0) >= 1.5 else 0
+    s["defensive"] += 2 if (m.get("rev_down_years", 0) == 0 and _ok(m.get("margin_swing"))
+                            and m["margin_swing"] < 6) else 0
+    s["defensive"] += 2 if sec in ("consumer defensive", "utilities", "healthcare") else 0
+    return s
+
+
+def classify_company(d, f, r, an, cyc, group=None):
+    """Değerleme tipi + gerekçe. group: md.peer_group() sonucu (elle derlenmiş, 'vtype' içerebilir)."""
+    d = d or {}
+    m = class_metrics(f, r, an, d, cyc)
+    scores = _metric_scores(m, d.get("sector"))
+    reasons, src, t = [], None, None
+    if group and group.get("vtype"):
+        t, src = group["vtype"], 'peer group "%s"' % group["name"]
+    if t is None:
+        t = _industry_type(d.get("industry"), d.get("sector"))
+        if t:
+            src = 'industry "%s"' % (d.get("industry") or d.get("sector"))
+    prior = t
+    if t == "defensive" and _ok(m["growth"]) and m["growth"] >= 25 and m["rnd_int"] >= 10:
+        t = "growth"
+        reasons.append("Revenue growth %s%% with R&D at %s%% of revenue — valued as growth, not as a "
+                       "defensive dividend payer" % (fmt_num(m["growth"], 0), fmt_num(m["rnd_int"], 0)))
+    if t == "defensive" and src and not src.startswith("peer group") and _ok(m["beta"]) and m["beta"] >= 1.5:
+        alt = max(VTYPE_ORDER, key=lambda k: (scores[k], -VTYPE_ORDER.index(k)))
+        if alt != "defensive" and scores[alt] >= 2:
+            reasons.append("Beta %s is too high for a defensive stock — classified by its financials as %s"
+                           % (fmt_num(m["beta"], 2), VTYPES[alt].lower()))
+            t = alt
+    if t == "growth" and _ok(m["growth"]) and m["growth"] < 10 and m["rnd_int"] < 8:
+        alt = "defensive" if (m["div_yield"] >= 1.0 and (not _ok(m["beta"]) or m["beta"] < 1.1)) else \
+            "capital" if (_ok(m["capex_int"]) and m["capex_int"] >= 10) else \
+            max(VTYPE_ORDER, key=lambda k: (scores[k] if k != "growth" else -1, -VTYPE_ORDER.index(k)))
+        if alt not in ("defensive", "capital") and scores.get(alt, 0) < 2:
+            alt = "growth"
+        if alt != "growth":
+            reasons.append("Growth below 10%% with little R&D — closer to %s" % VTYPES[alt].lower())
+            t = alt
+    if t == "cyclical" and src and src.startswith("industry") and m["rnd_int"] >= 10 and _ok(m["growth"]) \
+            and m["growth"] >= 10:
+        t = "growth"
+        reasons.append("A technology platform in a cyclical industry (R&D %s%% of revenue, growth %s%%)"
+                       % (fmt_num(m["rnd_int"], 0), fmt_num(m["growth"], 0)))
+    if t is None:
+        tie = ["growth", "capital", "cyclical", "defensive"]      # eşitlikte öncelik
+        t = max(VTYPE_ORDER, key=lambda k: (scores[k], -tie.index(k)))
+        src = "financial metrics"
+    best = max(scores.values())
+    if src and src.startswith("peer group"):
+        conf = "high"
+    elif prior and t == prior:
+        conf = "high" if scores[t] >= best - 1 else "medium"
+    else:
+        conf = "medium" if scores[t] - sorted(scores.values())[-2] >= 2 else "low"
+    facts = []
+    if d.get("industry"):
+        facts.append("Industry: %s" % d["industry"])
+    if _ok(m["growth"]):
+        facts.append("Revenue growth %s%%" % fmt_num(m["growth"], 1))
+    if _ok(m["capex_int"]):
+        facts.append("Capex %s%% of revenue" % fmt_num(m["capex_int"], 1))
+    if m["rnd_int"]:
+        facts.append("R&D %s%% of revenue" % fmt_num(m["rnd_int"], 1))
+    if _ok(m["beta"]):
+        facts.append("Beta %s" % fmt_num(m["beta"], 2))
+    if m["div_yield"]:
+        facts.append("Dividend yield %s%%" % fmt_num(m["div_yield"], 2))
+    if _ok(m["margin_swing"]):
+        facts.append("Operating margin range %s pts" % fmt_num(m["margin_swing"], 1))
+    if m["rev_down_years"]:
+        facts.append("Revenue fell in %d of the last years" % m["rev_down_years"])
+    return {"type": t, "label": VTYPES[t], "source": src or "financial metrics", "confidence": conf,
+            "reasons": reasons, "facts": facts, "scores": scores, "metrics": m}
+
+
+# ---------------------------------------------------------------- iskonto oranı
+def capm(beta, rf):
+    b = float(min(2.2, max(0.6, beta))) if _ok(beta) else 1.0
+    rf = float(rf) if _ok(rf) else 4.3
+    return {"rf": rf, "beta": b, "erp": ERP, "ke": rf + b * ERP}
+
+
+def wacc_calc(ke, mcap, debt, interest, rf=4.3, tax=21.0):
+    E = float(mcap) if _ok(mcap) and mcap > 0 else NAN
+    D = float(debt) if _ok(debt) and debt > 0 else 0.0
+    kd = abs(float(interest)) / D * 100 if (_ok(interest) and D > 0) else rf + 1.5
+    kd = float(min(rf + 6.0, max(rf + 0.5, kd)))
+    we = E / (E + D) if _ok(E) else 0.8
+    return {"kd": kd, "we": we, "wacc": we * ke + (1 - we) * kd * (1 - tax / 100.0), "tax": tax}
+
+
+def _shares(f, d):
+    s = _last_ok(f["shares"]) if f else NAN
+    if not _ok(s) and _ok((d or {}).get("market_cap")) and _ok((d or {}).get("last")) and d["last"] > 0:
+        s = d["market_cap"] / d["last"]
+    return s
+
+
+def _method(key, name, low, base, high, note, weight):
+    if not (_ok(base) and base > 0):
+        return None
+    lo = low if _ok(low) and low > 0 else base
+    hi = high if _ok(high) and high > 0 else base
+    lo, hi = min(lo, base, hi), max(lo, base, hi)
+    return {"key": key, "name": name, "low": round(float(lo), 2), "base": round(float(base), 2),
+            "high": round(float(hi), 2), "note": note, "weight": weight}
+
+
+def blend(methods, price=None, band=6.0):
+    """Ağırlıklı ortalama. Taban değeri fiyatın 1/band – band katı dışında kalan yöntem bozuk girdiye
+    işaret ettiği için harmana katılmaz (tabloda 'excluded' görünür)."""
+    for x in methods:
+        if x and _ok(price) and price > 0 and x.get("weight", 0) > 0:
+            x["excluded"] = not (price / band <= x["base"] <= price * band)
+    ms = [x for x in methods if x and x.get("weight", 0) > 0 and not x.get("excluded")]
+    if not ms:
+        return None
+    w = sum(x["weight"] for x in ms)
+    val = sum(x["base"] * x["weight"] for x in ms) / w
+    lo = sum(x["low"] * x["weight"] for x in ms) / w
+    hi = sum(x["high"] * x["weight"] for x in ms) / w
+    out = {"value": round(val, 2), "low": round(lo, 2), "high": round(hi, 2),
+           "weights": {x["name"]: round(x["weight"] / w * 100) for x in ms}}
+    if _ok(price) and price > 0:
+        out["upside"] = round((val / price - 1) * 100, 1)
+    return out
+
+
+def _year_end_price(px, date):
+    """Verilen tarihteki (ya da öncesindeki son) kapanış."""
+    if px is None or not len(px):
+        return NAN
+    c = px["Close"] if "Close" in getattr(px, "columns", []) else px
+    idx = pd.DatetimeIndex(c.index)
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    dt = pd.Timestamp(date)
+    if dt.tzinfo is not None:
+        dt = dt.tz_localize(None)
+    v = c.to_numpy(float)[idx <= dt]
+    return float(v[-1]) if len(v) and idx[0] <= dt else NAN
+
+
+# ---------------------------------------------------------------- 1) döngüsel & emtia
+def normalized_earnings(f, an, shares, ke):
+    """Döngü ortası kâr: elde olan yılların medyan net marjı × trend ciro × döngü ortası P/E.
+    Trend ciro, ciro serisine (geçmiş + analist tahmini) oturtulan log-doğrusal eğrinin bu mali yıldaki
+    değeridir — döngünün tepesini ve dibini düzler, yapısal büyümeyi korur."""
+    if not f or not _ok(shares) or shares <= 0:
+        return None
+    pts = [(i, x) for i, x in enumerate(f["revenue"]) if _ok(x) and x > 0]
+    mar = [x for x in f["net_m"] if _ok(x)]
+    est = []
+    for k, (e, rv) in enumerate(zip((an or {}).get("fy") or [], (an or {}).get("rev_fy") or [])):
+        if _ok(e.get("avg")) and _ok(rv.get("avg")) and rv["avg"] > 0:
+            mm = e["avg"] * shares / rv["avg"] * 100
+            if -60 <= mm <= 80:
+                mar.append(mm)
+                est.append(e["label"])
+            pts.append((f["n"] + k, rv["avg"]))
+    if len(mar) < 3 or len(pts) < 2:
+        return None
+    xs = np.array([p_[0] for p_ in pts], float)
+    ys = np.log(np.array([p_[1] for p_ in pts], float))
+    b1, b0 = np.polyfit(xs, ys, 1)
+    t_now = f["n"] if (an or {}).get("rev_fy") else f["n"] - 1
+    rev_tr = float(np.exp(b0 + b1 * t_now))
+    pe_mid = float(min(20.0, max(8.0, 100.0 / max(1.0, ke - G_TERM))))
+    eps_of = lambda mm: mm / 100.0 * rev_tr / shares   # noqa: E731
+    base = eps_of(_med(mar)) * pe_mid
+    low = eps_of(_pctl(mar, 25)) * pe_mid * 0.85
+    high = eps_of(_pctl(mar, 75)) * pe_mid * 1.15
+    note = ("Median net margin %s%% over %d years%s × trend revenue %s (log-linear fit, %s%%/yr) → mid-cycle "
+            "EPS %s × %sx" % (fmt_num(_med(mar), 1), len(mar), (" (incl. %s estimates)" % ", ".join(est)) if est
+                               else "", _bn(rev_tr), fmt_num((np.exp(b1) - 1) * 100, 1),
+                               fmt_num(eps_of(_med(mar)), 2), fmt_num(pe_mid, 1)))
+    return _method("norm", "Mid-cycle earnings", low, base, high, note, 0.35)
+
+
+def pb_roe(f, ke, price=None, px=None):
+    """Döngü ortası özkaynak kârlılığına göre hak edilen P/B × defter değeri; geçmiş P/B konumu."""
+    if not f:
+        return None, None
+    eq, sh = _last_ok(f["equity"]), _last_ok(f["shares"])
+    if not (_ok(eq) and _ok(sh)) or eq <= 0 or sh <= 0:
+        return None, None
+    bvps = eq / sh
+    roes = [x for x in f["roe"] if _ok(x)]
+    if len(roes) < 2:
+        return None, None
+    jpb = lambda roe: float(min(8.0, max(0.3, (roe - G_TERM) / max(1.0, ke - G_TERM))))   # noqa: E731
+    roe_mid = _med(roes)
+    m = _method("pb", "P/B vs mid-cycle ROE", bvps * jpb(_pctl(roes, 25)), bvps * jpb(roe_mid),
+                bvps * jpb(_pctl(roes, 75)),
+                "Book value %s/share × justified P/B %sx (median ROE %s%%, cost of equity %s%%)" % (
+                    fmt_num(bvps, 2), fmt_num(jpb(roe_mid), 2), fmt_num(roe_mid, 1), fmt_num(ke, 1)), 0.25)
+    hist = []
+    for dt, e, s_ in zip(f["dates"], f["equity"], f["shares"]):
+        p = _year_end_price(px, dt)
+        if _ok(p) and _ok(e) and _ok(s_) and e > 0 and s_ > 0:
+            hist.append(p / (e / s_))
+    pos = None
+    if _ok(price) and price > 0:
+        cur = price / bvps
+        pos = {"current": round(cur, 2), "hist": [round(x, 2) for x in hist],
+               "pctile": round(float(np.mean([x < cur for x in hist]) * 100), 0) if len(hist) >= 3 else None,
+               "bvps": round(bvps, 2)}
+    return m, pos
+
+
+def zigzag(close, thr):
+    """Fiyatın en az `thr` (oran) dönüş yaptığı onaylı tepe/dipler: [(tarih, fiyat, 'peak'|'trough')]."""
+    v = close.to_numpy(float)
+    idx = close.index
+    piv, mode = [], None
+    lo_i = hi_i = ext = 0
+    for i in range(1, len(v)):
+        if mode is None:
+            if v[i] < v[lo_i]:
+                lo_i = i
+            if v[i] > v[hi_i]:
+                hi_i = i
+            if v[i] >= v[lo_i] * (1 + thr):
+                piv.append((lo_i, "trough"))
+                mode, ext = "up", i
+            elif v[i] <= v[hi_i] * (1 - thr):
+                piv.append((hi_i, "peak"))
+                mode, ext = "down", i
+        elif mode == "up":
+            if v[i] > v[ext]:
+                ext = i
+            elif v[i] <= v[ext] * (1 - thr):
+                piv.append((ext, "peak"))
+                mode, ext = "down", i
+        else:
+            if v[i] < v[ext]:
+                ext = i
+            elif v[i] >= v[ext] * (1 + thr):
+                piv.append((ext, "trough"))
+                mode, ext = "up", i
+    return [(idx[i], float(v[i]), k) for i, k in piv]
+
+
+def _fy_end(an, fy):
+    """Mali yıl sonu tarihi (yaklaşık): analistin FY0 sonu + yıl farkı."""
+    end0 = (an or {}).get("fy0_end")
+    fy0 = (an or {}).get("fy0")
+    try:
+        if end0 and fy0:
+            return pd.Timestamp(end0) + pd.DateOffset(years=int(fy) - int(fy0))
+    except Exception:
+        pass
+    return pd.Timestamp(year=int(fy), month=12, day=31)
+
+
+def cycle_timing(px_long, f, an, today=None):
+    """Döngünün neresindeyiz, sıradaki tepe/dip ne zaman olabilir.
+
+    İki bağımsız tahmin birleştirilir:
+      1) Fiyat döngüsü — uzun geçmişteki tepe/dip aralarının medyan süresi (zigzag).
+      2) Kâr döngüsü — analist EPS büyüme patikası, marjın kendi aralığındaki yeri ve tahmin revizyonları.
+    Fiyat genelde kâr dönüşünden 3–9 ay önce döner.
+    """
+    if px_long is None or len(px_long) < 400:
+        return None
+    c = px_long["Close"].astype(float)
+    try:
+        c.index = c.index.tz_localize(None)
+    except (TypeError, AttributeError):
+        pass
+    w = c.resample("W-FRI").last().dropna()
+    if len(w) < 104:
+        return None
+    today = pd.Timestamp(today or w.index[-1])
+    vol = float(w.pct_change().std() * np.sqrt(52))
+    thr = float(min(0.45, max(0.25, 1.1 * vol)))
+    piv = zigzag(w, thr)
+    out = {"thr": round(thr * 100), "pivots": [(str(pd.Timestamp(t).date()), round(p, 2), k) for t, p, k in piv],
+           "evidence": []}
+    ups = [(piv[i + 1][0] - piv[i][0]).days for i in range(len(piv) - 1)
+           if piv[i][2] == "trough" and piv[i + 1][2] == "peak"]
+    downs = [(piv[i + 1][0] - piv[i][0]).days for i in range(len(piv) - 1)
+             if piv[i][2] == "peak" and piv[i + 1][2] == "trough"]
+    out["n_cycles"] = min(len(ups), len(downs))
+    out["med_up_days"] = int(np.median(ups)) if ups else None
+    out["med_down_days"] = int(np.median(downs)) if downs else None
+    # şu anki bacak
+    leg, last = None, None
+    if piv:
+        last = piv[-1]
+        leg = "up" if last[2] == "trough" else "down"
+        out["last_pivot"] = {"date": str(pd.Timestamp(last[0]).date()), "price": round(last[1], 2), "kind": last[2]}
+        out["elapsed_days"] = int((today - pd.Timestamp(last[0])).days)
+    out["leg"] = leg
+    durs = ups if leg == "up" else downs
+    win_px = None
+    if last is not None and durs:
+        med = float(np.median(durs))
+        lo, hi = (float(np.percentile(durs, 25)), float(np.percentile(durs, 75))) if len(durs) >= 3 \
+            else (med * 0.7, med * 1.3)
+        if hi - lo < 90:
+            half = max(45.0, 0.15 * med)
+            lo, hi = med - half, med + half
+        t0 = pd.Timestamp(last[0])
+        a, b = t0 + pd.Timedelta(days=lo), t0 + pd.Timedelta(days=hi)
+        if b < today:          # ortalamayı aşmış: önümüzdeki aylarda
+            a, b = today, today + pd.Timedelta(days=max(90, (hi - lo) / 2))
+        elif a < today:
+            a = today
+        win_px = (a, b)
+        out["progress"] = round(out["elapsed_days"] / med, 2) if med else None
+        out["evidence"].append(
+            "Price cycle: %s leg since %s (%d weeks). Past %s legs lasted a median %d weeks (%d cycles found, "
+            "swings of %d%%+)." % ("up" if leg == "up" else "down", out["last_pivot"]["date"],
+                                   out["elapsed_days"] // 7, "up" if leg == "up" else "down", int(med // 7),
+                                   len(durs), out["thr"]))
+    # kâr döngüsü
+    fys = (an or {}).get("fy") or []
+    g0 = fys[0].get("growth") if fys else None
+    g1 = fys[1].get("growth") if len(fys) > 1 else None
+    fy0 = fys[0]["fy"] if fys else None
+    e_turn = None
+    if g0 is not None and fy0:
+        if g0 > 0 and g1 is not None and g1 <= 0:
+            e_turn = ("peak", fy0)
+        elif g0 > 0 and g1 is not None and g1 < g0:
+            e_turn = ("peak", fy0 + 1 if g1 < max(15.0, g0 / 2) else fy0 + 2)
+        elif g0 > 0:
+            e_turn = ("peak", fy0 + 2)
+        elif g1 is not None and g1 > 0:
+            e_turn = ("trough", fy0)
+        else:
+            e_turn = ("trough", fy0 + 1)
+        out["evidence"].append("Analyst EPS growth: FY%s %s%s." % (
+            fy0, ("+" if g0 >= 0 else "") + fmt_num(g0, 0) + "%",
+            (", FY%s %s" % (fy0 + 1, ("+" if g1 >= 0 else "") + fmt_num(g1, 0) + "%")) if g1 is not None else ""))
+    om = [x for x in (f or {}).get("op_m", []) if _ok(x)]
+    mpos = None
+    if len(om) >= 3:
+        lo_m, hi_m = min(om), max(om)
+        mpos = (om[-1] - lo_m) / (hi_m - lo_m) * 100 if hi_m > lo_m else 50.0
+        out["margin_pos"] = round(mpos)
+        out["evidence"].append("Operating margin %s%% is at %d%% of its %d-year range (%s%% – %s%%)." % (
+            fmt_num(om[-1], 1), round(mpos), len(om), fmt_num(lo_m, 1), fmt_num(hi_m, 1)))
+    rv = (an or {}).get("revisions") or {}
+    r1 = rv.get("+1y", rv.get("0y"))
+    if _ok(r1):
+        out["revision_90d"] = round(r1, 1)
+        out["evidence"].append("Next-year EPS estimate revised %s%s%% over 90 days." % (
+            "+" if r1 >= 0 else "−", fmt_num(abs(r1), 1)))
+    win_e = None
+    if e_turn:
+        end = _fy_end(an, e_turn[1])
+        win_e = (end - pd.DateOffset(months=9), end - pd.DateOffset(months=3))
+        if win_e[1] < today:
+            win_e = (today, today + pd.DateOffset(months=6))
+        elif win_e[0] < today:
+            win_e = (today, win_e[1])
+        out["earnings_turn"] = {"kind": e_turn[0], "fy": int(e_turn[1])}
+    # aşama
+    prog = out.get("progress")
+    e_rising = g0 is not None and g0 > 0 and (g1 is None or g1 > 0)
+    late = (mpos is not None and mpos >= 80) or (g0 is not None and g1 is not None and 0 < g1 < g0 / 2) \
+        or (_ok(r1) and r1 < -5 and (g0 or 0) > 0) or (prog is not None and prog >= 0.85)
+    if leg == "up" or (leg is None and (g0 or 0) > 0):
+        phase = "Late upswing" if late else ("Early upswing" if (prog is not None and prog < 0.4 and
+                                                                   (mpos is None or mpos < 50)) else "Mid upswing")
+        nxt = "peak"
+    elif e_rising and (prog is None or prog < 0.5):
+        phase = "Early downswing — price leading earnings"
+        nxt = "trough"
+        out["evidence"].append("The price has turned down while analysts still expect earnings growth — "
+                               "markets usually start pricing an earnings peak 6–12 months ahead.")
+    else:
+        phase = "Bottoming" if ((prog is not None and prog >= 0.6) or (g1 is not None and g1 > 0)) else "Downswing"
+        nxt = "trough"
+    out["phase"], out["next_turn"] = phase, nxt
+    # pencereleri birleştir (fiyat penceresi kâr dönüşüyle aynı türdeyse)
+    wins = [w_ for w_ in (win_px, win_e if (e_turn and e_turn[0] == nxt) else None) if w_]
+    if wins:
+        if len(wins) == 2:
+            a, b = max(wins[0][0], wins[1][0]), min(wins[0][1], wins[1][1])
+            out["agree"] = a <= b
+        else:
+            a, b = wins[0]
+        if out.get("agree", True):     # örtüşmüyorsa tek tarih uydurmuyoruz — iki pencere ayrı gösterilir
+            out["window"] = (str(pd.Timestamp(a).date()), str(pd.Timestamp(b).date()))
+    out["window_price"] = tuple(str(pd.Timestamp(x).date()) for x in win_px) if win_px else None
+    out["window_earnings"] = tuple(str(pd.Timestamp(x).date()) for x in win_e) if win_e else None
+    n_sig = sum(1 for x in (win_px, win_e) if x) + (1 if mpos is not None else 0) + (1 if _ok(r1) else 0)
+    out["confidence"] = "medium" if (n_sig >= 3 and out.get("agree", True) and out["n_cycles"] >= 2) else "low"
+    return out
+
+
+# ---------------------------------------------------------------- 2) defansif
+def dividend_stats(divs, px, today=None):
+    """Hisse başı temettü geçmişi: son 12 ay, yıllık büyüme, art arda artış, verim bandı."""
+    if divs is None or len(divs) == 0:
+        return None
+    s = pd.Series(divs).astype(float)
+    try:
+        s.index = pd.DatetimeIndex(s.index).tz_localize(None)
+    except (TypeError, AttributeError):
+        s.index = pd.DatetimeIndex(s.index)
+    s = s[s > 0]
+    if s.empty:
+        return None
+    today = pd.Timestamp(today or pd.Timestamp.today().normalize())
+    d0 = float(s[s.index > today - pd.Timedelta(days=365)].sum())
+    annual = s.groupby(s.index.year).sum()
+    annual = annual[annual.index < today.year]
+    cagr5 = NAN
+    if len(annual) >= 3:
+        a = annual.tail(6)
+        k = len(a) - 1
+        if a.iloc[0] > 0 and k > 0:
+            cagr5 = ((a.iloc[-1] / a.iloc[0]) ** (1 / k) - 1) * 100
+    raises = int(sum(1 for i in range(1, len(annual)) if annual.iloc[i] > annual.iloc[i - 1] * 1.001))
+    out = {"d0": round(d0, 4), "cagr5": round(cagr5, 2) if _ok(cagr5) else NAN, "years": int(len(annual)),
+           "raises": raises, "annual": {int(k): round(float(v), 4) for k, v in annual.tail(10).items()}}
+    if px is not None and len(px) > 300:
+        c = px["Close"].astype(float)
+        try:
+            c.index = c.index.tz_localize(None)
+        except (TypeError, AttributeError):
+            pass
+        w = c.resample("W-FRI").last().dropna()
+        cum = s.cumsum()
+        ttm = []
+        for t, p in w.items():
+            got = cum[cum.index <= t]
+            old = cum[cum.index <= t - pd.Timedelta(days=365)]
+            dd = (got.iloc[-1] if len(got) else 0.0) - (old.iloc[-1] if len(old) else 0.0)
+            ttm.append(dd / p * 100 if p > 0 else NAN)
+        ys = pd.Series(ttm, index=w.index)
+        ys = ys[ys.index >= ys.index[0] + pd.Timedelta(days=365)]
+        ys = ys[ys > 0]
+        if len(ys) > 52:
+            out["yield_series"] = ys
+            out["y_now"] = round(float(ys.iloc[-1]), 2)
+            out["y_med"] = round(float(ys.median()), 2)
+            out["y_p25"] = round(float(ys.quantile(0.25)), 2)
+            out["y_p75"] = round(float(ys.quantile(0.75)), 2)
+    return out
+
+
+def ddm_two_stage(d0, g1, ke, years=5, g2=G_TERM):
+    if not (_ok(d0) and d0 > 0 and _ok(ke)):
+        return NAN
+    k = max(ke, g2 + 1.5) / 100.0
+    g1_, g2_ = g1 / 100.0, g2 / 100.0
+    pv, dv = 0.0, d0
+    for t in range(1, years + 1):
+        dv *= 1 + g1_
+        pv += dv / (1 + k) ** t
+    tv = dv * (1 + g2_) / (k - g2_)
+    return pv + tv / (1 + k) ** years
+
+
+def _trend(xs, n=2):
+    """Son n yılın ortalaması − önceki n yılın ortalaması."""
+    v = [x for x in xs if _ok(x)]
+    if len(v) < 3:
+        return NAN
+    n = min(n, len(v) // 2) or 1
+    return float(np.mean(v[-n:]) - np.mean(v[-2 * n:-n]))
+
+
+def _row_check(name, value, state, note=""):
+    return {"name": name, "value": value, "state": state, "note": note}
+
+
+def defensive_models(f, r, an, d, divst, band, ke, wacc, price):
+    ms, checks = [], []
+    sh = _shares(f, d)
+    eps_g = (an or {}).get("growth_0y", NAN)
+    if not _ok(eps_g):
+        eps_g = (r or {}).get("eps_cagr", NAN)
+    if divst and _ok(divst.get("d0")) and divst["d0"] > 0:
+        dg = divst.get("cagr5")
+        parts = [x for x in (dg, eps_g) if _ok(x)]
+        g1 = float(min(10.0, max(0.0, np.mean(parts)))) if parts else 4.0
+        d0 = divst["d0"]
+        ms.append(_method("ddm", "Dividend discount (2-stage)", ddm_two_stage(d0, g1, ke + 1.0),
+                          ddm_two_stage(d0, g1, ke), ddm_two_stage(d0, g1, ke - 1.0),
+                          "Dividend %s/share growing %s%%/yr for 5 years, then %s%%; cost of equity %s%% (±1 pt)"
+                          % (fmt_num(d0, 2), fmt_num(g1, 1), fmt_num(G_TERM, 1), fmt_num(ke, 1)), 0.30))
+        if divst.get("y_med"):
+            ms.append(_method("yield", "Dividend yield vs own history", d0 / (divst["y_p75"] / 100),
+                              d0 / (divst["y_med"] / 100), d0 / (divst["y_p25"] / 100),
+                              "Price at which today's dividend would yield its historical median %s%% "
+                              "(range %s%% – %s%%)" % (fmt_num(divst["y_med"], 2), fmt_num(divst["y_p25"], 2),
+                                                       fmt_num(divst["y_p75"], 2)), 0.20))
+    fe = NAN
+    fys = (an or {}).get("fy") or []
+    if fys and _ok(fys[0].get("avg")):
+        fe = fys[0]["avg"]
+    elif _ok((d or {}).get("eps")):
+        fe = d["eps"]
+    if band and _ok(fe) and fe > 0:
+        ms.append(_method("pe_hist", "P/E vs own history", fe * band["low"], fe * band["median"], fe * band["high"],
+                          "Forward EPS %s × historical P/E %sx (10th–90th pct %sx – %sx)" % (
+                              fmt_num(fe, 2), fmt_num(band["median"], 1), fmt_num(band["low"], 1),
+                              fmt_num(band["high"], 1)), 0.25))
+    if f:
+        fcf, nd = _last_ok(f["fcf"]), _last_ok(f["net_debt"])
+        g = (r or {}).get("rev_cagr", NAN)
+        g = float(min(8.0, max(0.0, g))) if _ok(g) else 3.0
+        if _ok(fcf) and fcf > 0 and _ok(sh):
+            v = [(dcf(fcf, sh, g, 10, w, G_TERM, nd if _ok(nd) else 0.0) or {}).get("value", NAN)
+                 for w in (wacc + 1, wacc, wacc - 1)]
+            ms.append(_method("dcf", "Free-cash-flow DCF", v[0], v[1], v[2],
+                              "FCF %s growing %s%% fading to %s%%, WACC %s%% (±1 pt)" % (
+                                  _bn(fcf), fmt_num(g, 1), fmt_num(G_TERM, 1), fmt_num(wacc, 1)), 0.25))
+    # kontroller: temettünün yanında büyüme, marj ve kâr
+    if f:
+        ry = (r or {}).get("rev_yoy") or []
+        rt = _trend(ry)
+        last_g = _last_ok(ry)
+        checks.append(_row_check("Revenue growth", "%s%% last yr" % fmt_num(last_g, 1) if _ok(last_g) else "—",
+                                 "good" if (_ok(rt) and rt > 0.5) else "bad" if (_ok(rt) and rt < -2) else "flat",
+                                 ("accelerating (%s pts)" % fmt_num(rt, 1)) if (_ok(rt) and rt > 0.5) else
+                                 ("slowing (%s pts)" % fmt_num(rt, 1)) if (_ok(rt) and rt < -0.5) else "steady"))
+        ey = (r or {}).get("eps_yoy") or []
+        et = _trend(ey)
+        checks.append(_row_check("EPS growth", "%s%% last yr" % fmt_num(_last_ok(ey), 1) if _ok(_last_ok(ey)) else "—",
+                                 "good" if (_ok(et) and et > 0.5) else "bad" if (_ok(et) and et < -3) else "flat",
+                                 (("analysts expect %s%% this year" % fmt_num(eps_g, 1)) if _ok(eps_g) else "")))
+        for key, lab in (("gross_m", "Gross margin"), ("op_m", "Operating margin"), ("net_m", "Net margin")):
+            v = [x for x in f[key] if _ok(x)]
+            if len(v) >= 2:
+                ch = v[-1] - v[0]
+                checks.append(_row_check(lab, "%s%%" % fmt_num(v[-1], 1),
+                                         "good" if ch > 0.5 else "bad" if ch < -1.5 else "flat",
+                                         "%s%s pts over %d yrs" % ("+" if ch >= 0 else "−", fmt_num(abs(ch), 1),
+                                                                   len(v) - 1)))
+        ni = [x for x in f["net_income"] if _ok(x)]
+        if len(ni) >= 3:
+            up = sum(1 for i in range(1, len(ni)) if ni[i] >= ni[i - 1])
+            checks.append(_row_check("Earnings consistency", "%d/%d yrs up" % (up, len(ni) - 1),
+                                     "good" if up >= len(ni) - 2 else "bad" if up <= (len(ni) - 1) / 2 else "flat",
+                                     "net income rose year over year"))
+        dp, nil, fcfl = _last_ok(f["dividends_paid"]), _last_ok(f["net_income"]), _last_ok(f["fcf"])
+        if _ok(dp) and dp != 0 and _ok(nil) and nil > 0:
+            pr = abs(dp) / nil * 100
+            checks.append(_row_check("Payout ratio", "%s%%" % fmt_num(pr, 0),
+                                     "good" if pr <= 65 else "bad" if pr > 90 else "flat",
+                                     "dividends ÷ net income"))
+            if _ok(fcfl) and fcfl > 0:
+                cv = fcfl / abs(dp)
+                checks.append(_row_check("Dividend cover (FCF)", "%sx" % fmt_num(cv, 2),
+                                         "good" if cv >= 1.3 else "bad" if cv < 1 else "flat",
+                                         "free cash flow ÷ dividends"))
+        nde = (r or {}).get("net_debt_ebitda", NAN)
+        if _ok(nde):
+            checks.append(_row_check("Net debt / EBITDA", "%sx" % fmt_num(nde, 2),
+                                     "good" if nde < 2 else "bad" if nde > 3.5 else "flat", ""))
+    if divst:
+        if _ok(divst.get("cagr5")):
+            checks.append(_row_check("Dividend growth", "%s%%/yr" % fmt_num(divst["cagr5"], 1),
+                                     "good" if divst["cagr5"] >= 4 else "bad" if divst["cagr5"] < 0 else "flat",
+                                     "raised in %d of %d years" % (divst["raises"], max(1, divst["years"] - 1))))
+    return ms, checks
+
+
+def _bn(x):
+    if not _ok(x):
+        return "—"
+    a = abs(x)
+    for dv, s_ in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+        if a >= dv:
+            return ("−" if x < 0 else "") + fmt_num(a / dv, 1) + s_
+    return fmt_num(x, 0)
+
+
+# ---------------------------------------------------------------- 3) büyüme teknolojisi
+def target_margin_dcf(rev0, g0, m0, m_t, wacc, shares, net_debt=0.0, years=10, g_term=G_TERM, m_year=7, dil=0.0):
+    """Ciro azalan hızla büyür, serbest nakit akışı marjı hedef marja yaklaşır, WACC ile iskonto edilir."""
+    if not (_ok(rev0) and rev0 > 0 and _ok(shares) and shares > 0 and _ok(wacc)):
+        return None
+    w = max(wacc, g_term + 2.0) / 100.0
+    g0 = float(min(100.0, max(-20.0, g0 if _ok(g0) else 10.0)))
+    m0 = float(min(60.0, max(-80.0, m0 if _ok(m0) else 0.0)))
+    rev, pv, rows, fcf = float(rev0), 0.0, [], 0.0
+    for k in range(1, years + 1):
+        gk = g0 + (g_term - g0) * (k - 1) / max(1, years - 1)
+        rev *= 1 + gk / 100.0
+        mk = m0 + (m_t - m0) * min(1.0, k / float(m_year))
+        fcf = rev * mk / 100.0
+        pv += fcf / (1 + w) ** k
+        rows.append({"k": k, "rev": rev, "growth": gk, "margin": mk, "fcf": fcf})
+    tv = fcf * (1 + g_term / 100.0) / (w - g_term / 100.0) if fcf > 0 else 0.0
+    pv += tv / (1 + w) ** years
+    eq = pv - (net_debt if _ok(net_debt) else 0.0)
+    sh = shares * (1 + max(0.0, dil) / 100.0) ** 5
+    return {"value": eq / sh, "rows": rows, "tv_share": (tv / (1 + w) ** years) / pv * 100 if pv > 0 else NAN}
+
+
+def reverse_target_dcf(price, rev0, m0, m_t, wacc, shares, net_debt=0.0, dil=0.0):
+    if not (_ok(price) and price > 0):
+        return None
+    fn = lambda g: (target_margin_dcf(rev0, g, m0, m_t, wacc, shares, net_debt, dil=dil) or {}).get("value", NAN)  # noqa
+    lo, hi = -15.0, 100.0
+    vlo, vhi = fn(lo), fn(hi)
+    if not (_ok(vlo) and _ok(vhi)):
+        return None
+    if price >= vhi:
+        return {"growth": hi, "capped": "above"}
+    if price <= vlo:
+        return {"growth": lo, "capped": "below"}
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if fn(mid) < price:
+            lo = mid
+        else:
+            hi = mid
+    return {"growth": round((lo + hi) / 2, 1), "capped": None}
+
+
+def ev_sales_regression(sym, vals, peers, rev0, net_debt, shares):
+    """Rakiplerde EV/Satış ~ ciro büyümesi doğrusu; bu şirketin büyümesine düşen çarpan."""
+    pts = []
+    for t in peers:
+        v = (vals or {}).get(t) or {}
+        if _ok(v.get("ev_sales")) and _ok(v.get("rev_growth")) and 0 < v["ev_sales"] < 80:
+            pts.append((float(v["rev_growth"]), float(v["ev_sales"])))
+    me = (vals or {}).get(sym) or {}
+    g = me.get("rev_growth")
+    if len(pts) < 3 or not _ok(g) or not (_ok(rev0) and rev0 > 0 and _ok(shares) and shares > 0):
+        return None
+    xs, ys = np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+    if np.ptp(xs) < 1e-6:
+        return None
+    b, a = np.polyfit(xs, ys, 1)
+    resid = float(np.std(ys - (a + b * xs)))
+    evs = max(0.3, a + b * g)
+    nd = net_debt if _ok(net_debt) else 0.0
+    px = lambda m: (m * rev0 - nd) / shares   # noqa: E731
+    return {"ev_sales": round(evs, 2), "slope": round(b, 3), "n": len(pts), "growth": round(g, 1),
+            "method": _method("evs", "EV/Sales vs growth (peers)", px(max(0.2, evs - resid)), px(evs),
+                              px(evs + resid),
+                              "Peer line: EV/Sales = %s + %s × growth (%d peers) → %sx at %s%% growth" % (
+                                  fmt_num(a, 2), fmt_num(b, 3), len(pts), fmt_num(evs, 2), fmt_num(g, 1)), 0.30)}
+
+
+def growth_models(sym, f, r, an, d, vals, peers, wacc, price):
+    ms, checks, extra = [], [], {}
+    if not f:
+        return ms, checks, extra
+    sh = _shares(f, d)
+    rev0, nd = _last_ok(f["revenue"]), _last_ok(f["net_debt"])
+    m0 = _last_ok(f["fcf_m"])
+    g0 = (an or {}).get("rev_growth_0y", NAN)
+    if not _ok(g0):
+        g0 = _last_ok((r or {}).get("rev_yoy") or [])
+    if not _ok(g0):
+        g0 = (r or {}).get("rev_cagr", NAN)
+    ind = str((d or {}).get("industry") or "").lower()
+    m_t = _TARGET_FCF_M.get(ind, 20.0)
+    if _ok(m0) and m0 > m_t:
+        m_t = float(min(40.0, m0))
+    sc = (r or {}).get("share_chg", NAN)
+    dil = float(min(4.0, max(0.0, sc / max(1, f["n"] - 1)))) if _ok(sc) else 0.0
+    if _ok(rev0) and _ok(sh):
+        base = target_margin_dcf(rev0, g0, m0, m_t, wacc, sh, nd, dil=dil)
+        lo = target_margin_dcf(rev0, (g0 if _ok(g0) else 10) * 0.7, m0, m_t - 6, wacc, sh, nd, dil=dil)
+        hi = target_margin_dcf(rev0, (g0 if _ok(g0) else 10) * 1.3, m0, m_t + 6, wacc, sh, nd, dil=dil)
+        if base:
+            extra["path"] = base["rows"]
+            extra["target_margin"] = m_t
+            extra["g0"] = g0
+            ms.append(_method("tdcf", "Target-margin DCF", lo["value"] if lo else NAN, base["value"],
+                              hi["value"] if hi else NAN,
+                              "Revenue %s growing %s%% fading to %s%% over 10 yrs; FCF margin %s%% → %s%% by "
+                              "year 7; WACC %s%%%s" % (_bn(rev0), fmt_num(g0, 1), fmt_num(G_TERM, 0),
+                                                       fmt_num(m0, 1), fmt_num(m_t, 0), fmt_num(wacc, 1),
+                                                       ("; dilution %s%%/yr" % fmt_num(dil, 1)) if dil else ""),
+                              0.50))
+            extra["reverse"] = reverse_target_dcf(price, rev0, m0, m_t, wacc, sh, nd, dil)
+        reg = ev_sales_regression(sym, vals, peers, rev0, nd, sh)
+        if reg and reg["method"]:
+            ms.append(reg["method"])
+            extra["evs"] = reg
+    # kontroller
+    gl = _last_ok((r or {}).get("rev_yoy") or [])
+    r40 = (gl if _ok(gl) else 0) + (m0 if _ok(m0) else 0)
+    if _ok(gl) and _ok(m0):
+        checks.append(_row_check("Rule of 40", fmt_num(r40, 0), "good" if r40 >= 40 else "bad" if r40 < 25 else "flat",
+                                 "revenue growth %s%% (last FY) + FCF margin %s%%" % (fmt_num(gl, 1), fmt_num(m0, 1))))
+    rt = _trend((r or {}).get("rev_yoy") or [])
+    if _ok(rt):
+        checks.append(_row_check("Growth trend", "%s%s pts" % ("+" if rt >= 0 else "−", fmt_num(abs(rt), 1)),
+                                 "good" if rt > 0 else "bad" if rt < -8 else "flat", "recent vs earlier revenue growth"))
+    gm = [x for x in f["gross_m"] if _ok(x)]
+    if gm:
+        checks.append(_row_check("Gross margin", "%s%%" % fmt_num(gm[-1], 1),
+                                 "good" if gm[-1] >= 60 else "bad" if gm[-1] < 35 else "flat",
+                                 "high gross margin leaves room for scale"))
+    rd = [x / v * 100 for x, v in zip(f["rnd"], f["revenue"]) if _ok(x) and _ok(v) and v > 0]
+    if rd:
+        checks.append(_row_check("R&D intensity", "%s%%" % fmt_num(rd[-1], 1), "flat", "of revenue"))
+    sbc = [x / v * 100 for x, v in zip(f["sbc"], f["revenue"]) if _ok(x) and _ok(v) and v > 0]
+    if sbc:
+        checks.append(_row_check("Stock comp", "%s%%" % fmt_num(sbc[-1], 1),
+                                 "good" if sbc[-1] < 8 else "bad" if sbc[-1] > 20 else "flat", "of revenue"))
+    if dil:
+        checks.append(_row_check("Share dilution", "%s%%/yr" % fmt_num(dil, 1), "bad" if dil > 2 else "flat", ""))
+    cash = _last_ok(f["cash"])
+    fcf = _last_ok(f["fcf"])
+    if _ok(fcf) and fcf < 0 and _ok(cash):
+        run = cash / -fcf
+        checks.append(_row_check("Cash runway", "%s yrs" % fmt_num(run, 1), "good" if run >= 3 else "bad" if run < 1.5
+                                 else "flat", "cash ÷ annual cash burn"))
+    checks += recurring_checks(f)
+    return ms, checks, extra
+
+
+def recurring_checks(f):
+    """Abonelik/tekrarlayan gelir göstergesi: ertelenmiş gelir (peşin tahsil edilen abonelik ve bakım)."""
+    out = []
+    if not f:
+        return out
+    dr = [((a if _ok(a) else 0.0) + (b if _ok(b) else 0.0)) if (_ok(a) or _ok(b)) else NAN
+          for a, b in zip(f["deferred_rev"], f["deferred_rev_nc"])]
+    ratio = [x / v * 100 for x, v in zip(dr, f["revenue"]) if _ok(x) and _ok(v) and v > 0]
+    if ratio:
+        g = cagr([x for x in dr if _ok(x)])
+        rg = cagr(f["revenue"])
+        note = "deferred revenue %s" % _bn(_last_ok(dr))
+        if _ok(g):
+            note += ", growing %s%%/yr%s" % (fmt_num(g, 1), (" vs revenue %s%%" % fmt_num(rg, 1)) if _ok(rg) else "")
+        out.append(_row_check("Recurring revenue (proxy)", "%s%% of revenue" % fmt_num(ratio[-1], 1),
+                              "good" if ratio[-1] >= 15 else "flat", note))
+    return out
+
+
+# ---------------------------------------------------------------- 4) sermaye yoğun & donanım
+def roic_series(f, tax=21.0):
+    out = []
+    for oi, e, dbt, c in zip(f["op_income"], f["equity"], f["debt"], f["cash"]):
+        ic = (e if _ok(e) else NAN) + (dbt if _ok(dbt) else 0.0) - (c if _ok(c) else 0.0)
+        out.append(oi * (1 - tax / 100) / ic * 100 if (_ok(oi) and _ok(ic) and ic > 0) else NAN)
+    return out
+
+
+def eva_value(ic, roic, wacc, growth, years=10, keep=0.0):
+    """Değer = yatırılmış sermaye + ekonomik kârın (ROIC − WACC) bugünkü değeri.
+    keep: 10. yılda kalan fark payı (0 = tamamen erir)."""
+    if not (_ok(ic) and ic > 0 and _ok(roic) and _ok(wacc)):
+        return NAN
+    w = wacc / 100.0
+    spread0 = (roic - wacc) / 100.0
+    g = max(-0.05, min(0.25, (growth if _ok(growth) else 3.0) / 100.0))
+    cap, pv = float(ic), 0.0
+    for t in range(1, years + 1):
+        sp = spread0 * (1 - (1 - keep) * (t - 1) / max(1, years - 1))
+        pv += sp * cap / (1 + w) ** t
+        gt = g + (G_TERM / 100.0 - g) * (t - 1) / max(1, years - 1)
+        cap *= 1 + gt
+    if keep > 0:
+        sp_end = spread0 * keep
+        pv += sp_end * cap / max(1e-6, w - G_TERM / 100.0) / (1 + w) ** years
+    return ic + pv
+
+
+def hist_ev_ebitda(f, px):
+    out = []
+    for dt, s_, nd, eb in zip(f["dates"], f["shares"], f["net_debt"], f["ebitda"]):
+        p = _year_end_price(px, dt)
+        if _ok(p) and _ok(s_) and _ok(eb) and eb > 0:
+            out.append((p * s_ + (nd if _ok(nd) else 0.0)) / eb)
+    return out
+
+
+def capital_models(f, r, d, pm, px, wacc, price, an=None):
+    ms, checks, extra = [], [], {}
+    if not f:
+        return ms, checks, extra
+    sh = _shares(f, d)
+    nd = _last_ok(f["net_debt"])
+    nd0 = nd if _ok(nd) else 0.0
+    eb = _last_ok(f["ebitda"])
+    # 1) FD/FAVÖK — rakip medyanı ve kendi geçmişi
+    hist = hist_ev_ebitda(f, px)
+    extra["hist_ev_ebitda"] = hist
+    peer_m = (pm or {}).get("ev_ebitda", NAN)
+    own_m = _med(hist) if len(hist) >= 2 else NAN
+    cands = [x for x in (peer_m, own_m) if _ok(x) and 2 < x < 150]
+    if _ok(eb) and eb > 0 and _ok(sh) and cands:
+        mid = float(np.mean(cands))
+        lo, hi = min(cands + [mid * 0.85]), max(cands + [mid * 1.15])
+        ev2px = lambda m: (m * eb - nd0) / sh   # noqa: E731
+        ms.append(_method("eveb", "EV/EBITDA (peers + own history)", ev2px(lo), ev2px(mid), ev2px(hi),
+                          "EBITDA %s × %sx (peer median %s, own median %s)" % (
+                              _bn(eb), fmt_num(mid, 1), (fmt_num(peer_m, 1) + "x") if _ok(peer_m) else "—",
+                              (fmt_num(own_m, 1) + "x") if _ok(own_m) else "—"), 0.35))
+    # 2) ROIC − WACC (ekonomik kâr)
+    roics = roic_series(f)
+    extra["roic"] = roics
+    ro = _med(roics[-3:]) if any(_ok(x) for x in roics) else NAN
+    eq, dbt, c = _last_ok(f["equity"]), _last_ok(f["debt"]), _last_ok(f["cash"])
+    ic = (eq if _ok(eq) else NAN) + (dbt if _ok(dbt) else 0.0) - (c if _ok(c) else 0.0)
+    g = (an or {}).get("rev_growth_0y", NAN)
+    if not _ok(g):
+        g = (r or {}).get("rev_cagr", NAN)
+    g = float(min(40.0, max(-10.0, g))) if _ok(g) else NAN
+    if _ok(ic) and ic > 0 and _ok(ro) and _ok(sh):
+        to_px = lambda v: (v - nd0) / sh if _ok(v) else NAN   # noqa: E731
+        ms.append(_method("eva", "ROIC vs WACC (economic profit)",
+                          to_px(eva_value(ic, ro, wacc, g)), to_px(eva_value(ic, ro, wacc, g, keep=0.25)),
+                          to_px(eva_value(ic, ro, wacc, g, keep=0.5)),
+                          "Invested capital %s growing %s%%, ROIC %s%% vs WACC %s%%; a quarter of the excess "
+                          "return persists after 10 yrs (low: none, high: half)" % (
+                              _bn(ic), fmt_num(g if _ok(g) else 3.0, 1), fmt_num(ro, 1), fmt_num(wacc, 1)), 0.25))
+        extra["ic"], extra["roic_now"] = ic, ro
+    # 3) Sahip kazancı DCF (bakım yatırımı ≈ amortisman)
+    ocf, cx, da = _last_ok(f["ocf"]), _last_ok(f["capex"]), _last_ok(f["da"])
+    if _ok(ocf) and _ok(cx):
+        maint = min(abs(cx), da) if _ok(da) else abs(cx)
+        oe = ocf - maint
+        extra["owner"] = {"ocf": ocf, "maint": maint, "growth_capex": abs(cx) - maint, "oe": oe}
+        gg = float(min(40.0, max(0.0, g))) if _ok(g) else 4.0
+        if oe > 0 and _ok(sh):
+            v = [(dcf(oe, sh, gx, 10, wx, G_TERM, nd0) or {}).get("value", NAN)
+                 for gx, wx in ((gg * 0.6, wacc + 1), (gg, wacc), (gg * 1.3, wacc - 1))]
+            ms.append(_method("owner", "Owner-earnings DCF", v[0], v[1], v[2],
+                              "Operating cash flow %s − maintenance capex %s (≈ depreciation) = %s; growth %s%%, "
+                              "WACC %s%%" % (_bn(ocf), _bn(maint), _bn(oe), fmt_num(gg, 1), fmt_num(wacc, 1)), 0.25))
+    # kontroller — borç, kâr/borç büyümesi, süreklilik
+    nde = [_d(n_, e_) for n_, e_ in zip(f["net_debt"], f["ebitda"])]
+    nde_ok = [x for x in nde if _ok(x)]
+    if nde_ok:
+        tr_ = nde_ok[-1] - nde_ok[0] if len(nde_ok) >= 2 else 0
+        checks.append(_row_check("Net debt / EBITDA", "%sx" % fmt_num(nde_ok[-1], 2),
+                                 "good" if nde_ok[-1] < 1.5 else "bad" if nde_ok[-1] > 3 else "flat",
+                                 ("%s%s over %d yrs" % ("+" if tr_ >= 0 else "−", fmt_num(abs(tr_), 2), len(nde_ok) - 1))
+                                 if len(nde_ok) >= 2 else ""))
+    de = (r or {}).get("debt_equity", NAN)
+    if _ok(de):
+        checks.append(_row_check("Debt / equity", "%sx" % fmt_num(de, 2),
+                                 "good" if de < 0.6 else "bad" if de > 1.5 else "flat", ""))
+    ic_ = (r or {}).get("interest_cover", NAN)
+    if _ok(ic_):
+        checks.append(_row_check("Interest coverage", "%sx" % fmt_num(ic_, 1),
+                                 "good" if ic_ >= 8 else "bad" if ic_ < 3 else "flat", "EBIT ÷ interest"))
+    gd, ge, gn = cagr(f["debt"]), cagr(f["ebitda"]), cagr(f["net_income"])
+    if _ok(ge) or _ok(gn):
+        prof = ge if _ok(ge) else gn
+        if _ok(gd):
+            st_ = "good" if prof >= gd else "bad" if prof < gd - 5 else "flat"
+            checks.append(_row_check("Profit vs debt growth", "%s%% vs %s%%/yr" % (fmt_num(prof, 1), fmt_num(gd, 1)),
+                                     st_, "EBITDA growth vs total-debt growth"))
+        else:
+            checks.append(_row_check("Profit vs debt growth", "%s%%/yr" % fmt_num(prof, 1), "flat",
+                                     "EBITDA growth (debt history missing)"))
+    fp = [x for x in f["fcf"] if _ok(x)]
+    if fp:
+        k = sum(1 for x in fp if x > 0)
+        checks.append(_row_check("Free cash flow consistency", "%d/%d yrs positive" % (k, len(fp)),
+                                 "good" if k == len(fp) else "bad" if k <= len(fp) / 2 else "flat", ""))
+    em = [_d(e, v) * 100 for e, v in zip(f["ebitda"], f["revenue"])]
+    em = [x for x in em if _ok(x)]
+    if len(em) >= 3:
+        sd = float(np.std(em))
+        checks.append(_row_check("EBITDA margin stability", "%s%% ± %s" % (fmt_num(em[-1], 1), fmt_num(sd, 1)),
+                                 "good" if sd < 4 else "bad" if sd > 10 else "flat", "std. dev. across years"))
+    cxr = [abs(x) / v * 100 for x, v in zip(f["capex"], f["revenue"]) if _ok(x) and _ok(v) and v > 0]
+    if cxr:
+        checks.append(_row_check("Capex intensity", "%s%% of revenue" % fmt_num(cxr[-1], 1),
+                                 "flat", "avg %s%%" % fmt_num(float(np.mean(cxr)), 1)))
+    if _ok(ro):
+        checks.append(_row_check("ROIC vs WACC", "%s%% vs %s%%" % (fmt_num(ro, 1), fmt_num(wacc, 1)),
+                                 "good" if ro > wacc + 2 else "bad" if ro < wacc else "flat", "value created per dollar"))
+    checks += recurring_checks(f)
+    return ms, checks, extra
+
+
+def cyclical_checks(f, r, timing, pbpos):
+    out = []
+    if timing:
+        if timing.get("margin_pos") is not None:
+            mp = timing["margin_pos"]
+            out.append(_row_check("Margin vs own range", "%d%% of range" % mp,
+                                  "bad" if mp >= 80 else "good" if mp <= 30 else "flat",
+                                  "high = earnings near a cyclical peak"))
+        if timing.get("revision_90d") is not None:
+            rv = timing["revision_90d"]
+            out.append(_row_check("Estimate revisions (90d)", "%s%s%%" % ("+" if rv >= 0 else "−", fmt_num(abs(rv), 1)),
+                                  "good" if rv > 2 else "bad" if rv < -2 else "flat", "next-year EPS"))
+    if pbpos and pbpos.get("pctile") is not None:
+        out.append(_row_check("P/B vs own history", "%sx (%dth pct)" % (fmt_num(pbpos["current"], 2), pbpos["pctile"]),
+                              "bad" if pbpos["pctile"] >= 80 else "good" if pbpos["pctile"] <= 25 else "flat",
+                              "cyclicals tend to bottom near low P/B"))
+    if f:
+        nde = (r or {}).get("net_debt_ebitda", NAN)
+        if _ok(nde):
+            out.append(_row_check("Net debt / EBITDA", "%sx" % fmt_num(nde, 2),
+                                  "good" if nde < 1.5 else "bad" if nde > 3 else "flat",
+                                  "debt must survive the downturn"))
+        neg = sum(1 for e in f["eps"] if _ok(e) and e < 0)
+        out.append(_row_check("Loss years", "%d of %d" % (neg, f["n"]), "bad" if neg else "good", ""))
+    return out
