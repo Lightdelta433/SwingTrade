@@ -1,10 +1,11 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="pulse-ui" content="3.7">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Pulse Chart</title>
-<style>
+<style id="baseCss">
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0;background:#0A0B0D;color:#ECEEF1;overflow:hidden;
  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;font-size:13px}
@@ -127,16 +128,16 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
 <div id="app">
   <div id="top">
     <span class="sym" id="symName">—</span>
-    <span class="srcchip real" id="srcChip">canlı veri</span>
+    <span class="srcchip real" id="srcChip">live data</span>
     <span class="sep"></span>
-    <button class="tb" id="btnIv" title="Mum aralığı">
+    <button class="tb" id="btnIv" title="Candle interval">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
         stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/></svg>
-      <span id="ivLbl">Gün</span><span style="color:#6B7383">▾</span></button>
+      <span id="ivLbl">1D</span><span style="color:#6B7383">▾</span></button>
     <button class="tb" id="btnType">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
         <path d="M7 4v16M7 8h3V16H7zM17 6v12M17 9h3v6h-3z" stroke-linejoin="round"/></svg>
-      <span id="typeLbl">Mumlar</span><span style="color:#6B7383">▾</span></button>
+      <span id="typeLbl">Candles</span><span style="color:#6B7383">▾</span></button>
     <button class="tb" id="btnInd">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 4 4-7 5 5"/></svg>
@@ -147,22 +148,22 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
         <path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
       Alert</button>
     <span class="sp"></span>
-    <button class="tb" id="btnUndo" title="Geri al (Ctrl+Z)">
+    <button class="tb" id="btnUndo" title="Undo (Ctrl+Z)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12H8"/></svg></button>
-    <button class="tb" id="btnRedo" title="İleri al (Ctrl+Y)">
+    <button class="tb" id="btnRedo" title="Redo (Ctrl+Y)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h6"/></svg></button>
-    <button class="tb" id="btnFit" title="Tümünü sığdır">
+    <button class="tb" id="btnFit" title="Fit all">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5"/></svg></button>
-    <button class="tb" id="btnBig" title="Paneli büyüt / küçült">
+    <button class="tb" id="btnBig" title="Enlarge / shrink panel">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4"/></svg></button>
-    <button class="tb" id="btnFull" title="Tam ekran (F)">
+    <button class="tb" id="btnFull" title="Fullscreen (F)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
         stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V3h6M21 15v6h-6M21 9V3h-6M3 15v6h6"/></svg>
-      <span id="fullLbl">Tam ekran</span></button>
+      <span id="fullLbl">Fullscreen</span></button>
   </div>
   <div id="body">
     <div id="tools"></div>
@@ -171,11 +172,13 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
       <div id="legend"></div>
       <div id="hint"></div>
       <div id="ctl">
-        <button class="cb" id="cbIn" title="Yakınlaştır (+)">＋</button>
-        <button class="cb" id="cbOut" title="Uzaklaştır (−)">−</button>
-        <button class="cb" id="cbReset" title="Görünümü sıfırla">⟲</button>
-        <button class="cb" id="cbAuto" title="Otomatik ölçek">A</button>
-        <button class="cb" id="cbLog" title="Logaritmik ölçek">L</button>
+        <button class="cb" id="cbIn" title="Zoom in (+)">＋</button>
+        <button class="cb" id="cbOut" title="Zoom out (−)">−</button>
+        <button class="cb" id="cbUp" title="Scroll up (↑ · Shift + wheel · drag)">▲</button>
+        <button class="cb" id="cbDown" title="Scroll down (↓ · Shift + wheel · drag)">▼</button>
+        <button class="cb" id="cbReset" title="Reset view">⟲</button>
+        <button class="cb" id="cbAuto" title="Auto scale">A</button>
+        <button class="cb" id="cbLog" title="Log scale">L</button>
       </div>
     </div>
   </div>
@@ -192,20 +195,57 @@ input[type=color]{width:34px;height:28px;padding:1px;border-radius:6px;border:1p
    - Gerçek OHLCV ve gerçek indikatör serileri Python tarafından gönderilir
    - Çizim araçları, zoom/pan/pinch, çoklu panel, alarmlar burada
    ================================================================================== */
-const UP="#26A69A", DOWN="#EF5350", TXT="#ECEEF1", MUT="#8D96A5", SOFT="#C4CAD4", GRID="#1A1D23",
+let UP="#26A69A", DOWN="#EF5350", TXT="#ECEEF1", MUT="#8D96A5", SOFT="#C4CAD4", GRID="#1A1D23",
       ACC="#5B8CFF", WARN="#F5B544", LINE="#22262D", BG="#0A0B0D", PANEL="#111317", VIOLET="#C4B5FD";
+/* beyaz tema: koyu renkler açık karşılıklarına çevrilir (CSS + canvas) */
+const LMAP={"#0A0B0D":"#FFFFFF","#0C0D10":"#F3F5F8","#111317":"#FFFFFF","#15181D":"#F0F2F5","#171A1F":"#EEF0F3",
+  "#1A1D23":"#ECEEF2","#1B2130":"#E3EAF8","#1C1F25":"#E6E8EC","#22262D":"#E1E4EA","#2A2F37":"#D9DDE3",
+  "#3A404A":"#C5CAD2","#4A515C":"#B4BAC4","#2F3B52":"#BFCDEB","#ECEEF1":"#14171C","#C4CAD4":"#2E3440",
+  "#A3ABB8":"#4A5260","#9AA4B2":"#56606E","#8D96A5":"#5F6878","#6B7383":"#6F7787","#5A6372":"#7A8292",
+  "#C4B5FD":"#7C5CDB","#F5B544":"#B7791F","#5B8CFF":"#3B6EF5","#34D399":"#0B9466","#F87171":"#DC2F3E"};
+function lm(v){
+  if(!S.light||typeof v!=="string") return v;
+  const k=v.toUpperCase(); if(LMAP[k]) return LMAP[k];
+  // koyu yarı saydam etiket zeminleri → beyaz (rgba(10,11,13,.7) gibi)
+  const m=/^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/.exec(v);
+  if(m&&+m[1]<45&&+m[2]<45&&+m[3]<45) return "rgba(255,255,255,"+Math.min(0.92,Math.max(0.7,+m[4]))+")";
+  return v;
+}
+function setPalette(light){
+  if(S.light===light&&S.palSet) return;
+  S.light=!!light; S.palSet=true;
+  TXT=lm("#ECEEF1"); MUT=lm("#8D96A5"); SOFT=lm("#C4CAD4"); GRID=lm("#1A1D23"); ACC=lm("#5B8CFF");
+  WARN=lm("#F5B544"); LINE=lm("#22262D"); BG=lm("#0A0B0D"); PANEL=lm("#111317"); VIOLET=lm("#C4B5FD");
+  if(!light){ TXT="#ECEEF1"; MUT="#8D96A5"; SOFT="#C4CAD4"; GRID="#1A1D23"; ACC="#5B8CFF"; WARN="#F5B544";
+    LINE="#22262D"; BG="#0A0B0D"; PANEL="#111317"; VIOLET="#C4B5FD"; }
+  const st=document.getElementById("baseCss");
+  if(st){ if(!st.dataset.dark) st.dataset.dark=st.textContent;
+    st.textContent = light ? st.dataset.dark.replace(/#[0-9A-Fa-f]{6}\b/g,function(h){return LMAP[h.toUpperCase()]||h;})
+                             .replace("rgba(10,11,13,.62)","rgba(255,255,255,.78)").replace(/rgba\(0,0,0,\.6\)/g,"rgba(20,23,28,.18)")
+                           : st.dataset.dark; }
+  document.body.classList.toggle("light",!!light);
+}
+/* canvas: sabit yazılmış koyu renkler de çevrilsin */
+(function(){
+  const P=CanvasRenderingContext2D.prototype;
+  const fs=Object.getOwnPropertyDescriptor(P,"fillStyle"), ss=Object.getOwnPropertyDescriptor(P,"strokeStyle");
+  Object.defineProperty(P,"fillStyle",{configurable:true,get:function(){return fs.get.call(this);},
+    set:function(v){fs.set.call(this,lm(v));}});
+  Object.defineProperty(P,"strokeStyle",{configurable:true,get:function(){return ss.get.call(this);},
+    set:function(v){ss.set.call(this,lm(v));}});
+})();
 const PS=68, TS=24, MINPANE=56, RMARGIN=0.12;
-const TR=new Intl.NumberFormat("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
-const MON=["Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"];
+const TR=new Intl.NumberFormat("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 /* ---------------------------------------------------------------- yardımcılar */
 function fmt(v,d){ if(v==null||!isFinite(v)) return "—";
-  return new Intl.NumberFormat("tr-TR",{minimumFractionDigits:d,maximumFractionDigits:d}).format(v); }
+  return new Intl.NumberFormat("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}).format(v); }
 function fmtP(v){ return fmt(v, S.dec); }
-function pct(v){ return (v>=0?"+":"−")+"%"+fmt(Math.abs(v),2); }
+function pct(v){ return (v>=0?"+":"−")+fmt(Math.abs(v),2)+"%"; }
 function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 function dateOf(t){ return new Date(t); }
-function dstr(t){ const d=dateOf(t); return d.getUTCDate()+" "+MON[d.getUTCMonth()]+" "+d.getUTCFullYear(); }
+function dstr(t){ const d=dateOf(t); return MON[d.getUTCMonth()]+" "+d.getUTCDate()+", "+d.getUTCFullYear(); }
 function tstr(t){ const d=dateOf(t);
   return String(d.getUTCHours()).padStart(2,"0")+":"+String(d.getUTCMinutes()).padStart(2,"0"); }
 function dtstr(t){ return S.intraday ? dstr(t)+" "+tstr(t) : dstr(t); }
@@ -222,11 +262,11 @@ function near(x,y,x1,y1,x2,y2,tol){ // nokta-doğru parçası uzaklığı
 /* ---------------------------------------------------------------- durum */
 const S={
   sym:"", name:"", dec:2, src:"real", intraday:false, interval:"1G",
-  bars:[], ha:[], ind:{}, zones:[], divs:[], cfg:{}, alerts:[], draws:[],
+  bars:[], ha:[], ind:{}, zones:[], gaps:[], divs:[], cfg:{}, alerts:[], draws:[],
   type:"candles", view:{a:0,b:50}, yAuto:true, yLog:false, yMan:null,
   panes:[], cross:null, tool:null, pend:null, sel:null, drag:null,
   undo:[], redo:[], rev:-1, height:620, big:false, sentN:0, ready:false,
-  ivList:[["1d","Günlük","Gün"]], ivName:"Günlük"
+  ivList:[["1d","Daily","1D"]], ivName:"Daily"
 };
 const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
 let W=0,H=0,DPR=1;
@@ -247,12 +287,14 @@ window.addEventListener("message",function(e){
 });
 
 function applyArgs(a){
-  const symChanged = a.sym!==S.sym || a.interval!==S.interval;
+  setPalette(!!a.light);
+  const symChanged = a.sym!==S.sym || a.interval!==S.interval || (a.lookback||"")!==(S.lookback||"");
+  S.lookback=a.lookback||""; S.visible=a.visible||0;
   const dataRev = a.rev==null?0:a.rev;
   S.sym=a.sym||""; S.name=a.name||S.sym; S.dec=a.dec==null?2:a.dec; S.src=a.src||"real";
   S.intraday=!!a.intraday; S.interval=a.interval||"1G";
   S.bars=(a.bars||[]).map(function(b){return {t:b[0],o:b[1],h:b[2],l:b[3],c:b[4],v:b[5]};});
-  S.ind=a.ind||{}; S.zones=a.zones||[]; S.divs=a.divs||[]; S.cfg=a.cfg||{};
+  S.ind=a.ind||{}; S.zones=a.zones||[]; S.gaps=a.gaps||[]; S.divs=a.divs||[]; S.cfg=a.cfg||{};
   S.height=a.height||620;
   if(a.intervals&&a.intervals.length) S.ivList=a.intervals;
   S.ivName=a.intervalName||S.interval;
@@ -309,9 +351,9 @@ function tOfI(i){
 /* ---------------------------------------------------------------- paneller */
 function buildPanes(){
   const c=S.cfg, p=[{id:"price",w:1}];
-  if(c.vol&&c.vol.on) p.push({id:"vol",w:.22,name:"Hacim"});
+  if(c.vol&&c.vol.on) p.push({id:"vol",w:.22,name:"Volume"});
   if(c.rsi&&c.rsi.on) p.push({id:"rsi",w:.3,name:"RSI ("+(c.rsi.len||14)+")"});
-  if(c.stoch&&c.stoch.on) p.push({id:"stoch",w:.3,name:"Stokastik"});
+  if(c.stoch&&c.stoch.on) p.push({id:"stoch",w:.3,name:"Stochastic"});
   if(c.macd&&c.macd.on) p.push({id:"macd",w:.3,name:"MACD ("+c.macd.f+", "+c.macd.s+", "+c.macd.sig+")"});
   if(c.wt&&c.wt.on) p.push({id:"wt",w:.3,name:"WaveTrend ("+c.wt.n1+", "+c.wt.n2+")"});
   if(c.atr&&c.atr.on) p.push({id:"atr",w:.24,name:"ATR"});
@@ -408,7 +450,7 @@ function niceStep(range,target){
 /* ---------------------------------------------------------------- görünüm */
 function fitView(){
   const n=S.bars.length;
-  const want=Math.min(n, S.intraday?180:150);
+  const want=Math.max(1, Math.min(n, S.visible>0 ? S.visible : (S.intraday?180:150)));
   S.view.b=n+Math.max(4,want*RMARGIN); S.view.a=S.view.b-Math.max(10,want*(1+RMARGIN));
   S.yAuto=true; S.yMan=null;
 }
@@ -423,6 +465,14 @@ function clampView(){
   if(v.a<-n*0.5){ v.a=-n*0.5; }
   if(v.a>n-3){ v.a=n-3; }
   v.b=v.a+span;
+}
+/* fiyat eksenini dikey kaydır: frac>0 → içerik aşağı iner (daha yüksek fiyatlar görünür) */
+function panY(frac, base){
+  const P=S.panes[0]; if(!P) return;
+  const mn=base?base.min:P.min, mx=base?base.max:P.max;
+  if(S.yLog){ const a=lg(mn), b=lg(mx), sh=frac*(b-a); S.yMan={min:Math.exp(a+sh), max:Math.exp(b+sh)}; }
+  else { const sh=frac*(mx-mn); S.yMan={min:mn+sh, max:mx+sh}; }
+  S.yAuto=false; syncTop(); draw();
 }
 function zoomAt(px,f){
   const v=S.view, i=I(px), span=(v.b-v.a)*f;
@@ -444,14 +494,14 @@ function resize(){
 function draw(){
   if(!S.bars.length){ ctx.clearRect(0,0,W,H);
     ctx.fillStyle=MUT; ctx.font="13px sans-serif"; ctx.textAlign="center";
-    ctx.fillText("Veri yok", W/2, H/2); return; }
+    ctx.fillText("No data", W/2, H/2); return; }
   layout(); autoScale();
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
   drawGrid();
   for(const p of S.panes){
     ctx.save(); ctx.beginPath(); ctx.rect(0,p.top,S.plotW,p.h); ctx.clip();
-    if(p.id==="price"){ drawZones(p); drawPrice(p); drawOverlays(p); drawDivPrice(p); }
+    if(p.id==="price"){ drawZones(p); drawGaps(p); drawPrice(p); drawOverlays(p); drawDivPrice(p); }
     else if(p.id==="vol") drawVol(p);
     else if(p.id==="rsi") drawRSI(p);
     else if(p.id==="stoch") drawStoch(p);
@@ -580,7 +630,7 @@ function drawPaneTitle(p){
   // alt panel başlığı: TradingView gibi panelin sol üstünde ad + imleçteki değerler
   const i=curIdx(), c=S.cfg;
   let parts=[];
-  if(p.id==="vol") parts=[["Hacim",MUT],[volLab(S.bars[i]?S.bars[i].v:0),SOFT]];
+  if(p.id==="vol") parts=[["Volume",MUT],[volLab(S.bars[i]?S.bars[i].v:0),SOFT]];
   else if(p.id==="rsi"){ const v=S.ind.rsi?S.ind.rsi[i]:null;
     parts=[["RSI "+((c.rsi&&c.rsi.len)||14),MUT],[v==null?"—":fmt(v,2),CC("rsi","c",VIOLET)]]; }
   else if(p.id==="macd"){ const m=S.ind.macd,s=S.ind.macd_sig,g=S.ind.macd_hist;
@@ -593,7 +643,7 @@ function drawPaneTitle(p){
            [a&&a[i]!=null?fmt(a[i],2):"—",CC("wt","c","#22D3EE")],
            [b&&b[i]!=null?fmt(b[i],2):"—",CC("wt","cs",WARN)]]; }
   else if(p.id==="stoch"){ const a=S.ind.stoch_k,b=S.ind.stoch_d, sc=c.stoch||{};
-    parts=[["Stokastik "+(sc.k||14)+" "+(sc.d||3)+" "+(sc.smooth||3),MUT],
+    parts=[["Stochastic "+(sc.k||14)+" "+(sc.d||3)+" "+(sc.smooth||3),MUT],
            [a&&a[i]!=null?fmt(a[i],2):"—",CC("stoch","c",ACC)],
            [b&&b[i]!=null?fmt(b[i],2):"—",CC("stoch","cs",WARN)]]; }
   else if(p.id==="atr"){ const a=S.ind.atr;
@@ -821,6 +871,26 @@ function drawZones(p){
     ctx.font="10px sans-serif";
   }
 }
+function drawGaps(p){
+  if(!(S.cfg.gaps&&S.cfg.gaps.on)||!S.gaps.length) return;
+  const cRes=CC("gaps","cr",DOWN), cSup=CC("gaps","cs",UP);
+  ctx.save(); ctx.font="bold 10px sans-serif"; ctx.textBaseline="middle";
+  for(const g of S.gaps){
+    const y1=Y(p,g.hi), y2=Y(p,g.lo);
+    if(Math.max(y1,y2)<p.top||Math.min(y1,y2)>p.top+p.h) continue;
+    const x0=Math.max(0,X(g.start)), top=Math.min(y1,y2), h=Math.max(3,Math.abs(y2-y1));
+    if(x0>=S.plotW) continue;
+    const base=g.kind==="res"?cRes:cSup;
+    ctx.fillStyle=hexa(base,.13); ctx.fillRect(x0,top,S.plotW-x0,h);
+    ctx.setLineDash([3,3]); ctx.strokeStyle=hexa(base,.75); ctx.lineWidth=1;
+    ctx.strokeRect(Math.round(x0)+0.5,Math.round(top)+0.5,Math.max(1,S.plotW-x0-1),Math.max(1,h-1));
+    ctx.setLineDash([]);
+    ctx.fillStyle=base; ctx.textAlign="left";
+    const lab="Gap "+(g.dir==="up"?"▲":"▼")+" "+fmtP(g.lo)+"–"+fmtP(g.hi);
+    if(S.plotW-x0>120) ctx.fillText(lab,x0+5,top+h/2);
+  }
+  ctx.restore();
+}
 function drawRSI(p){
   const len=(S.cfg.rsi&&S.cfg.rsi.len)||14;
   const [i0,i1]=visRange();
@@ -916,7 +986,7 @@ function drawAlerts(){
     const col=a.triggered?WARN:"#9AA4B2";
     ctx.setLineDash([6,4]); ctx.strokeStyle=col; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke();
-    const lab="🔔 "+CONDL[a.cond]+" "+fmtP(a.price)+(a.triggered?" · tetiklendi":"");
+    const lab="🔔 "+CONDL[a.cond]+" "+fmtP(a.price)+(a.triggered?" · triggered":"");
     ctx.setLineDash([]); ctx.textAlign="left";
     const w=ctx.measureText(lab).width+12, x=Math.max(6,S.plotW-w-8);
     ctx.fillStyle="rgba(17,19,23,.92)"; ctx.strokeStyle=col;
@@ -943,7 +1013,7 @@ function updateLegend(){
   const ivr=(S.ivList||[]).filter(function(x){return x[0]===S.interval;})[0];
   let h='<div class="r"><span class="nm">'+esc(S.name)+'</span> <span style="color:#6B7383">'+
     esc(ivr?ivr[2]:S.interval)+' · '+TYPEL[S.type]+'</span></div>';
-  h+='<div class="r v" style="color:'+col+'">O '+fmtP(b.o)+'  Y '+fmtP(b.h)+'  D '+fmtP(b.l)+'  K '+fmtP(b.c)+
+  h+='<div class="r v" style="color:'+col+'">O '+fmtP(b.o)+'  H '+fmtP(b.h)+'  L '+fmtP(b.l)+'  C '+fmtP(b.c)+
      '  <span>'+(ch>=0?"+":"−")+fmt(Math.abs(ch),S.dec)+" ("+pct(chp)+')</span></div>';
   if(c.sma&&c.sma.on){
     const parts=(c.sma.ps||[]).map(function(n,k){ const s=S.ind["sma"+n], v=s?s[i]:null;
@@ -970,6 +1040,7 @@ function updateLegend(){
   if(trendRow.filter(Boolean).length) h+='<div class="r v">'+trendRow.filter(Boolean).join("  ")+"</div>";
   const extra=[];
   if(c.zones&&c.zones.on) extra.push("Ranked S/R · "+S.zones.length);
+  if(c.gaps&&c.gaps.on) extra.push("Gaps · "+S.gaps.length);
   if(c.div&&c.div.on) extra.push("Divergence "+(c.div.src||"rsi").toUpperCase()+" · "+S.divs.length);
   if(extra.length) h+='<div class="r v" style="color:#6B7383">'+extra.join("  ·  ")+"</div>";
   L.innerHTML=h;
@@ -981,16 +1052,16 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){
    ÇİZİM ARAÇLARI
    ================================================================================== */
 const GROUPS=[
- {id:"cursor",name:"İmleç",icon:"M5 3l14 9-6 1.5L10 20z",tools:[]},
- {id:"lines",name:"Çizgiler",head:"TREND TOOLS",sub:"Lines",icon:"M4 18L20 6",
+ {id:"cursor",name:"Cursor",icon:"M5 3l14 9-6 1.5L10 20z",tools:[]},
+ {id:"lines",name:"Lines",head:"TREND TOOLS",sub:"Lines",icon:"M4 18L20 6",
   tools:["trend","info","extended","ray","angle","hline","hray","vline"]},
- {id:"channels",name:"Kanallar",sub:"Channels",icon:"M3 16L13 6M7 20L17 10",
+ {id:"channels",name:"Channels",sub:"Channels",icon:"M3 16L13 6M7 20L17 10",
   tools:["pchannel","regression","flat"]},
  {id:"pitch",name:"Pitchfork",sub:"Pitchforks",icon:"M4 20L14 8M14 8l6 2M14 8l2-6",tools:["pitchfork"]},
  {id:"fib",name:"Fibonacci",sub:"Fibonacci",icon:"M3 6h18M3 11h18M3 16h12M3 20h8",tools:["fib"]},
  {id:"patterns",name:"Chart Patterns",head:"CHART PATTERNS",icon:"M3 18l4-8 4 5 4-9 4 12",
   tools:["elliott","triangle_pat","hns"]},
- {id:"proj",name:"Ölçüm & Pozisyon",head:"PROJECTION",icon:"M4 20V7h6v13M14 20V11h6v9",
+ {id:"proj",name:"Measure & Position",head:"PROJECTION",icon:"M4 20V7h6v13M14 20V11h6v9",
   tools:["pricerange","daterange","forecast","long","short"]},
  {id:"brush",name:"Brush",head:"BRUSH",sub:"Geometric shapes",icon:"M4 20c6 2 9-3 9-6 0-2 2-4 4-4 3 0 4 3 2 5",
   tools:["brush","rect","ellipse","tri","arc","curve"]}
@@ -1006,7 +1077,7 @@ const TOOLS={
  hns:{n:7,name:"Head and Shoulders"},
  pricerange:{n:2,name:"Price Range"}, daterange:{n:2,name:"Date Range"},
  forecast:{n:3,name:"Forecast"}, long:{n:3,name:"Long Position"}, short:{n:3,name:"Short Position"},
- brush:{n:-1,name:"Brush (serbest)"}, rect:{n:2,name:"Rectangle"}, ellipse:{n:2,name:"Ellipse"},
+ brush:{n:-1,name:"Brush (freehand)"}, rect:{n:2,name:"Rectangle"}, ellipse:{n:2,name:"Ellipse"},
  tri:{n:3,name:"Triangle"}, arc:{n:3,name:"Arc"}, curve:{n:3,name:"Curve"}
 };
 const FIBL=[0,0.236,0.382,0.5,0.618,0.786,1,1.618];
@@ -1141,12 +1212,12 @@ function geom(d){
   }
   else if(t==="hns"){
     g.polys.push({pts:q.map(function(p){return [p.x,p.y];}),color:c,w:w});
-    const L={1:"SO",3:"BAŞ",5:"SĞ"};
+    const L={1:"LS",3:"H",5:"RS"};
     q.forEach(function(p,ix){ if(L[ix]) g.texts.push({x:p.x,y:p.y-14,s:L[ix],color:c,align:"center",bg:true,size:10}); });
     if(q.length>=5){
       const e=extendBoth(q[2],q[4]);
       g.lines.push({a:e.a,b:e.b,color:WARN,w:1.4,dash:[6,4]});
-      g.texts.push({x:e.b.x-6,y:e.b.y-10,s:"Boyun",color:WARN,align:"right",size:10,bg:true});
+      g.texts.push({x:e.b.x-6,y:e.b.y-10,s:"Neckline",color:WARN,align:"right",size:10,bg:true});
     }
   }
   else if(t==="pricerange"&&B){
@@ -1164,7 +1235,7 @@ function geom(d){
     g.rects.push({x:x0,y:P.top+6,w:Math.max(1,x1-x0),h:Math.max(1,P.h-12),
       fill:"rgba(91,140,255,.05)",color:hexa(ACC,.7),lw:1.2,dash:[5,4]});
     g.texts.push({x:(x0+x1)/2,y:P.top+18,s:Math.abs(barsBetween(d))+" bar · "+
-      Math.abs(daysBetween(d))+" gün",color:ACC,align:"center",bg:true});
+      Math.abs(daysBetween(d))+" days",color:ACC,align:"center",bg:true});
   }
   else if(t==="forecast"&&C){
     g.lines.push({a:A,b:B,color:c,w:w});
@@ -1188,11 +1259,11 @@ function geom(d){
     const risk=Math.abs(entry-stop), rew=Math.abs(target-entry);
     const rr=risk?rew/risk:0;
     const sgn=isL?1:-1;
-    g.texts.push({x:x0+6,y:Math.min(ye,yt)+12,s:"Hedef "+fmtP(target)+"  "+
+    g.texts.push({x:x0+6,y:Math.min(ye,yt)+12,s:"Target "+fmtP(target)+"  "+
       pct(entry?sgn*(target-entry)/entry*100:0),color:UP,bg:true,size:10.5});
     g.texts.push({x:x0+6,y:Math.max(ye,ys)-12,s:"Stop "+fmtP(stop)+"  "+
       pct(entry?sgn*(stop-entry)/entry*100:0),color:DOWN,bg:true,size:10.5});
-    g.texts.push({x:x1-6,y:ye-11,s:(isL?"LONG":"SHORT")+" · Giriş "+fmtP(entry)+" · R/R 1:"+fmt(rr,2),
+    g.texts.push({x:x1-6,y:ye-11,s:(isL?"LONG":"SHORT")+" · Entry "+fmtP(entry)+" · R/R 1:"+fmt(rr,2),
       color:ACC,align:"right",bg:true,size:10.5});
   }
   else if(t==="rect"&&B){
@@ -1381,7 +1452,9 @@ wrap.addEventListener("pointerdown",function(e){
     S.drag={kind:"move",id:d.id,x:p.x,y:p.y,orig:JSON.parse(JSON.stringify(d.pts))};
     draw(); showStyleBar(d); return; }
   if(S.sel){ S.sel=null; hidePop(); }
-  panStart={x:p.x,y:p.y,a:S.view.a,b:S.view.b};
+  const P0=S.panes[0];
+  panStart={x:p.x,y:p.y,a:S.view.a,b:S.view.b, price:paneAt(p.y).id==="price",
+            min:P0.min, max:P0.max, vert:!!(S.yMan&&!S.yAuto)};
   draw();
 });
 wrap.addEventListener("pointermove",function(e){
@@ -1420,11 +1493,17 @@ wrap.addEventListener("pointermove",function(e){
     return;
   }
   if(panStart){
-    const dx=p.x-panStart.x;
-    if(Math.abs(dx)>2) moved=true;
+    const dx=p.x-panStart.x, dy=p.y-panStart.y;
+    if(Math.abs(dx)>2||Math.abs(dy)>2) moved=true;
     const span=panStart.b-panStart.a, sh=dx/S.plotW*span;
     S.view.a=panStart.a-sh; S.view.b=panStart.b-sh;
     clampView();
+    // dikey kaydırma: fiyat panelinde belirgin dikey sürükleme (ya da ölçek zaten elle ise)
+    if(panStart.price&&!panStart.vert&&Math.abs(dy)>10&&Math.abs(dy)>Math.abs(dx)*0.5) panStart.vert=true;
+    if(panStart.price&&panStart.vert){
+      const P=S.panes[0];
+      panY(dy/Math.max(20,P.h), {min:panStart.min,max:panStart.max}); return;
+    }
   }
   if(S.pend&&S.pend.pts.length){
     const P=S.panes[0], py=clampPy(p.y);
@@ -1448,7 +1527,24 @@ wrap.addEventListener("pointerleave",function(e){ S.cross=null; draw(); });
 wrap.addEventListener("wheel",function(e){
   e.preventDefault();
   const p=pos(e);
-  if(e.ctrlKey||Math.abs(e.deltaX)>Math.abs(e.deltaY)){
+  const P=S.panes[0], ph=Math.max(20,P.h);
+  if(e.ctrlKey){ zoomAt(p.x, e.deltaY>0?1.06:0.94); return; }   // trackpad pinch / Ctrl + tekerlek
+  // Shift + tekerlek: fiyatı yukarı / aşağı kaydır (Chrome Shift'te deltaY'yi deltaX'e taşır)
+  if(e.shiftKey){ const d=e.deltaY||e.deltaX; panY(-d/ph*0.5); return; }
+  // trackpad iki parmak: yatay + dikey kaydırma (fare tekerleği yakınlaştırmaya devam eder)
+  const now=Date.now();
+  // Chrome/Safari'de trackpad olaylarında wheelDeltaY === -3·deltaY olur; fare tekerleğinde olmaz
+  const wdy=e.wheelDeltaY;
+  const tpNow = e.deltaMode===0 && (Math.abs(e.deltaX)>0.5 ||
+      (wdy!==undefined&&wdy!==0 ? Math.abs(wdy+3*e.deltaY)<0.5 : Math.abs(e.deltaY)<30));
+  if(tpNow) S.tpUntil=now+400;
+  if(tpNow||(S.tpUntil&&now<S.tpUntil)){
+    const span=S.view.b-S.view.a;
+    if(Math.abs(e.deltaX)>0.1){ S.view.a+=e.deltaX/S.plotW*span; S.view.b+=e.deltaX/S.plotW*span; clampView(); }
+    if(Math.abs(e.deltaY)>0.1&&Math.abs(e.deltaY)>Math.abs(e.deltaX)*0.5&&p.y<P.top+P.h){ panY(-e.deltaY/ph); return; }
+    draw(); return;
+  }
+  if(Math.abs(e.deltaX)>Math.abs(e.deltaY)){
     const span=S.view.b-S.view.a;
     S.view.a+=e.deltaX/S.plotW*span; S.view.b+=e.deltaX/S.plotW*span; clampView(); draw(); return;
   }
@@ -1486,6 +1582,8 @@ window.addEventListener("keydown",function(e){
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y"){ e.preventDefault(); redo(); }
   else if(e.key==="ArrowLeft"){ const s=(S.view.b-S.view.a)*0.1; S.view.a-=s;S.view.b-=s;clampView();draw(); }
   else if(e.key==="ArrowRight"){ const s=(S.view.b-S.view.a)*0.1; S.view.a+=s;S.view.b+=s;clampView();draw(); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); panY(0.1); }
+  else if(e.key==="ArrowDown"){ e.preventDefault(); panY(-0.1); }
   else if(e.key==="+"||e.key==="="){ zoomAt(S.plotW/2,0.85); }
   else if(e.key==="-"){ zoomAt(S.plotW/2,1.18); }
   else if(e.key==="f"||e.key==="F"){ toggleFull(); }
@@ -1498,7 +1596,7 @@ function startTool(type){
   S.pend={id:uid(),type:type,pts:[],style:Object.assign({},DEFSTYLE)};
   S.pendFixed=0;
   const n=TOOLS[type].n;
-  showHint(TOOLS[type].name+" · "+(n===-1?"basılı tutup çiz":n+" nokta seç")+" · Esc iptal");
+  showHint(TOOLS[type].name+" · "+(n===-1?"press and drag to draw":"pick "+n+" points")+" · Esc to cancel");
   renderTools(); draw();
 }
 function cancelTool(){ S.tool=null; S.pend=null; S.pendFixed=0; S.brushing=false;
@@ -1514,7 +1612,7 @@ function addPoint(p){
   S.pend.pts=S.pend.pts.slice(0,S.pendFixed);
   S.pend.pts.push(pt); S.pendFixed=S.pend.pts.length;
   if(S.pend.pts.length>=t.n) commitPending();
-  else { showHint(t.name+" · "+(t.n-S.pend.pts.length)+" nokta kaldı · Esc iptal"); draw(); }
+  else { showHint(t.name+" · "+(t.n-S.pend.pts.length)+" points left · Esc to cancel"); draw(); }
 }
 function commitPending(force){
   if(!S.pend) return;
@@ -1531,10 +1629,10 @@ function commitPending(force){
 /* ==================================================================================
    ARAYÜZ
    ================================================================================== */
-const TYPEL={candles:"Mumlar",hollow:"İçi boş mumlar",bars:"Çubuklar",line:"Çizgi",area:"Alan",
-  heikin:"Heikin Ashi",volcandles:"Hacim mumları"};
-const CONDL={cross:"keserse",above:"üstüne çıkarsa",below:"altına inerse",
-  cross_up:"yukarı keserse",cross_dn:"aşağı keserse"};
+const TYPEL={candles:"Candles",hollow:"Hollow candles",bars:"Bars",line:"Line",area:"Area",
+  heikin:"Heikin Ashi",volcandles:"Volume candles"};
+const CONDL={cross:"crosses",above:"rises above",below:"falls below",
+  cross_up:"crosses above",cross_dn:"crosses below"};
 
 function renderTools(){
   const box=document.getElementById("tools"); box.innerHTML="";
@@ -1552,11 +1650,11 @@ function renderTools(){
     box.appendChild(b);
     if(g.id==="fib"||g.id==="proj") box.appendChild(el("div","tsep"));
   });
-  const del=el("button","tl"); del.title="Tüm çizimleri sil";
+  const del=el("button","tl"); del.title="Delete all drawings";
   del.innerHTML='<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" '+
     'stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>';
   del.onclick=function(){ if(!S.draws.length)return;
-    pushUndo(); S.draws=[]; S.sel=null; draw(); pushDraws(); toast("Çizimler silindi"); };
+    pushUndo(); S.draws=[]; S.sel=null; draw(); pushDraws(); toast("Drawings deleted"); };
   box.appendChild(el("div","tsep")); box.appendChild(del);
 }
 function openToolMenu(g,anchor){
@@ -1606,18 +1704,18 @@ function syncTop(){
   document.getElementById("symName").textContent=S.name||S.sym;
   const c=document.getElementById("srcChip");
   c.className="srcchip "+(S.src==="real"?"real":"mock");
-  c.textContent=S.src==="real"?"canlı veri":"örnek veri";
-  document.getElementById("typeLbl").textContent=TYPEL[S.type]||"Mumlar";
+  c.textContent=S.src==="real"?"live data":"sample data";
+  document.getElementById("typeLbl").textContent=TYPEL[S.type]||"Candles";
   const iv=(S.ivList||[]).filter(function(x){return x[0]===S.interval;})[0];
-  document.getElementById("ivLbl").textContent=iv?iv[2]:(S.interval||"Gün");
-  document.getElementById("btnIv").title="Mum aralığı — "+(iv?iv[1]:S.ivName||"");
+  document.getElementById("ivLbl").textContent=iv?iv[2]:(S.interval||"1D");
+  document.getElementById("btnIv").title="Candle interval — "+(iv?iv[1]:S.ivName||"");
   document.getElementById("cbAuto").classList.toggle("on",S.yAuto);
   document.getElementById("cbLog").classList.toggle("on",S.yLog);
 }
 /* --------- üst bar menüleri --------- */
 document.getElementById("btnIv").onclick=function(e){
   const p=document.getElementById("pop"); p.innerHTML="";
-  p.appendChild(el("div","h","Mum aralığı"));
+  p.appendChild(el("div","h","Candle interval"));
   (S.ivList||[]).forEach(function(x){
     const on=S.interval===x[0];
     const it=el("div","it"+(on?" on":""));
@@ -1627,7 +1725,7 @@ document.getElementById("btnIv").onclick=function(e){
       hidePop();
       if(on) return;
       S.interval=x[0]; S.ivName=x[1]; syncTop();
-      toast(x[1]+" mumlara geçiliyor…");
+      toast("Switching to "+x[1].toLowerCase()+" candles…");
       send("interval",{interval:x[0]});
     };
     p.appendChild(it);
@@ -1636,7 +1734,7 @@ document.getElementById("btnIv").onclick=function(e){
 };
 document.getElementById("btnType").onclick=function(e){
   const p=document.getElementById("pop"); p.innerHTML="";
-  p.appendChild(el("div","h","Grafik türü"));
+  p.appendChild(el("div","h","Chart type"));
   Object.keys(TYPEL).forEach(function(k){
     const it=el("div","it"+(S.type===k?" on":""));
     it.innerHTML='<span class="ic">'+(S.type===k?"●":"○")+"</span>"+TYPEL[k];
@@ -1674,11 +1772,11 @@ function toggleFull(){
 }
 function fullFallback(){
   if(!S.big){ S.big=true; setFrameHeight(bigH()); setTimeout(resize,60); syncTop();
-    toast("Tarayıcı tam ekrana izin vermedi — panel büyütüldü"); }
+    toast("The browser blocked fullscreen — panel enlarged instead"); }
 }
 document.getElementById("btnFull").onclick=toggleFull;
 document.addEventListener("fullscreenchange",function(){
-  document.getElementById("fullLbl").textContent=fsOn()?"Çık":"Tam ekran";
+  document.getElementById("fullLbl").textContent=fsOn()?"Exit":"Fullscreen";
   document.getElementById("btnFull").classList.toggle("on",fsOn());
   if(fsOn()) setFrameHeight(Math.max(S.height,window.innerHeight));
   else setFrameHeight(S.big?bigH():S.height);
@@ -1688,6 +1786,8 @@ document.getElementById("cbAuto").onclick=function(){ S.yAuto=true;S.yMan=null;s
 document.getElementById("cbLog").onclick=function(){ S.yLog=!S.yLog;syncTop();draw(); };
 document.getElementById("cbIn").onclick=function(){ zoomAt(S.plotW/2,0.72); };
 document.getElementById("cbOut").onclick=function(){ zoomAt(S.plotW/2,1.38); };
+document.getElementById("cbUp").onclick=function(){ panY(0.15); };
+document.getElementById("cbDown").onclick=function(){ panY(-0.15); };
 document.getElementById("cbReset").onclick=function(){ fitView(); draw(); syncTop(); };
 
 /* --------- diyalog altyapısı --------- */
@@ -1705,82 +1805,88 @@ document.getElementById("mask").onclick=closeModal;
 
 /* --------- indikatör diyaloğu --------- */
 const IND_DEFS=[
- {k:"sma",n:"SMA (20 · 50 · 100 · 200)",d:"Basit hareketli ortalamalar — fiyat panelinde",
+ {k:"sma",n:"SMA (20 · 50 · 100 · 200)",d:"Simple moving averages — on the price pane",
   g:"Trend",t:"sma simple moving average hareketli ortalama ma 20 50 100 200",
-  f:[{k:"ps",t:"list",l:"Periyotlar"},{k:"cols",t:"cols",l:"Renkler"}]},
- {k:"boll",n:"Bollinger Bands",d:"Hareketli ortalama ± standart sapma bandı",
-  g:"Volatilite",t:"bollinger bands bant bb standart sapma volatilite",
-  f:[{k:"n",t:"num",l:"Periyot",min:2,max:200,step:1},
-     {k:"k",t:"num",l:"Standart sapma",min:0.5,max:5,step:0.1},
-     {k:"c",t:"col",l:"Renk"}]},
- {k:"sup",n:"Supertrend",d:"ATR tabanlı trend takip çizgisi — yön değişince rengi değişir",
+  f:[{k:"ps",t:"list",l:"Periods"},{k:"cols",t:"cols",l:"Colours"}]},
+ {k:"boll",n:"Bollinger Bands",d:"Moving average ± standard deviation band",
+  g:"Volatility",t:"bollinger bands bant bb standart sapma volatilite",
+  f:[{k:"n",t:"num",l:"Period",min:2,max:200,step:1},
+     {k:"k",t:"num",l:"Standard deviation",min:0.5,max:5,step:0.1},
+     {k:"c",t:"col",l:"Colour"}]},
+ {k:"sup",n:"Supertrend",d:"ATR-based trend-following line — changes colour when direction flips",
   g:"Trend",t:"supertrend super trend atr takip",
-  f:[{k:"n",t:"num",l:"ATR periyodu",min:2,max:100,step:1},
-     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1},
-     {k:"cu",t:"col",l:"Yükseliş rengi"},{k:"cd",t:"col",l:"Düşüş rengi"}]},
- {k:"vidya",n:"Volumatic VIDYA",d:"Chande değişken ortalaması + trend dönüşünde sabitlenen ATR bandı",
+  f:[{k:"n",t:"num",l:"ATR period",min:2,max:100,step:1},
+     {k:"mult",t:"num",l:"Multiplier",min:0.5,max:10,step:0.1},
+     {k:"cu",t:"col",l:"Up colour"},{k:"cd",t:"col",l:"Down colour"}]},
+ {k:"vidya",n:"Volumatic VIDYA",d:"Chande variable average + an ATR band fixed at each trend flip",
   g:"Trend",t:"vidya volumatic variable index dynamic average chande cmo",
-  f:[{k:"len",t:"num",l:"VIDYA uzunluğu",min:2,max:100,step:1},
+  f:[{k:"len",t:"num",l:"VIDYA length",min:2,max:100,step:1},
      {k:"mom",t:"num",l:"Momentum (CMO)",min:2,max:200,step:1},
-     {k:"mult",t:"num",l:"Bant çarpanı",min:0.5,max:10,step:0.1},
-     {k:"cu",t:"col",l:"Yükseliş rengi"},{k:"cd",t:"col",l:"Düşüş rengi"}]},
- {k:"vstop",n:"Volatility Stop",d:"ATR iz süren stop çizgisi — yön değişince taraf değiştirir",
-  g:"Volatilite",t:"volatility stop atr trailing iz suren chandelier",
-  f:[{k:"n",t:"num",l:"ATR periyodu",min:2,max:100,step:1},
-     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1},
-     {k:"cu",t:"col",l:"Long rengi"},{k:"cd",t:"col",l:"Short rengi"}]},
- {k:"nw",n:"Nadaraya-Watson Envelope",d:"Gauss çekirdekli tahminci + MAE bandı",
+     {k:"mult",t:"num",l:"Band multiplier",min:0.5,max:10,step:0.1},
+     {k:"cu",t:"col",l:"Up colour"},{k:"cd",t:"col",l:"Down colour"}]},
+ {k:"vstop",n:"Volatility Stop",d:"ATR trailing-stop line — switches side when direction flips",
+  g:"Volatility",t:"volatility stop atr trailing iz suren chandelier",
+  f:[{k:"n",t:"num",l:"ATR period",min:2,max:100,step:1},
+     {k:"mult",t:"num",l:"Multiplier",min:0.5,max:10,step:0.1},
+     {k:"cu",t:"col",l:"Long colour"},{k:"cd",t:"col",l:"Short colour"}]},
+ {k:"nw",n:"Nadaraya-Watson Envelope",d:"Gaussian-kernel estimator + MAE band",
   g:"Trend",t:"nadaraya watson envelope zarf gauss kernel regresyon",
-  f:[{k:"h",t:"num",l:"Bant genişliği (h)",min:1,max:100,step:0.5},
-     {k:"mult",t:"num",l:"Çarpan",min:0.5,max:10,step:0.1},
-     {k:"c",t:"col",l:"Renk"}]},
- {k:"zones",n:"Ranked S/R Zones",d:"Pivot kümeleri; temas, hacim ve yakınlığa göre %100 üzerinden puan",
-  g:"Seviyeler",t:"ranked support resistance zones destek direnc bant seviye pivot",
-  f:[{k:"lookback",t:"num",l:"Geriye bakış (bar)",min:60,max:1200,step:10},
-     {k:"left",t:"num",l:"Pivot sol",min:2,max:30,step:1},
-     {k:"right",t:"num",l:"Pivot sağ",min:2,max:30,step:1},
-     {k:"merge",t:"num",l:"Birleştirme %",min:0.1,max:5,step:0.1},
-     {k:"max",t:"num",l:"En çok bant",min:2,max:20,step:1},
-     {k:"cs",t:"col",l:"Destek rengi"},{k:"cr",t:"col",l:"Direnç rengi"}]},
- {k:"vol",n:"Hacim",d:"Alt panelde hacim çubukları",
-  g:"Hacim",t:"hacim volume bar",
-  f:[{k:"cu",t:"col",l:"Yükseliş rengi"},{k:"cd",t:"col",l:"Düşüş rengi"}]},
- {k:"rsi",n:"RSI",d:"Göreceli güç endeksi — alt panel",
+  f:[{k:"h",t:"num",l:"Bandwidth (h)",min:1,max:100,step:0.5},
+     {k:"mult",t:"num",l:"Multiplier",min:0.5,max:10,step:0.1},
+     {k:"c",t:"col",l:"Colour"}]},
+ {k:"zones",n:"Ranked S/R Zones",d:"Pivot clusters; scored out of 100% by touches, volume and proximity",
+  g:"Levels",t:"ranked support resistance zones destek direnc bant seviye pivot",
+  f:[{k:"lookback",t:"num",l:"Lookback (bars)",min:60,max:1200,step:10},
+     {k:"left",t:"num",l:"Pivot left",min:2,max:30,step:1},
+     {k:"right",t:"num",l:"Pivot right",min:2,max:30,step:1},
+     {k:"merge",t:"num",l:"Merge %",min:0.1,max:5,step:0.1},
+     {k:"max",t:"num",l:"Max zones",min:2,max:20,step:1},
+     {k:"cs",t:"col",l:"Support colour"},{k:"cr",t:"col",l:"Resistance colour"}]},
+ {k:"gaps",n:"Price Gaps",d:"Unfilled gaps — below price they act as support, above as resistance; partly filled gaps shrink",
+  g:"Levels",t:"price gaps gap bosluk window unfilled support resistance destek direnc",
+  f:[{k:"lookback",t:"num",l:"Lookback (bars)",min:20,max:2000,step:10},
+     {k:"min",t:"num",l:"Min gap %",min:0.05,max:10,step:0.05},
+     {k:"max",t:"num",l:"Max gaps",min:1,max:30,step:1},
+     {k:"cs",t:"col",l:"Support colour"},{k:"cr",t:"col",l:"Resistance colour"}]},
+ {k:"vol",n:"Volume",d:"Volume bars in a lower pane",
+  g:"Volume",t:"hacim volume bar",
+  f:[{k:"cu",t:"col",l:"Up colour"},{k:"cd",t:"col",l:"Down colour"}]},
+ {k:"rsi",n:"RSI",d:"Relative strength index — lower pane",
   g:"Momentum",t:"rsi relative strength index goreceli guc",
-  f:[{k:"len",t:"num",l:"Periyot",min:2,max:100,step:1},
-     {k:"ob",t:"num",l:"Aşırı alım",min:50,max:95,step:1},
-     {k:"os",t:"num",l:"Aşırı satım",min:5,max:50,step:1},
-     {k:"c",t:"col",l:"Renk"}]},
- {k:"stoch",n:"Stokastik",d:"%K / %D osilatörü — alt panel",
+  f:[{k:"len",t:"num",l:"Period",min:2,max:100,step:1},
+     {k:"ob",t:"num",l:"Overbought",min:50,max:95,step:1},
+     {k:"os",t:"num",l:"Oversold",min:5,max:50,step:1},
+     {k:"c",t:"col",l:"Colour"}]},
+ {k:"stoch",n:"Stochastic",d:"%K / %D oscillator — lower pane",
   g:"Momentum",t:"stokastik stochastic stoch k d osilator",
-  f:[{k:"k",t:"num",l:"%K periyodu",min:2,max:100,step:1},
-     {k:"smooth",t:"num",l:"%K yumuşatma",min:1,max:20,step:1},
-     {k:"d",t:"num",l:"%D periyodu",min:1,max:50,step:1},
-     {k:"ob",t:"num",l:"Aşırı alım",min:50,max:95,step:1},
-     {k:"os",t:"num",l:"Aşırı satım",min:5,max:50,step:1},
-     {k:"c",t:"col",l:"%K rengi"},{k:"cs",t:"col",l:"%D rengi"}]},
- {k:"macd",n:"MACD",d:"Hızlı/yavaş EMA farkı + sinyal — alt panel",
+  f:[{k:"k",t:"num",l:"%K period",min:2,max:100,step:1},
+     {k:"smooth",t:"num",l:"%K smoothing",min:1,max:20,step:1},
+     {k:"d",t:"num",l:"%D period",min:1,max:50,step:1},
+     {k:"ob",t:"num",l:"Overbought",min:50,max:95,step:1},
+     {k:"os",t:"num",l:"Oversold",min:5,max:50,step:1},
+     {k:"c",t:"col",l:"%K colour"},{k:"cs",t:"col",l:"%D colour"}]},
+ {k:"macd",n:"MACD",d:"Fast/slow EMA difference + signal — lower pane",
   g:"Momentum",t:"macd moving average convergence divergence sinyal histogram",
-  f:[{k:"f",t:"num",l:"Hızlı",min:2,max:100,step:1},
-     {k:"s",t:"num",l:"Yavaş",min:3,max:200,step:1},
-     {k:"sig",t:"num",l:"Sinyal",min:2,max:50,step:1},
-     {k:"c",t:"col",l:"MACD rengi"},{k:"cs",t:"col",l:"Sinyal rengi"}]},
- {k:"wt",n:"WaveTrend",d:"LazyBear WaveTrend osilatörü — alt panel",
+  f:[{k:"f",t:"num",l:"Fast",min:2,max:100,step:1},
+     {k:"s",t:"num",l:"Slow",min:3,max:200,step:1},
+     {k:"sig",t:"num",l:"Signal",min:2,max:50,step:1},
+     {k:"c",t:"col",l:"MACD colour"},{k:"cs",t:"col",l:"Signal colour"}]},
+ {k:"wt",n:"WaveTrend",d:"LazyBear WaveTrend oscillator — lower pane",
   g:"Momentum",t:"wavetrend wave trend lazybear osilator",
-  f:[{k:"n1",t:"num",l:"Kanal uzunluğu",min:2,max:50,step:1},
-     {k:"n2",t:"num",l:"Ortalama",min:2,max:100,step:1},
-     {k:"ob",t:"num",l:"Aşırı alım",min:10,max:120,step:5},
-     {k:"os",t:"num",l:"Aşırı satım",min:-120,max:-10,step:5},
-     {k:"c",t:"col",l:"WT1 rengi"},{k:"cs",t:"col",l:"WT2 rengi"}]},
- {k:"atr",n:"ATR",d:"Ortalama gerçek aralık — oynaklık, alt panel",
-  g:"Volatilite",t:"atr average true range oynaklik volatilite",
-  f:[{k:"n",t:"num",l:"Periyot",min:2,max:100,step:1},{k:"c",t:"col",l:"Renk"}]},
- {k:"div",n:"Divergence",d:"Fiyat–osilatör uyumsuzlukları (klasik ve gizli)",
+  f:[{k:"n1",t:"num",l:"Channel length",min:2,max:50,step:1},
+     {k:"n2",t:"num",l:"Average",min:2,max:100,step:1},
+     {k:"ob",t:"num",l:"Overbought",min:10,max:120,step:5},
+     {k:"os",t:"num",l:"Oversold",min:-120,max:-10,step:5},
+     {k:"c",t:"col",l:"WT1 colour"},{k:"cs",t:"col",l:"WT2 colour"}]},
+ {k:"atr",n:"ATR",d:"Average true range — volatility, lower pane",
+  g:"Volatility",t:"atr average true range oynaklik volatilite",
+  f:[{k:"n",t:"num",l:"Period",min:2,max:100,step:1},{k:"c",t:"col",l:"Colour"}]},
+ {k:"div",n:"Divergence",d:"Price–oscillator divergences (regular and hidden)",
   g:"Momentum",t:"divergence uyumsuzluk ayrisma gizli hidden",
-  f:[{k:"src",t:"sel",l:"Kaynak",o:[["rsi","RSI"],["macd","MACD"],["wt","WaveTrend"]]},
-     {k:"left",t:"num",l:"Pivot sol",min:1,max:20,step:1},
-     {k:"right",t:"num",l:"Pivot sağ",min:1,max:20,step:1},
-     {k:"hidden",t:"bool",l:"Gizli uyumsuzluklar"}]}
+  f:[{k:"src",t:"sel",l:"Source",o:[["rsi","RSI"],["macd","MACD"],["wt","WaveTrend"]]},
+     {k:"left",t:"num",l:"Pivot left",min:1,max:20,step:1},
+     {k:"right",t:"num",l:"Pivot right",min:1,max:20,step:1},
+     {k:"hidden",t:"bool",l:"Hidden divergences"}]}
 ];
 function indFilter(q){
   const s=String(q||"").toLowerCase().trim();
@@ -1794,10 +1900,10 @@ function indFilter(q){
   if(e) e.style.display=shown?"none":"block";
 }
 document.getElementById("btnInd").onclick=function(){
-  let h='<div class="mh"><b>Indicators</b><span class="muted">gerçek fiyat verisiyle hesaplanır</span>'+
+  let h='<div class="mh"><b>Indicators</b><span class="muted">calculated from real price data</span>'+
         '<button class="x">✕</button></div><div class="mb">'+
         '<div class="srch"><span style="color:#6B7383">🔍</span>'+
-        '<input type="text" id="indSearch" placeholder="İndikatör ara — supertrend, rsi, bollinger…" '+
+        '<input type="text" id="indSearch" placeholder="Search indicators — supertrend, rsi, bollinger…" '+
         'autocomplete="off"></div><div id="indBody" style="display:flex;flex-direction:column;gap:10px">';
   for(const d of IND_DEFS){
     const c=S.cfg[d.k]||{};
@@ -1829,10 +1935,10 @@ document.getElementById("btnInd").onclick=function(){
     }
     h+="</div>";
   }
-  h+='</div><div class="muted" id="indEmpty" style="display:none;padding:10px 2px">Eşleşen indikatör yok.</div>'+
-     '</div><div class="mf"><button class="btn" id="indNone">Hepsini kapat</button>'+
-     '<button class="btn" id="indCancel">Vazgeç</button>'+
-     '<button class="btn pri" id="indApply">Uygula</button></div>';
+  h+='</div><div class="muted" id="indEmpty" style="display:none;padding:10px 2px">No matching indicators.</div>'+
+     '</div><div class="mf"><button class="btn" id="indNone">Turn all off</button>'+
+     '<button class="btn" id="indCancel">Cancel</button>'+
+     '<button class="btn pri" id="indApply">Apply</button></div>';
   openModal(h);
   const m=document.getElementById("modal");
   const sb=document.getElementById("indSearch");
@@ -1874,50 +1980,50 @@ document.getElementById("btnInd").onclick=function(){
       cfg[k][f][parseInt(inp.getAttribute("data-i"),10)]=inp.value; });
     S.cfg=cfg; buildPanes(); closeModal(); draw();
     send("cfg",{cfg:cfg});
-    toast("İndikatörler güncelleniyor…");
+    toast("Updating indicators…");
   };
 };
 /* --------- alarm diyaloğu --------- */
 document.getElementById("btnAlert").onclick=function(){
   const last=S.bars.length?S.bars[S.bars.length-1].c:0;
-  let h='<div class="mh"><b>Alarm</b><span class="muted">'+esc(S.name)+'</span><button class="x">✕</button></div>'+
-    '<div class="mb"><div class="card"><div class="ch"><b>Yeni alarm</b></div>'+
-    '<div class="row"><span class="lbl">Koşul</span><select id="alCond">'+
-    Object.keys(CONDL).map(function(k){return '<option value="'+k+'">Fiyat '+CONDL[k]+"</option>";}).join("")+
+  let h='<div class="mh"><b>Alert</b><span class="muted">'+esc(S.name)+'</span><button class="x">✕</button></div>'+
+    '<div class="mb"><div class="card"><div class="ch"><b>New alert</b></div>'+
+    '<div class="row"><span class="lbl">Condition</span><select id="alCond">'+
+    Object.keys(CONDL).map(function(k){return '<option value="'+k+'">Price '+CONDL[k]+"</option>";}).join("")+
     '</select></div>'+
-    '<div class="row"><span class="lbl">Fiyat</span><input type="number" id="alPrice" step="any" value="'+
+    '<div class="row"><span class="lbl">Price</span><input type="number" id="alPrice" step="any" value="'+
     (Math.round(last*100)/100)+'"></div>'+
-    '<div class="row"><span class="lbl">Not (isteğe bağlı)</span>'+
-    '<input type="text" id="alNote" placeholder="ör. kırılım" style="flex:1;min-width:150px"></div>'+
-    '<div class="row" style="margin-top:4px"><button class="btn pri" id="alAdd">Alarm oluştur</button>'+
-    '<span class="muted">Uygulama içi; sayfa yenilendiğinde kontrol edilir</span></div></div>';
-  h+='<div class="card"><div class="ch"><b>Alarmlarım</b><span class="muted">'+S.alerts.length+'</span></div>'+
+    '<div class="row"><span class="lbl">Note (optional)</span>'+
+    '<input type="text" id="alNote" placeholder="e.g. breakout" style="flex:1;min-width:150px"></div>'+
+    '<div class="row" style="margin-top:4px"><button class="btn pri" id="alAdd">Create alert</button>'+
+    '<span class="muted">In-app only; checked when the page refreshes</span></div></div>';
+  h+='<div class="card"><div class="ch"><b>My alerts</b><span class="muted">'+S.alerts.length+'</span></div>'+
      '<div class="alist" id="alList"></div></div></div>'+
-     '<div class="mf"><button class="btn" id="alClose">Kapat</button></div>';
+     '<div class="mf"><button class="btn" id="alClose">Close</button></div>';
   openModal(h);
   renderAlerts();
   document.getElementById("alClose").onclick=closeModal;
   document.getElementById("alAdd").onclick=function(){
     const v=parseFloat(document.getElementById("alPrice").value);
-    if(!isFinite(v)){ toast("Geçerli bir fiyat gir"); return; }
+    if(!isFinite(v)){ toast("Enter a valid price"); return; }
     S.alerts.push({id:uid(),price:v,cond:document.getElementById("alCond").value,
       note:document.getElementById("alNote").value.slice(0,60),triggered:false,
       created:S.bars.length?S.bars[S.bars.length-1].t:Date.now()});
-    renderAlerts(); draw(); send("alerts",{alerts:S.alerts}); toast("Alarm eklendi");
+    renderAlerts(); draw(); send("alerts",{alerts:S.alerts}); toast("Alert added");
   };
 };
 function renderAlerts(){
   const box=document.getElementById("alList"); if(!box) return;
-  if(!S.alerts.length){ box.innerHTML='<span class="muted">Henüz alarm yok.</span>'; return; }
+  if(!S.alerts.length){ box.innerHTML='<span class="muted">No alerts yet.</span>'; return; }
   box.innerHTML="";
   S.alerts.forEach(function(a){
     const r=el("div","ar");
     r.innerHTML='<span class="tag" style="color:'+(a.triggered?"#F5B544":"#5B8CFF")+';background:'+
       (a.triggered?"rgba(245,181,68,.13)":"rgba(91,140,255,.13)")+'">'+
-      (a.triggered?"tetiklendi":"aktif")+"</span>"+
-      "<span>Fiyat "+esc(CONDL[a.cond])+" <b>"+fmtP(a.price)+"</b></span>"+
+      (a.triggered?"triggered":"active")+"</span>"+
+      "<span>Price "+esc(CONDL[a.cond])+" <b>"+fmtP(a.price)+"</b></span>"+
       (a.note?'<span class="muted">'+esc(a.note)+"</span>":"")+
-      '<button class="del" title="Sil">✕</button>';
+      '<button class="del" title="Delete">✕</button>';
     r.querySelector(".del").onclick=function(){
       S.alerts=S.alerts.filter(function(x){return x.id!==a.id;});
       renderAlerts(); draw(); send("alerts",{alerts:S.alerts});
@@ -1930,7 +2036,7 @@ const PALETTE=["#5B8CFF","#22D3EE","#26A69A","#9CCC65","#F5B544","#FF9800",
                "#EF5350","#F472B6","#C4B5FD","#ECEEF1","#8D96A5","#111317"];
 function showStyleBar(d){
   const p=document.getElementById("pop"); p.innerHTML=""; p.classList.add("style");
-  p.appendChild(el("div","h",TOOLS[d.type]?TOOLS[d.type].name:"Çizim"));
+  p.appendChild(el("div","h",TOOLS[d.type]?TOOLS[d.type].name:"Drawing"));
   const cur=d.style.c||DEFSTYLE.c;
   const grid=el("div","swgrid");
   PALETTE.forEach(function(col){
@@ -1941,23 +2047,23 @@ function showStyleBar(d){
   });
   p.appendChild(grid);
   const row=el("div","it"); row.style.cursor="default";
-  row.innerHTML='<span class="ic">🎨</span><input type="color" value="'+esc(cur)+'" id="stC" title="Özel renk">'+
-    '<select id="stW" style="width:68px"><option value="1">ince</option>'+
-    '<option value="1.6">orta</option><option value="2.6">kalın</option></select>'+
-    '<select id="stD" style="width:80px"><option value="0">düz</option><option value="1">kesik</option></select>';
+  row.innerHTML='<span class="ic">🎨</span><input type="color" value="'+esc(cur)+'" id="stC" title="Custom colour">'+
+    '<select id="stW" style="width:68px"><option value="1">thin</option>'+
+    '<option value="1.6">medium</option><option value="2.6">thick</option></select>'+
+    '<select id="stD" style="width:80px"><option value="0">solid</option><option value="1">dashed</option></select>';
   p.appendChild(row);
-  const front=el("div","it"); front.innerHTML='<span class="ic">⬆</span>Öne getir';
+  const front=el("div","it"); front.innerHTML='<span class="ic">⬆</span>Bring to front';
   front.onclick=function(){ pushUndo(); S.draws=S.draws.filter(function(x){return x.id!==d.id;});
     S.draws.push(d); draw(); pushDraws(); };
   p.appendChild(front);
-  const dup=el("div","it"); dup.innerHTML='<span class="ic">⧉</span>Kopyala';
+  const dup=el("div","it"); dup.innerHTML='<span class="ic">⧉</span>Duplicate';
   dup.onclick=function(){ pushUndo();
     const n=JSON.parse(JSON.stringify(d)); n.id=uid();
     const sh=(S.view.b-S.view.a)*0.04;
     n.pts=n.pts.map(function(q){ return {t:tOfI(iOfT(q.t)+sh),p:q.p}; });
     S.draws.push(n); S.sel=n.id; draw(); pushDraws(); showStyleBar(n); };
   p.appendChild(dup);
-  const del=el("div","it"); del.innerHTML='<span class="ic">🗑</span>Sil';
+  const del=el("div","it"); del.innerHTML='<span class="ic">🗑</span>Delete';
   del.onclick=function(){ pushUndo(); S.draws=S.draws.filter(function(x){return x.id!==d.id;});
     S.sel=null; hidePop(); draw(); pushDraws(); };
   p.appendChild(del);
