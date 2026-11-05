@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.6"
+ENGINE_VERSION = "3.7"
 NAN = float("nan")
 
 
@@ -1273,18 +1273,22 @@ def _g_form(df, patterns=None, div_list=None):
 
 def _g_volume(df):
     why, parts = [], []
-    rv = _last(relvol(df, 20))
+    rv, frac = vol_ratio(df, 20)
     up = _last(df["Close"].diff()) or 0.0
+    pace = (" — on pace, the bar is %s%% complete" % _f(frac * 100, 0)) if frac < 0.97 else ""
     if _ok(rv):
         if rv >= 1.5:
             s = 90 if up >= 0 else 14
-            why.append("Volume %sx above average, %s bar" % (_f(rv, 1), "up" if up >= 0 else "down"))
+            why.append("Volume %sx above average, %s bar%s" % (_f(rv, 1), "up" if up >= 0 else "down", pace))
         elif rv >= 1.0:
             s = 68 if up >= 0 else 34
-            why.append("Volume slightly above average (%sx)" % _f(rv, 1))
+            why.append("Volume slightly above average (%sx%s)" % (_f(rv, 1), pace))
+        elif rv >= 0.8:
+            s = 54 if up >= 0 else 42
+            why.append("Volume around average (%sx%s)" % (_f(rv, 2), pace))
         else:
             s = 44
-            why.append("Volume below average (%sx) — weak confirmation of the move" % _f(rv, 1))
+            why.append("Volume below average (%sx%s) — weak confirmation of the move" % (_f(rv, 1), pace))
         parts.append((s, 1.2))
     m = _last(mfi(df, 14))
     if _ok(m):
@@ -1339,7 +1343,7 @@ def _g_rr(df, zones=None):
     # Stop 0,5×ATR'den dar olamaz: gürültü stopu düşürmesin, R/R şişmesin
     risk = max(raw_risk, 0.5 * atr_pct)
     rr = min(10.0, rew / risk) if risk > 0.02 else 0.0
-    why.append("Above %s %s (+%s%%), below %s %s (−%s%%)"
+    why.append("Nearest resistance: %s %s (+%s%%), nearest support: %s %s (−%s%%)"
                % (res[2], _f(res[0]), _f(rew, 1), sup[2], _f(sup[0]), _f(raw_risk, 1)))
     if risk > raw_risk + 0.01:
         notes.append("Support is %s%% away; the stop was pulled to a 0.5×ATR (%s%%) floor so noise doesn't trigger it"
@@ -3743,3 +3747,474 @@ def cyclical_checks(f, r, timing, pbpos):
         neg = sum(1 for e in f["eps"] if _ok(e) and e < 0)
         out.append(_row_check("Loss years", "%d of %d" % (neg, f["n"]), "bad" if neg else "good", ""))
     return out
+
+
+# ======================================================================
+# v3.7 — yarım mum hacmi · fiyat boşlukları (gap) · grafik indikatörlerinin değerlendirmesi
+# ======================================================================
+def bar_progress(df, now=None):
+    """Son mumun ne kadarı tamamlandı (0–1]. Ay başında aylık mumun hacmi 'ortalamanın 0,1 katı'
+    görünmesin diye hacim bu orana bölünerek tahmin edilir. Bilinmiyorsa 1."""
+    try:
+        idx = pd.DatetimeIndex(df.index)
+        if len(idx) < 3:
+            return 1.0
+        last = idx[-1]
+        tz = last.tz
+        now = pd.Timestamp.now(tz="America/New_York") if now is None else pd.Timestamp(now)
+        if now.tzinfo is None:
+            now = now.tz_localize("America/New_York")
+        nl = now.tz_convert(tz).tz_localize(None) if tz is not None else now.tz_convert("America/New_York").tz_localize(None)
+        lastn = last.tz_localize(None) if tz is not None else last
+        step = float(pd.Series(idx[-12:]).diff().dt.total_seconds().median() or 0) / 86400
+        today = nl.normalize()
+        if step >= 25:                                   # aylık (etiket ay sonu)
+            m0 = lastn.to_period("M").start_time
+            m1 = lastn.to_period("M").end_time.normalize()
+            if today > m1 or today < m0:
+                return 1.0
+            tot = max(1, len(pd.bdate_range(m0, m1)))
+            done = len(pd.bdate_range(m0, today))
+            return float(min(1.0, max(0.05, done / tot)))
+        if step >= 5:                                    # haftalık (etiket cuma)
+            w0 = (lastn - pd.Timedelta(days=lastn.weekday())).normalize()
+            w1 = w0 + pd.Timedelta(days=4)
+            if today > w1 or today < w0:
+                return 1.0
+            done = len(pd.bdate_range(w0, today))
+            return float(min(1.0, max(0.05, done / 5)))
+        if step >= 0.9:                                  # günlük: seans içindeyse
+            ny = now.tz_convert("America/New_York").tz_localize(None)
+            if lastn.normalize() != ny.normalize() or ny.weekday() > 4:
+                return 1.0
+            o = ny.normalize() + pd.Timedelta(hours=9, minutes=30)
+            mins = (ny - o).total_seconds() / 60
+            if mins <= 0 or mins >= 390:
+                return 1.0
+            return float(max(0.05, mins / 390))
+    except Exception:
+        return 1.0
+    return 1.0
+
+
+def vol_ratio(df, n=20):
+    """(son mum hacmi / önceki n mumun ortalaması, tamamlanma oranı). Yarım mum orana göre büyütülür."""
+    v = pd.to_numeric(df["Volume"], errors="coerce").astype(float)
+    if len(v) < n + 1 or float(v.tail(n + 1).sum()) <= 0:
+        return float("nan"), 1.0
+    base = float(v.iloc[-n - 1:-1].mean())
+    frac = bar_progress(df)
+    last = float(v.iloc[-1]) / frac
+    return (last / base if base > 0 else float("nan")), frac
+
+
+def price_gaps(df, lookback=260, min_pct=0.25, max_n=8):
+    """Doldurulmamış fiyat boşlukları. Yukarı boşluk (bugünkü dip > dünkü tepe) fiyatın altında kalırsa
+    destek, aşağı boşluk direnç olur. Sonradan kısmen dolan boşluk daralır, tamamen dolan silinir.
+    Döner: [{lo, hi, kind: sup|res, dir: up|down, i, date, pct (boyut %), dist (fiyata uzaklık %)}]"""
+    d = df.tail(int(lookback) + 1)
+    n = len(d)
+    if n < 5:
+        return []
+    H, L = d["High"].to_numpy(float), d["Low"].to_numpy(float)
+    px = float(d["Close"].iloc[-1])
+    out = []
+    for i in range(1, n):
+        if L[i] > H[i - 1] * (1 + min_pct / 100):
+            lo, hi, dirn = H[i - 1], L[i], "up"
+        elif H[i] < L[i - 1] * (1 - min_pct / 100):
+            lo, hi, dirn = H[i], L[i - 1], "down"
+        else:
+            continue
+        # sonraki barlar boşluğu ne kadar doldurdu?
+        for j in range(i + 1, n):
+            if dirn == "up":
+                if L[j] < hi:
+                    hi = max(lo, L[j])
+            else:
+                if H[j] > lo:
+                    lo = min(hi, H[j])
+            if hi - lo <= max(1e-9, px * 0.0005):
+                break
+        if hi - lo <= max(1e-9, px * 0.0005) or hi <= lo:
+            continue
+        mid = (lo + hi) / 2
+        out.append({"lo": float(lo), "hi": float(hi), "dir": dirn, "kind": "sup" if mid < px else "res",
+                    "i": int(i + (len(df) - n)), "date": d.index[i],
+                    "pct": float((hi - lo) / lo * 100), "dist": float((mid / px - 1) * 100)})
+    out.sort(key=lambda g: abs(g["dist"]))
+    return out[:int(max_n)]
+
+
+TF_KIND_NAME = {"intraday": "intraday trading", "swing": "swing trading", "position": "position trading"}
+
+
+def tf_kind(tf):
+    t = str(tf or "1d")
+    if t in ("1m", "5m", "15m", "30m", "1h"):
+        return "intraday"
+    if t in ("1wk", "1mo"):
+        return "position"
+    return "swing"
+
+
+def _ib_row(name, value, sig, note, src="chart"):
+    return {"name": name, "value": value, "sig": int(sig), "note": note, "src": src}
+
+
+def _slope_word(s, n=5):
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if len(s) <= n:
+        return 0.0
+    a, b = float(s.iloc[-1]), float(s.iloc[-1 - n])
+    return (a / b - 1) * 100 if b else 0.0
+
+
+def _ma_row(df, s, label, src):
+    px = float(df["Close"].iloc[-1])
+    v = _last(s)
+    if not _ok(v):
+        return None
+    sl = _slope_word(s)
+    d = (px / v - 1) * 100
+    if px > v and sl >= 0:
+        sig, note = 1, "price %s%% above, average rising" % _f(d, 1)
+    elif px < v and sl <= 0:
+        sig, note = -1, "price %s%% below, average falling" % _f(abs(d), 1)
+    elif px > v:
+        sig, note = 0, "price above (%s%%) but the average is still falling" % _f(d, 1)
+    else:
+        sig, note = 0, "price below (%s%%) but the average is still rising" % _f(abs(d), 1)
+    return _ib_row(label, _f(v), sig, note, src)
+
+
+def _rsi_row(df, n=14, ob=70, os_=30, src="chart"):
+    r = rsi(df["Close"], n)
+    v = _last(r)
+    if not _ok(v):
+        return None
+    up = _slope_word(r, 3) > 0
+    if v >= ob:
+        sig, note = -1, "overbought (>%s) — pullback risk" % _f(ob, 0)
+    elif v <= os_:
+        sig, note = 1, "oversold (<%s) — bounce potential" % _f(os_, 0)
+    elif v >= 50:
+        sig, note = (1 if up else 0), "bullish half (>50), %s" % ("rising" if up else "flattening")
+    else:
+        sig, note = (-1 if not up else 0), "bearish half (<50), %s" % ("rising" if up else "falling")
+    return _ib_row("RSI (%d)" % n, _f(v, 1), sig, note, src)
+
+
+def _macd_row(df, f=12, s=26, sg=9, src="chart"):
+    line, sig_, hist = macd(df["Close"], f, s, sg)
+    mv, sv, hv = _last(line), _last(sig_), _last(hist)
+    if not (_ok(mv) and _ok(sv)):
+        return None
+    hp = float(hist.dropna().iloc[-2]) if hist.dropna().shape[0] > 1 else hv
+    grow = abs(hv) > abs(hp)
+    if mv > sv:
+        sig = 1
+        note = "line above signal%s, %s zero" % (", histogram growing" if grow else ", histogram shrinking",
+                                                 "above" if mv > 0 else "below")
+    else:
+        sig = -1
+        note = "line below signal%s, %s zero" % (", histogram growing" if grow else ", histogram shrinking",
+                                                 "above" if mv > 0 else "below")
+    return _ib_row("MACD (%d, %d, %d)" % (f, s, sg), _f(mv), sig, note, src)
+
+
+def _stoch_row(df, k=14, d=3, sm=3, ob=80, os_=20, src="chart"):
+    kk, dd = stoch(df, k, d, sm)
+    kv, dv = _last(kk), _last(dd)
+    if not _ok(kv):
+        return None
+    if kv >= ob:
+        sig, note = -1, "overbought (>%s)%s" % (_f(ob, 0), ", %K turning below %D" if _ok(dv) and kv < dv else "")
+    elif kv <= os_:
+        sig, note = 1, "oversold (<%s)%s" % (_f(os_, 0), ", %K turning above %D" if _ok(dv) and kv > dv else "")
+    elif _ok(dv):
+        sig, note = (1, "%K above %D") if kv > dv else (-1, "%K below %D")
+    else:
+        sig, note = 0, "mid-range"
+    return _ib_row("Stochastic (%d, %d, %d)" % (k, d, sm), _f(kv, 1), sig, note, src)
+
+
+def _boll_row(df, n=20, k=2.0, src="chart"):
+    up, mid, lo = bollinger(df["Close"], n, k)
+    u, m, l_ = _last(up), _last(mid), _last(lo)
+    if not (_ok(u) and _ok(l_)) or u <= l_:
+        return None
+    px = float(df["Close"].iloc[-1])
+    pb = (px - l_) / (u - l_)
+    bw = ((up - lo) / mid.replace(0, np.nan)).dropna()
+    squeeze = len(bw) > 60 and float(bw.iloc[-1]) <= float(bw.tail(120).quantile(0.12))
+    mup = _slope_word(mid) >= 0
+    if pb > 1:
+        sig, note = -1, "closed above the upper band — stretched"
+    elif pb < 0:
+        sig, note = 1, "closed below the lower band — stretched to the downside"
+    elif pb >= 0.5:
+        sig, note = (1 if mup else 0), "upper half (%%B %s)%s" % (_f(pb * 100, 0), ", basis rising" if mup else
+                                                                 ", basis falling")
+    else:
+        sig, note = (-1 if not mup else 0), "lower half (%%B %s)%s" % (_f(pb * 100, 0), ", basis falling"
+                                                                      if not mup else ", basis rising")
+    if squeeze:
+        note += " · squeeze: bands at their narrowest — breakout setup"
+    return _ib_row("Bollinger (%d, %s)" % (n, _f(k, 1)), "%B " + _f(pb * 100, 0), sig, note, src)
+
+
+def _dir_row(name, line, dirn, df, src="chart", what="line"):
+    v, dv = _last(line), _last(dirn)
+    if not _ok(v) or not _ok(dv):
+        return None
+    px = float(df["Close"].iloc[-1])
+    dser = pd.to_numeric(dirn, errors="coerce").dropna()
+    flips = dser.ne(dser.shift()).cumsum()
+    age = int((flips == flips.iloc[-1]).sum()) if len(flips) else 0
+    if dv > 0:
+        return _ib_row(name, _f(v), 1, "uptrend for %d bars · %s %s%% below price" % (age, what, _f((1 - v / px) * 100, 1)),
+                       src)
+    return _ib_row(name, _f(v), -1, "downtrend for %d bars · %s %s%% above price" % (age, what, _f((v / px - 1) * 100, 1)),
+                   src)
+
+
+def _adx_row(df, n=14, src="auto"):
+    a, p, m = adx(df, n)
+    av, pv, mv = _last(a), _last(p), _last(m)
+    if not _ok(av):
+        return None
+    if av < 20:
+        return _ib_row("ADX (%d)" % n, _f(av, 1), 0, "below 20 — no real trend, range conditions", src)
+    side = pv > mv
+    return _ib_row("ADX (%d)" % n, _f(av, 1), 1 if side else -1,
+                   "%s trend (%s), +DI %s −DI" % ("strong" if av >= 25 else "developing",
+                                                  "up" if side else "down", ">" if side else "<"), src)
+
+
+def _vol_row(df, src="chart"):
+    rv, frac = vol_ratio(df, 20)
+    if not _ok(rv):
+        return None
+    up = float(df["Close"].iloc[-1]) >= float(df["Open"].iloc[-1])
+    pace = " (pace, bar %s%% complete)" % _f(frac * 100, 0) if frac < 0.97 else ""
+    if rv >= 1.5:
+        sig = 1 if up else -1
+        note = "heavy volume on a %s bar%s" % ("up" if up else "down", pace)
+    elif rv >= 0.8:
+        sig, note = 0, "around average%s" % pace
+    else:
+        sig, note = 0, "below average — weak confirmation%s" % pace
+    return _ib_row("Volume vs 20-bar avg", _f(rv, 2) + "x", sig, note, src)
+
+
+def _atr_row(df, n=14, src="chart"):
+    a = atr(df, n)
+    v = _last(a)
+    if not _ok(v):
+        return None
+    px = float(df["Close"].iloc[-1])
+    avg = float(a.tail(50).mean())
+    trend = "rising" if v > avg * 1.1 else "falling" if v < avg * 0.9 else "steady"
+    return _ib_row("ATR (%d)" % n, _f(v), 0, "%s%% of price, volatility %s — size stops with it" % (_f(v / px * 100, 1), trend),
+                   src)
+
+
+def _wt_row(df, n1=10, n2=21, ob=60, os_=-60, src="chart"):
+    a, b = wavetrend(df, n1, n2)
+    av, bv = _last(a), _last(b)
+    if not _ok(av):
+        return None
+    if av >= ob:
+        sig, note = -1, "overbought (>%s)" % _f(ob, 0)
+    elif av <= os_:
+        sig, note = 1, "oversold (<%s)" % _f(os_, 0)
+    elif _ok(bv):
+        sig, note = (1, "fast line above signal") if av > bv else (-1, "fast line below signal")
+    else:
+        sig, note = 0, "mid-range"
+    return _ib_row("WaveTrend (%d, %d)" % (n1, n2), _f(av, 1), sig, note, src)
+
+
+def _nw_row(df, h=8.0, mult=3.0, src="chart"):
+    up, lo, mid = nadaraya_watson(df["Close"], h, mult)
+    u, l_, m = _last(up), _last(lo), _last(mid)
+    if not (_ok(u) and _ok(l_)):
+        return None
+    px = float(df["Close"].iloc[-1])
+    if px > u:
+        sig, note = -1, "above the upper envelope — stretched"
+    elif px < l_:
+        sig, note = 1, "below the lower envelope — stretched to the downside"
+    else:
+        rising = _slope_word(mid, 3) >= 0
+        sig, note = 0, "inside the envelope, centre line %s" % ("rising" if rising else "falling")
+    return _ib_row("Nadaraya-Watson", _f(m), sig, note, src)
+
+
+def _zones_row(df, z, src="chart"):
+    zones = ranked_sr_zones(df, z.get("lookback", 300), z.get("left", 8), z.get("right", 8),
+                            z.get("merge", 0.6), z.get("max", 8))
+    if not zones:
+        return None
+    px = float(df["Close"].iloc[-1])
+    sup = [x for x in zones if (x["lo"] + x["hi"]) / 2 < px]
+    res = [x for x in zones if (x["lo"] + x["hi"]) / 2 >= px]
+    s = max(sup, key=lambda x: x["hi"]) if sup else None
+    r = min(res, key=lambda x: x["lo"]) if res else None
+    ds = (px / s["hi"] - 1) * 100 if s else None
+    dr = (r["lo"] / px - 1) * 100 if r else None
+    if s and (s["lo"] <= px <= s["hi"] * 1.015):
+        return _ib_row("Ranked S/R", _f(s["hi"]), 1, "sitting on support (%s%% strength)" % s["pct"], src)
+    if r and (r["lo"] * 0.985 <= px <= r["hi"]):
+        return _ib_row("Ranked S/R", _f(r["lo"]), -1, "pressing into resistance (%s%% strength)" % r["pct"], src)
+    bits = []
+    if s:
+        bits.append("support %s (−%s%%)" % (_f(s["hi"]), _f(ds, 1)))
+    if r:
+        bits.append("resistance %s (+%s%%)" % (_f(r["lo"]), _f(dr, 1)))
+    sig = 0
+    if ds is not None and dr is not None:
+        sig = 1 if dr > ds * 2 else -1 if ds > dr * 2 else 0
+    return _ib_row("Ranked S/R", _f((s or r)["hi"] if s else r["lo"]), sig, " · ".join(bits), src)
+
+
+def _div_row(df, dcfg, src="chart"):
+    srcn = dcfg.get("src", "rsi")
+    osc = {"rsi": lambda: rsi(df["Close"], 14), "macd": lambda: macd(df["Close"])[0],
+           "wt": lambda: wavetrend(df)[0]}.get(srcn, lambda: rsi(df["Close"], 14))()
+    dv = divergences(df, osc, dcfg.get("left", 5), dcfg.get("right", 5), hidden=dcfg.get("hidden", True))
+    n = len(df)
+    recent = [x for x in dv if n - 1 - x["i2"] <= 15]
+    if not recent:
+        return _ib_row("Divergence (%s)" % srcn.upper(), "—", 0, "no divergence in the last 15 bars", src)
+    x = recent[0]
+    name, side = DIV_KINDS.get(x["kind"], ("Divergence", "bull"))
+    return _ib_row("Divergence (%s)" % srcn.upper(), "%d bars ago" % (n - 1 - x["i2"]), 1 if side == "bull" else -1,
+                   name.lower(), src)
+
+
+def _vwap_row(df, src="auto"):
+    try:
+        idx = pd.DatetimeIndex(df.index)
+        day = idx.normalize()
+        last_day = day[-1]
+        d = df[day == last_day]
+        tp = (d["High"] + d["Low"] + d["Close"]) / 3
+        vv = d["Volume"].astype(float)
+        if float(vv.sum()) <= 0:
+            return None
+        vw = float((tp * vv).sum() / vv.sum())
+    except Exception:
+        return None
+    px = float(df["Close"].iloc[-1])
+    d_ = (px / vw - 1) * 100
+    return _ib_row("VWAP (session)", _f(vw), 1 if px > vw else -1,
+                   "price %s%% %s session VWAP" % (_f(abs(d_), 1), "above" if px > vw else "below"), src)
+
+
+# zaman dilimine göre otomatik set: ne değerlendiriliyorsa ona uygun göstergeler
+AUTO_SETS = {
+    "intraday": ["ema9", "ema21", "vwap", "rsi14", "stoch", "macd", "boll", "vol"],
+    "swing": ["rsi14", "macd", "stoch", "boll", "adx", "sma20", "sma50", "sma200", "sup", "vol"],
+    "position": ["sma10", "sma40", "rsi14", "macd", "adx", "boll", "vol"],
+}
+
+
+def indicator_board(df, cfg=None, tf="1d", defaults=None):
+    """Grafikte açık olan her göstergeyi kendi ayarlarıyla değerlendirir. Kullanıcı varsayılanların
+    dışında hiçbir şey eklemediyse zaman dilimine uygun bir set (AUTO_SETS) de eklenir.
+    Döner: {rows, buy, sell, neutral, score, label, auto (bool), kind}"""
+    cfg = cfg or {}
+    defaults = defaults or {}
+    rows, have = [], set()
+
+    def add(r, key):
+        if r is not None and key not in have:
+            rows.append(r)
+            have.add(key)
+
+    on = lambda k: bool((cfg.get(k) or {}).get("on"))  # noqa: E731
+    if on("sma"):
+        for p in (cfg["sma"].get("ps") or []):
+            add(_ma_row(df, sma(df["Close"], int(p)), "SMA %d" % int(p), "chart"), "sma%d" % int(p))
+    if on("boll"):
+        b = cfg["boll"]
+        add(_boll_row(df, b.get("n", 20), b.get("k", 2.0)), "boll")
+    if on("sup"):
+        line, dirn = supertrend(df, cfg["sup"].get("n", 10), cfg["sup"].get("mult", 3.0))
+        add(_dir_row("Supertrend (%d, %s)" % (cfg["sup"].get("n", 10), _f(cfg["sup"].get("mult", 3.0), 1)),
+                     line, dirn, df), "sup")
+    if on("vidya"):
+        v = cfg["vidya"]
+        vv, _, _, vd, _ = vidya(df, v.get("len", 10), v.get("mom", 20), v.get("mult", 2.0))
+        add(_dir_row("VIDYA (%d)" % v.get("len", 10), vv, vd, df, what="average"), "vidya")
+    if on("vstop"):
+        v = cfg["vstop"]
+        line, dirn = volatility_stop(df, v.get("n", 20), v.get("mult", 2.0))
+        add(_dir_row("Volatility Stop (%d, %s)" % (v.get("n", 20), _f(v.get("mult", 2.0), 1)), line, dirn, df,
+                     what="stop"), "vstop")
+    if on("nw"):
+        add(_nw_row(df, cfg["nw"].get("h", 8.0), cfg["nw"].get("mult", 3.0)), "nw")
+    if on("zones"):
+        add(_zones_row(df, cfg["zones"]), "zones")
+    if on("rsi"):
+        r = cfg["rsi"]
+        add(_rsi_row(df, int(r.get("len", 14)), r.get("ob", 70), r.get("os", 30)), "rsi%d" % int(r.get("len", 14)))
+    if on("macd"):
+        m = cfg["macd"]
+        add(_macd_row(df, int(m.get("f", 12)), int(m.get("s", 26)), int(m.get("sig", 9))), "macd")
+    if on("stoch"):
+        s = cfg["stoch"]
+        add(_stoch_row(df, int(s.get("k", 14)), int(s.get("d", 3)), int(s.get("smooth", 3)), s.get("ob", 80),
+                       s.get("os", 20)), "stoch")
+    if on("wt"):
+        w = cfg["wt"]
+        add(_wt_row(df, int(w.get("n1", 10)), int(w.get("n2", 21)), w.get("ob", 60), w.get("os", -60)), "wt")
+    if on("atr"):
+        add(_atr_row(df, int(cfg["atr"].get("n", 14))), "atr")
+    if on("div"):
+        add(_div_row(df, cfg["div"]), "div")
+    if on("vol"):
+        add(_vol_row(df), "vol")
+    # kullanıcı varsayılanların dışında bir şey açtı mı?
+    added = [k for k, v in cfg.items() if isinstance(v, dict) and v.get("on") and
+             not (defaults.get(k) or {}).get("on")]
+    kind = tf_kind(tf)
+    auto = not added
+    if auto:
+        for key in AUTO_SETS[kind]:
+            if key in have:
+                continue
+            if key.startswith("sma"):
+                p = int(key[3:])
+                add(_ma_row(df, sma(df["Close"], p), "SMA %d" % p, "auto"), key)
+            elif key.startswith("ema"):
+                p = int(key[3:])
+                add(_ma_row(df, ema(df["Close"], p), "EMA %d" % p, "auto"), key)
+            elif key == "rsi14":
+                add(_rsi_row(df, 14, src="auto"), key)
+            elif key == "macd":
+                add(_macd_row(df, src="auto"), key)
+            elif key == "stoch":
+                add(_stoch_row(df, src="auto"), key)
+            elif key == "boll":
+                add(_boll_row(df, src="auto"), key)
+            elif key == "adx":
+                add(_adx_row(df, src="auto"), key)
+            elif key == "sup":
+                line, dirn = supertrend(df, 10, 3.0)
+                add(_dir_row("Supertrend (10, 3.0)", line, dirn, df, src="auto"), key)
+            elif key == "vwap":
+                add(_vwap_row(df), key)
+            elif key == "vol":
+                add(_vol_row(df, src="auto"), key)
+    score = sum(r["sig"] for r in rows)
+    buy = sum(1 for r in rows if r["sig"] > 0)
+    sell = sum(1 for r in rows if r["sig"] < 0)
+    n = max(1, len(rows))
+    ratio = score / n
+    label = ("Strong Buy" if ratio >= 0.5 else "Buy" if ratio >= 0.15 else "Strong Sell" if ratio <= -0.5 else
+             "Sell" if ratio <= -0.15 else "Neutral")
+    return {"rows": rows, "buy": buy, "sell": sell, "neutral": len(rows) - buy - sell, "score": score,
+            "label": label, "auto": auto, "kind": kind, "added": added}
