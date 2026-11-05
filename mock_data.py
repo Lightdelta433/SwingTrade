@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.6"
+DATA_VERSION = "3.7"
 
 try:
     import yfinance as yf
@@ -915,7 +915,8 @@ def get_forex_news(category="All"):
                 "sentiment": f["sentiment"], "source": f["source"], "when": f["when_short"],
                 "tags": tags[:3], "link": f.get("link"), "thumb": f.get("thumb")}
     rest = [{"title": p["title"], "pair": p["pair"], "sentiment": p["sentiment"], "category": p["category"],
-             "when": p["when_short"], "source": p["source"], "spark": p["spark"], "link": p.get("link")}
+             "when": p["when_short"], "source": p["source"], "spark": p["spark"], "link": p.get("link"),
+             "thumb": p.get("thumb")}
             for i, p in enumerate(uniq) if i != fi][:8]
     return {"featured": featured, "items": rest, "src": "real"}
 
@@ -1631,8 +1632,20 @@ def _rss_fetch(url, params=None):
             e = it.find(tag)
             return (e.text or "").strip() if e is not None and e.text else ""
         src = it.find("source")
+        thumb = None
+        for el in it:                      # media:content / media:thumbnail / enclosure (görsel varsa)
+            ln = el.tag.rsplit("}", 1)[-1]
+            u = el.get("url") or ""
+            if ln in ("content", "thumbnail") and u.startswith("http") and \
+                    (el.get("medium", "image") == "image" or re.search(r"\.(jpe?g|png|webp)", u, re.I)):
+                thumb = thumb or u
+            elif ln == "enclosure" and u.startswith("http") and (el.get("type") or "").startswith("image"):
+                thumb = thumb or u
+        if not thumb:
+            m = re.search(r'<img[^>]+src="(https?://[^"]+)"', _t("description"))
+            thumb = m.group(1) if m else None
         out.append({"title": _t("title"), "link": _t("link"), "pub": _t("pubDate"),
-                    "desc": _t("description"),
+                    "desc": _t("description"), "thumb": thumb,
                     "source": (src.text.strip() if src is not None and src.text else "")})
     return out
 
@@ -1660,7 +1673,8 @@ def _rss_to_items(raw, ticker=None, default_src="Yahoo Finance", limit=12):
                     "when": when, "when_short": short, "age_min": mins,
                     "hours_ago": max(1, mins // 60),
                     "sentiment": _sentiment(title + " " + summary), "link": r.get("link") or None,
-                    "thumb": None, "summary": summary, "related": [ticker] if ticker else [], "src": "real"})
+                    "thumb": r.get("thumb"), "summary": summary, "related": [ticker] if ticker else [],
+                    "src": "real"})
     return out
 
 
@@ -2112,3 +2126,403 @@ def get_valuations(tickers):
     """Birden çok sembol için çarpanlar (paralel)."""
     ticks = [t for t in dict.fromkeys(tickers) if t]
     return {v["ticker"]: v for v in _pmap(get_valuation, ticks, workers=4)}
+
+
+# ======================================================================
+# v3.7 — Gelir kırılımı ve operasyonel göstergeler: SEC EDGAR (XBRL)
+#   Yahoo segment vermez. Şirketin son 10-K / 20-F dosyasındaki XBRL verisinden
+#   ürün-hizmet, iş segmenti ve coğrafya bazında gelir okunur; abone / müşteri / üye
+#   sayısı gibi sayılar ve sözleşmeli gelecek gelir (RPO), ertelenmiş gelir ise
+#   son 10-K veya 10-Q'dan. Yalnızca SEC'e rapor veren şirketler kapsanır.
+# ======================================================================
+import xml.etree.ElementTree as _ET  # noqa: E402
+
+_SEC_UA = (os.environ.get("SEC_USER_AGENT") or
+           "Pulse Market Dashboard (open-source Streamlit app; personal research use)")
+_SEC_ANNUAL = ("10-K", "20-F", "40-F")
+_SEC_ANY = ("10-K", "20-F", "40-F", "10-Q")
+_SEC_STD_NS = ("fasb.org/us-gaap", "fasb.org/srt", "xbrl.ifrs.org", "xbrl.sec.gov/dei", "fasb.org/us-types")
+SEC_REV_CONCEPTS = ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues",
+                    "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "SalesRevenueGoodsNet",
+                    "Revenue", "RevenueFromContractsWithCustomers", "RevenuesNetOfInterestExpense"]
+SEC_AXES = {"product": ("ProductOrServiceAxis", "ProductsAndServicesAxis"),
+            "segment": ("StatementBusinessSegmentsAxis", "SegmentsAxis"),
+            "geo": ("StatementGeographicalAxis", "GeographicalAreasAxis")}
+SEC_AXIS_NAME = {"product": "Products & services", "segment": "Business segments", "geo": "Geography"}
+# sayı birimi olan ama gösterge olmayan kavramlar
+_KPI_SKIP = re.compile(r"Segment|Vote|Share|Stock|Option|Warrant|Award|Lease|Propert|Plan\b|Director|Year|Month|"
+                       r"Day|Percent|Ratio|Rate|Pension|Tax|Acquisition|Business|Reportable|Employee|Patent|Lawsuit|"
+                       r"Claim|Facility|Debt|Note|Loan|Swap|Derivative|Contract(?!WithCustomer)|Hedge", re.I)
+_KPI_WORDS = re.compile(r"Subscri|Member|Customer|User|Account|Client|Store|Restaurant|Location|Seat|Device|"
+                        r"Vehicle|Deliver|Unit|Household|Policy|Room|Order|Booking|Trip|Transaction|Merchant|Partner|"
+                        r"Hotel|Night|Viewer|Listener|Player|Patient|Site|Server|Download|Install|Licens", re.I)
+_KPI_MONEY = {"RevenueRemainingPerformanceObligation": "Remaining performance obligations (contracted, not yet billed)",
+              "ContractWithCustomerLiability": "Deferred revenue (contract liabilities)",
+              "ContractWithCustomerLiabilityCurrent": "Deferred revenue — current"}
+_KPI_MONEY_WORDS = re.compile(r"RecurringRevenue|AnnualizedRevenue|Bookings|Backlog|GrossMerchandiseValue|"
+                              r"GrossBookings|TotalPaymentVolume|AssetsUnderManagement", re.I)
+
+
+def _sec_get(url, timeout=25):
+    r = requests.get(url, headers={"User-Agent": _SEC_UA, "Accept-Encoding": "gzip, deflate"}, timeout=timeout)
+    r.raise_for_status()
+    return r
+
+
+@_ttl_cache(86400, fail_ttl=900)
+def _sec_cik_map():
+    if not _HAS_REQ:
+        return {}
+    try:
+        js = _sec_get("https://www.sec.gov/files/company_tickers.json").json()
+        return {str(v.get("ticker", "")).upper(): int(v.get("cik_str")) for v in js.values() if v.get("cik_str")}
+    except Exception:
+        return {}
+
+
+def sec_cik(t):
+    m = _sec_cik_map()
+    t = str(t or "").upper()
+    for k in (t, t.replace(".", "-"), t.replace("-", ".")):
+        if k in m:
+            return m[k]
+    return None
+
+
+@_ttl_cache(21600, fail_ttl=900)
+def _sec_filings(cik):
+    """Son dosyalar: [{form, acc, doc, report, filed}] — yeni → eski."""
+    try:
+        js = _sec_get("https://data.sec.gov/submissions/CIK%010d.json" % int(cik)).json()
+        rc = (js.get("filings") or {}).get("recent") or {}
+        out = []
+        for i, form in enumerate(rc.get("form") or []):
+            if form not in _SEC_ANY:
+                continue
+            out.append({"form": form, "acc": rc["accessionNumber"][i], "doc": rc["primaryDocument"][i],
+                        "report": (rc.get("reportDate") or [""] * (i + 1))[i],
+                        "filed": (rc.get("filingDate") or [""] * (i + 1))[i]})
+        return out
+    except Exception:
+        return []
+
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag.rsplit(":", 1)[-1]
+
+
+def sec_parse_instance(xml_bytes):
+    """XBRL instance → {contexts: id→{dims, start, end, instant}, units: id→measure, facts: [...]}.
+    Ad alanı öneklerinden bağımsız (yerel adlarla) çalışır."""
+    root = _ET.fromstring(xml_bytes)
+    ctx, units, facts = {}, {}, []
+    for el in root:
+        ln = _local(el.tag)
+        if ln == "context":
+            dims, start, end, inst, typed = {}, None, None, None, False
+            for sub in el.iter():
+                sl = _local(sub.tag)
+                if sl == "explicitMember":
+                    dims[_local(sub.get("dimension") or "")] = (sub.text or "").strip()
+                elif sl == "typedMember":
+                    typed = True
+                elif sl == "startDate":
+                    start = (sub.text or "").strip()
+                elif sl == "endDate":
+                    end = (sub.text or "").strip()
+                elif sl == "instant":
+                    inst = (sub.text or "").strip()
+            ctx[el.get("id")] = {"dims": dims, "typed": typed, "start": start, "end": end or inst,
+                                 "instant": inst is not None}
+        elif ln == "unit":
+            ms = [(m.text or "").strip() for m in el.iter() if _local(m.tag) == "measure"]
+            units[el.get("id")] = "/".join(ms)
+        elif el.get("contextRef") is not None:
+            txt = (el.text or "").strip()
+            if not txt:
+                continue
+            try:
+                val = float(txt)
+            except ValueError:
+                continue
+            ns = el.tag[1:].split("}", 1)[0] if el.tag.startswith("{") else ""
+            facts.append({"c": _local(el.tag), "std": any(s in ns for s in _SEC_STD_NS),
+                          "ctx": el.get("contextRef"), "unit": el.get("unitRef") or "", "v": val})
+    return {"contexts": ctx, "units": units, "facts": facts}
+
+
+def sec_parse_labels(xml_bytes):
+    """Etiket linkbase → {'aapl_IPhoneMember': 'iPhone', ...} (standart 'label' rolü öncelikli)."""
+    root = _ET.fromstring(xml_bytes)
+    XL = "{http://www.w3.org/1999/xlink}"
+    loc, lab, arcs = {}, {}, []
+    for el in root.iter():
+        ln = _local(el.tag)
+        if ln == "loc":
+            href = el.get(XL + "href") or ""
+            loc[el.get(XL + "label")] = href.split("#", 1)[-1]
+        elif ln == "label":
+            role = (el.get(XL + "role") or "").rsplit("/", 1)[-1]
+            lab.setdefault(el.get(XL + "label"), []).append((role, (el.text or "").strip()))
+        elif ln == "labelArc":
+            arcs.append((el.get(XL + "from"), el.get(XL + "to")))
+    out = {}
+    rank = {"terseLabel": 0, "label": 1, "verboseLabel": 2}
+    for fr, to in arcs:
+        cid = loc.get(fr)
+        if not cid or to not in lab:
+            continue
+        best = sorted(lab[to], key=lambda x: rank.get(x[0], 9))[0]
+        prev = out.get(cid)
+        if prev is None or rank.get(best[0], 9) < prev[0]:
+            out[cid] = (rank.get(best[0], 9), best[1])
+    return {k: re.sub(r"\s*\[(Member|Axis|Domain|Line Items|Abstract)\]\s*$", "", v[1]) for k, v in out.items()}
+
+
+_COUNTRY = {"US": "United States", "CN": "China", "JP": "Japan", "GB": "United Kingdom", "DE": "Germany",
+            "FR": "France", "CA": "Canada", "TW": "Taiwan", "KR": "South Korea", "IN": "India", "IE": "Ireland",
+            "NL": "Netherlands", "SG": "Singapore", "MX": "Mexico", "BR": "Brazil", "AU": "Australia",
+            "CH": "Switzerland", "HK": "Hong Kong", "IL": "Israel", "IT": "Italy", "ES": "Spain"}
+
+
+def _humanize(member):
+    pre, _, name = member.rpartition(":")
+    if pre == "country":
+        return _COUNTRY.get(name, name)
+    name = re.sub(r"(Member|Segment)$", "", name) or name
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", name)
+    s = re.sub(r"\bNon Us\b", "Non-US", s)
+    s = re.sub(r"\bUs\b", "US", s)
+    s = re.sub(r"\bNumber Of\b", "Number of", s)
+    return re.sub(r"\b(And|Of|The|In|For)\b", lambda m: m.group(1).lower(), s).strip()
+
+
+def _sec_label(labels, member):
+    key = member.replace(":", "_")
+    if key in labels:
+        return labels[key]
+    loc = key.split("_", 1)[-1]
+    for k, v in labels.items():          # önek bilinmiyorsa yerel ada göre
+        if k.split("_", 1)[-1] == loc:
+            return v
+    return _humanize(member)
+
+
+def _days(a, b):
+    try:
+        return (pd.Timestamp(b) - pd.Timestamp(a)).days
+    except Exception:
+        return None
+
+
+def sec_revenue_breakdown(parsed, labels=None):
+    """Yıllık gelir: toplam + eksen (ürün/segment/coğrafya) bazında üyeler, son 3 mali yıl."""
+    labels = labels or {}
+    C = parsed["contexts"]
+
+    def annual(cid):
+        c = C.get(cid)
+        if not c or c["instant"] or c["typed"]:
+            return None
+        d = _days(c["start"], c["end"])
+        return c if d is not None and 330 <= d <= 380 else None
+
+    totals, cur = {}, {}             # kavram → {bitiş: değer}
+    for f in parsed["facts"]:
+        if f["c"] not in SEC_REV_CONCEPTS or not f["std"]:
+            continue
+        c = annual(f["ctx"])
+        if c and not c["dims"]:
+            totals.setdefault(f["c"], {})[c["end"]] = max(f["v"], totals.get(f["c"], {}).get(c["end"], 0))
+            u = (parsed["units"].get(f["unit"]) or "")
+            if u.lower().startswith("iso4217:"):
+                cur[f["c"]] = u.split(":", 1)[1].upper()
+    if not totals:
+        return None
+    last_end = max(e for v in totals.values() for e in v)
+    concept = next((k for k in SEC_REV_CONCEPTS if last_end in totals.get(k, {})), None)
+    if not concept:
+        return None
+    total = totals[concept]
+    ends = sorted(total, reverse=True)[:3]
+    groups = {}
+    for f in parsed["facts"]:
+        if f["c"] not in SEC_REV_CONCEPTS or not f["std"]:
+            continue
+        c = annual(f["ctx"])
+        if not c or len(c["dims"]) != 1 or c["end"] not in ends:
+            continue
+        axis, member = next(iter(c["dims"].items()))
+        g = next((k for k, axes in SEC_AXES.items() if axis in axes), None)
+        if not g:
+            continue
+        slot = groups.setdefault(g, {}).setdefault(member, {})
+        prev = slot.get(c["end"])
+        # aynı üye için tercih: seçili kavram, sonra en büyük değer
+        if prev is None or (f["c"] == concept and prev[1] != concept) or \
+                (f["c"] == prev[1] and f["v"] > prev[0]):
+            slot[c["end"]] = (f["v"], f["c"])
+    out_groups = []
+    t0 = total.get(ends[0])
+    for g in ("product", "segment", "geo"):
+        mem = groups.get(g) or {}
+        rows = []
+        for m, vals in mem.items():
+            v0 = (vals.get(ends[0]) or (None,))[0]
+            if v0 is None or v0 <= 0:
+                continue
+            hist = [(vals.get(e) or (None,))[0] for e in ends]
+            v1 = hist[1] if len(hist) > 1 else None
+            rows.append({"member": m, "label": _sec_label(labels, m), "values": hist,
+                         "share": v0 / t0 * 100 if t0 else None,
+                         "yoy": (v0 / v1 - 1) * 100 if v1 else None})
+        if len(rows) < 2:
+            continue
+        rows.sort(key=lambda r: -r["values"][0])
+        ssum = sum(r["values"][0] for r in rows)
+        out_groups.append({"key": g, "name": SEC_AXIS_NAME[g], "rows": rows[:14],
+                           "overlap": bool(t0 and ssum > t0 * 1.06)})
+    return {"concept": concept, "ends": ends, "total": [total.get(e) for e in ends], "groups": out_groups,
+            "currency": cur.get(concept, "USD")}
+
+
+def sec_kpis(parsed, labels=None, limit=8):
+    """Abone / müşteri / üye / mağaza sayısı gibi sayılar + RPO, ertelenmiş gelir. Şirket düzeyi (boyutsuz)."""
+    labels = labels or {}
+    C, U = parsed["contexts"], parsed["units"]
+    by, cur_of = {}, {}
+    for f in parsed["facts"]:
+        c = C.get(f["ctx"])
+        if not c or c["dims"] or c["typed"] or not c["end"]:
+            continue
+        unit = (U.get(f["unit"]) or f["unit"] or "").lower()
+        money = unit.startswith("iso4217:") and "/" not in unit
+        name = f["c"]
+        if money:
+            cur_of[name] = unit.split(":", 1)[1].upper()
+            if name in _KPI_MONEY:
+                lab, kind = _KPI_MONEY[name], "money"
+            elif not f["std"] and _KPI_MONEY_WORDS.search(name):
+                lab, kind = None, "money"
+            else:
+                continue
+        else:
+            ul = unit.split(":")[-1]
+            if ul in ("shares", "pure", "") or "/" in unit or "iso4217" in unit:
+                continue
+            if _KPI_SKIP.search(name) or not (_KPI_WORDS.search(name) or _KPI_WORDS.search(ul)):
+                continue
+            lab, kind = None, "count"
+        dur = None if c["instant"] else _days(c["start"], c["end"])
+        key = (name, kind, "i" if c["instant"] else ("q" if dur and dur < 120 else "y" if dur and dur > 300 else "o"))
+        by.setdefault(key, {})[c["end"]] = f["v"]
+        by[key]["__lab"] = lab
+        by[key]["__std"] = f["std"]
+    out = []
+    for (name, kind, per), vals in by.items():
+        lab = vals.pop("__lab")
+        std = vals.pop("__std")
+        if not vals:
+            continue
+        end = max(vals)
+        v = vals[end]
+        prev = None
+        for e, pv in vals.items():
+            dd = _days(e, end)
+            if dd is not None and 340 <= dd <= 390:
+                prev = pv
+        label = lab or _sec_label(labels, ("us-gaap:" if std else "x:") + name)
+        pri = 0 if kind == "money" and name in _KPI_MONEY else 1
+        if (kind == "count" and re.search(r"Subscri|Member|Customer|User|Account|Client", name, re.I)) or \
+                re.search(r"Recurring", name, re.I):
+            pri = -1
+        out.append({"concept": name, "label": label, "kind": kind, "value": v, "end": end, "period": per,
+                    "currency": cur_of.get(name, "USD"),
+                    "yoy": (v / prev - 1) * 100 if prev else None, "pri": pri})
+    out.sort(key=lambda k: (k["pri"], k["end"] == "" , -pd.Timestamp(k["end"]).value if k["end"] else 0))
+    # aynı kavramdan tek satır (anlık değer öncelikli)
+    seen, res = set(), []
+    for k in out:
+        if k["concept"] in seen:
+            continue
+        seen.add(k["concept"])
+        res.append(k)
+    return res[:int(limit)]
+
+
+def _sec_folder(cik, acc):
+    return "https://www.sec.gov/Archives/edgar/data/%d/%s/" % (int(cik), acc.replace("-", ""))
+
+
+@_ttl_cache(259200, fail_ttl=1800)
+def _sec_filing_data(cik, acc, doc):
+    """Bir dosyanın XBRL instance + etiketleri (ayrıştırılmış)."""
+    folder = _sec_folder(cik, acc)
+    items = _sec_get(folder + "index.json").json().get("directory", {}).get("item", [])
+    names = [i.get("name", "") for i in items]
+    sizes = {i.get("name", ""): int(i.get("size") or 0) if str(i.get("size") or "").isdigit() else 0 for i in items}
+    inst = next((n for n in names if n.endswith("_htm.xml")), None)
+    if not inst:
+        cand = [n for n in names if n.endswith(".xml") and not re.search(r"_(cal|def|lab|pre)\.xml$", n)
+                and n not in ("FilingSummary.xml",)]
+        inst = max(cand, key=lambda n: sizes.get(n, 0)) if cand else None
+    if not inst:
+        return None
+    parsed = sec_parse_instance(_sec_get(folder + inst, timeout=40).content)
+    lab = next((n for n in names if n.endswith("_lab.xml")), None)
+    labels = {}
+    if lab:
+        try:
+            labels = sec_parse_labels(_sec_get(folder + lab, timeout=30).content)
+        except Exception:
+            labels = {}
+    parsed["labels"] = labels
+    parsed["url"] = folder + doc
+    return parsed
+
+
+@_ttl_cache(86400, fail_ttl=1800)
+def get_revenue_breakdown(t):
+    """Gelir kırılımı + operasyonel göstergeler. src: real | none (SEC'e rapor vermeyen / erişilemeyen)."""
+    out = {"src": "none", "ticker": t}
+    if not _HAS_REQ or not re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$", str(t or "").upper()):
+        out["why"] = "Only companies that file with the SEC (US listings) are covered."
+        return out
+    cik = sec_cik(t)
+    if not cik:
+        out["why"] = ("No SEC filer found for this symbol — non-US listings, ETFs and funds aren't covered."
+                      if _sec_cik_map() else "SEC EDGAR could not be reached right now.")
+        return out
+    fl = _sec_filings(cik)
+    ann = next((x for x in fl if x["form"] in _SEC_ANNUAL), None)
+    if not ann:
+        out["why"] = "No annual report (10-K / 20-F) with XBRL data was found."
+        return out
+    try:
+        pa = _sec_filing_data(cik, ann["acc"], ann["doc"])
+    except Exception:
+        pa = None
+    if not pa:
+        out["why"] = "The annual report's XBRL data could not be read."
+        return out
+    out.update({"src": "real", "cik": cik, "form": ann["form"], "filed": ann["filed"], "report": ann["report"],
+                "url": pa["url"]})
+    out["rev"] = sec_revenue_breakdown(pa, pa["labels"])
+    # göstergeler: en yeni dosya (10-Q daha yeniyse onu da tara)
+    latest = fl[0] if fl else ann
+    kp = sec_kpis(pa, pa["labels"])
+    out["kpi_src"] = {"form": ann["form"], "filed": ann["filed"], "url": pa["url"]}
+    if latest["acc"] != ann["acc"]:
+        try:
+            pq = _sec_filing_data(cik, latest["acc"], latest["doc"])
+            if pq:
+                kq = sec_kpis(pq, pq["labels"] or pa["labels"])
+                if kq:
+                    known = {k["concept"] for k in kq}
+                    kp = kq + [k for k in kp if k["concept"] not in known]
+                    kp = kp[:8]
+                    out["kpi_src"] = {"form": latest["form"], "filed": latest["filed"], "url": pq["url"]}
+        except Exception:
+            pass
+    out["kpis"] = kp
+    return out
