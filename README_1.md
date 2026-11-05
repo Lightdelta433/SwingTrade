@@ -1,6 +1,6 @@
-# Pulse — Market Dashboard (Streamlit) · v3.6
+# Pulse — Market Dashboard (Streamlit) · v3.7
 
-Koyu temalı swing-trade paneli. **Arayüz İngilizce** (v3.5). Bölümler: **Markets · Valuation ·
+Swing-trade paneli (koyu temalar + **White** açık tema). **Arayüz İngilizce** (v3.5). Bölümler: **Markets · Valuation ·
 Long Term · Short Term · Backtest · Forex & News**. Eski Türkçe bağlantılar
 (`?sec=Piyasalar` vb.) yeni bölümlere yönlenir.
 
@@ -21,7 +21,17 @@ Koddaki açıklama satırları Türkçe kaldı; yalnızca ekranda görünen meti
 
 `pulse_chart/index.html` ayrı bir klasörde durmalı. GitHub'da yeni dosya oluştururken
 ad kutusuna `pulse_chart/index.html` yazman klasörü de oluşturur.
-Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda söyler.
+Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda söyler — v3.7'den
+itibaren `pulse_chart/index.html` de kontrol edilir (dosyanın başında `<meta name="pulse-ui">`).
+Grafikte Türkçe yazı görüyorsan sunucudaki `index.html` eskidir.
+
+## Giriş ekranı (v3.7)
+
+Uygulama **Pulse giriş ekranıyla** açılır (tasarım: *Pulse – App Entry*). Şimdilik **her e-posta ve
+şifre kabul edilir**, boş bırakılırsa *guest* olarak girilir. *Keep me signed in* işaretliyse oturum
+bu bağlantıda (`?sid=…`) saklanır; değilse sekme kapanınca yeniden giriş istenir. Girişten sonra
+ilk sayfa hesaplanırken açılış ekranı ("Loading market data…") gösterilir. Çıkış: sağ üstteki
+**A** kutusunda *Sign out*. Gerçek hesap / şifre doğrulaması henüz yok.
 
 ## Grafik
 
@@ -44,14 +54,19 @@ Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda
   İndikatörlerin renkleri de Indicators panelinden değiştirilir.
 - **Zoom**: fare tekerleği, çift tıklama, tablette iki parmak.
   **Uzaklaştırma**: sağdaki ＋ / − düğmeleri, sağ tık, Shift + çift tık, iki parmakla çift dokunuş.
-  ⟲ görünümü sıfırlar. Sürükleyerek kaydırma; sağdaki fiyat ölçeğini dikey sürükleyerek
-  daraltıp genişletebilirsin, çift tık otomatiğe döner.
+  ⟲ görünümü sıfırlar. **Kaydırma her yöne**: grafiği sürükle (yukarı/aşağı da), sağdaki
+  **▲ / ▼** düğmeleri, klavyede **↑ / ↓**, **Shift + tekerlek**; trackpad'de iki parmak sağa-sola ve
+  yukarı-aşağı kaydırır, sıkıştırma (pinch) zoom yapar. Dikey kaydırınca otomatik ölçek kapanır,
+  **A** düğmesi geri açar. Sağdaki fiyat ölçeğini dikey sürükleyerek daraltıp genişletebilirsin.
 - **Tam ekran**: üst bardaki *Tam ekran* düğmesi (ya da F). Tarayıcı izin vermezse panel
   ekran boyuna büyür.
 - **Grafik türleri**: mum, içi boş mum, çubuk, çizgi, alan, Heikin Ashi, hacim mumları.
 - **Indicators** (arama kutusu var — isimle bul): SMA 20/50/100/200, Bollinger Bands,
   Supertrend, Volumatic VIDYA, Volatility Stop, Nadaraya-Watson Envelope, Ranked S/R Zones,
-  Hacim, RSI, Stokastik, MACD, WaveTrend, ATR, Divergence. Hepsi gerçek fiyat verisiyle
+  **Price Gaps** (v3.7), Hacim, RSI, Stokastik, MACD, WaveTrend, ATR, Divergence.
+- **Price Gaps**: doldurulmamış fiyat boşlukları kesikli kutu olarak çizilir — fiyatın altındaki
+  boşluk destek (yeşil), üstündeki direnç (kırmızı). Kısmen dolan boşluk daralır, tamamen dolan
+  silinir. Varsayılan: son 260 mum, en az %0,25 boşluk, en fazla 8 kutu. Hepsi gerçek fiyat verisiyle
   hesaplanır; periyot, eşik ve renkleri değiştirilebilir.
 - **Alert**: fiyat koşulu (keser / üstüne çıkar / altına iner) ile uygulama içi alarm.
 - Çizimler sembol bazında, indikatör ayarları ve grafik türü oturum boyunca saklanır.
@@ -77,6 +92,27 @@ Altındaki yorum da kural tabanlıdır: cümleler hesaplanan gerçek değerlerde
 dil modeli kullanılmaz. “Notun gerekçesi” bölümü her grubun neye baktığını ve kaç puan
 kattığını gösterir. Yatırım tavsiyesi değildir.
 
+**Yarım mum hacmi (v3.7).** Haftalık/aylık mumda (ve seans içindeki günlük mumda) son mum henüz
+bitmediği için hacmi, mumun tamamlanan kısmına bölünerek tahmin edilir ("on pace, the bar is 25%
+complete"). Ayın 5'inde aylık hacmin "ortalamanın 0,1 katı" görünmesi bu yüzden düzeldi.
+
+**Indicators tablosu (v3.7) — grafikteki göstergeler değerlendirilir.** Grafikte açık olan her
+gösterge kendi ayarlarıyla (periyot, eşik) Buy / Neutral / Sell olarak puanlanır ve yanında kısa
+gerekçesi yazar: SMA'lar (fiyat üstünde mi + ortalama yükseliyor mu), Bollinger (%B, bant
+daralması), Supertrend / VIDYA / Volatility Stop (yön ve kaç mumdur sürüyor), Nadaraya-Watson
+(zarf dışı mı), Ranked S/R (desteğe / dirence yakınlık), RSI, MACD, Stokastik, WaveTrend, ATR
+(volatilite, nötr), Divergence (son 15 mum), Hacim. **Varsayılanların dışında bir gösterge
+eklemediysen** zaman dilimine göre otomatik bir set eklenir ("auto" etiketli):
+
+| Zaman dilimi | Otomatik set |
+|---|---|
+| Gün içi (1m–1H) | EMA 9, EMA 21, seans VWAP, RSI 14, Stokastik, MACD, Bollinger, Hacim |
+| Swing (4H, 1D) | RSI 14, MACD, Stokastik, Bollinger, ADX 14, SMA 20/50/200, Supertrend, Hacim |
+| Pozisyon (1W, 1M) | SMA 10, SMA 40, RSI 14, MACD, ADX 14, Bollinger, Hacim |
+
+**Support & Resistance** paneli klasik pivotların altında günlük grafikteki **doldurulmamış fiyat
+boşluklarını** (son 12 ay) da listeler: aralık, fiyata uzaklık, tarih, boyut ve rolü (destek/direnç).
+
 ## Değer Analizi
 
 Seçili sembolün değerlemesi; hepsi şirketin **yayımladığı finansal tablolardan** hesaplanır
@@ -96,6 +132,18 @@ yayımlanmadığından o sembollerde yalnızca fiyat tabanlı bölümler çalı�
 **01 Temel Veriler.** Yıl yıl çubuk grafikler: gelir tablosu, marjlar, nakit akışı, bilanço,
 büyüme oranları (ciro ve EPS, bir önceki yıla göre), borç ve nakit, hissedar getirisi (geri alım +
 temettü). Altında cari oran, net borç/FAVÖK, faiz karşılama, aktif kârlılığı, kazanç kalitesi.
+
+**Where the Revenue Comes From (v3.7).** Gelirin hangi iş kolundan geldiği şirketin SEC'e verdiği
+son yıllık raporun (10-K / 20-F) XBRL verisinden okunur: **ürün / hizmet** (ör. Subscription vs
+Professional Services), **iş segmentleri** ve **coğrafya** — son mali yıl tutarı, toplam içindeki
+payı, yıllık büyümesi; satırın üstüne gelince 3 yıllık geçmişi. Abonelik / tekrarlayan gelir satırı
+varsa payı ayrıca yazılır. Yanda **Operating metrics**: şirketin raporlarında etiketlediği müşteri,
+abone, üye, mağaza gibi sayılar ve **kalan edim yükümlülükleri (RPO — sözleşmesi yapılmış ama
+henüz faturalanmamış gelir)** ile **ertelenmiş gelir**; 10-Q daha yeniyse ondan alınır, yıllık
+değişimiyle. Sınırlar: yalnızca SEC'e rapor veren şirketler (yabancı borsalar, ETF'ler yok); pek
+çok şirket abone / ARR gibi metrikleri yalnızca bilanço sunumunda verir — XBRL'de etiketli değilse
+görünmez, panel bunu söyler. SEC her istekte bir tanıtıcı (User-Agent) ister; istersen Streamlit
+*Secrets* içine `SEC_USER_AGENT = "Adın e-posta@adresin"` ekleyebilirsin.
 
 **02 Valuation Model — şirket tipine göre değerleme (v3.6).** Önce şirket dört tipten birine
 otomatik atanır; tip panelin başında gerekçeleriyle (endüstri, ciro büyümesi, capex/ciro, Ar-Ge/ciro,
@@ -158,8 +206,9 @@ yılı olur. Bu bir tarih kehaneti değil, aralıktır.
 Grafikler: değer patikası (kötümser–iyimser aralığı dolgulu), yıl yıl değer + çarpan tablosu,
 mali yıl EPS tablosu (analist / model etiketli), **duyarlılık ızgarası** (döngüselde zirve sonrası
 düşüş × hedef çarpan, değilse uzun vade büyüme × hedef çarpan), EPS geçmişi ve projeksiyonu
-(kâr zirvesi işaretli), patikanın yapı taşları (ileri EPS çubukları + çarpan çizgisi),
-**nakit akışı iskontosu** (10 yıllık DCF + **ters DCF**) ve **tarihsel F/K bandı**.
+(kâr zirvesi işaretli), **nakit akışı iskontosu** (10 yıllık DCF + **ters DCF**) ve **tarihsel F/K
+bandı**. (v3.7'de *Valuation Range by Method* ve *Building Blocks of the Path* grafikleri kaldırıldı;
+yöntem aralıkları Methods tablosunda duruyor.)
 
 **03 Rakiplere Göre Konum.** Rakipler önce elle derlenmiş sektör gruplarından gelir — aynı ürünü
 satan, gerçekten rekabet eden şirketler, yabancı borsalardakiler dahil. Örneğin Micron için
@@ -182,8 +231,7 @@ etiketi çıkar.
 
 **05 Bilanço Sürekliliği.** Piotroski F-skoru (9 kontrol, tek tek sonuçlarıyla), Altman Z-skoru
 (bileşenleriyle) ve süreklilik listesi — ciro, net kâr, serbest nakit akışı ve özkaynak kaç yıl
-üst üste aynı yönde gitmiş. Grafikler: kârlılık eğilimi (özkaynak ve aktif kârlılığı, net marj)
-ve Altman Z'nin bileşen katkıları.
+üst üste aynı yönde gitmiş. (v3.7'de kârlılık eğilimi ve Altman Z bileşen katkısı grafikleri kaldırıldı.)
 
 ## Short Term — iki mod
 
@@ -245,10 +293,17 @@ listesinin tamamı tıklanabilir: tıklayınca sayfa aşağıdaki **Forex Piyasa
 sembol açılır, seçili kart vurgulanır. Parite listesinde bu makro semboller için ayrıca bir
 **Makro** kategorisi var.
 
+**Haber görselleri (v3.7).** Haberin kaynağı bir görsel veriyorsa (Yahoo haber küçük resmi, RSS
+`media:content`) öne çıkan haberde ve listede gösterilir. Görsel yoksa ya da yüklenemezse yer
+tutucu konmaz: öne çıkan haberde görsel alanı hiç çıkmaz, listede paritenin mini grafiği görünür.
+
 ## Hesap, tema ve bildirimler
 
-Sağ üstteki **A** düğmesi hesap/ayar kutusunu açar: oturum bilgisi, **arka plan teması**
-(Gece · Uzay · Orman · Okyanus · Gün batımı) ve önbellek temizleme.
+Sağ üstteki **A** düğmesi hesap/ayar kutusunu açar: oturum bilgisi, *Sign out*, **arka plan
+teması** (Night · Space · Forest · Ocean · Sunset · **White**) ve önbellek temizleme.
+**White** açık temadır: sayfa, paneller, yazılar, Plotly grafikleri ve fiyat grafiği (mumlar,
+eksenler, menüler) açık renge geçer; yeşil/kırmızı tonlar beyaz zeminde okunacak şekilde
+koyulaşır. Tablolar (st.dataframe) renk tersine çevrilerek açık gösterilir.
 Solundaki **🔔** bildirim kutusudur: yapay zeka taraması taze ve teyitli bir kırılım
 bulduğunda oraya düşer, rozet okunmamış sayısını gösterir.
 "Gün içi tazele" açıkken sayfa 3 dakikada bir yenilenip taramayı tekrarlar —
@@ -264,6 +319,7 @@ uygulama açıkken çalışır, kapalıyken tarama yapılmaz ve telefona bildiri
 - Gerçek veri gelmezse (ör. Yahoo geçici olarak yanıt vermiyorsa) kısa süre sonra yeniden denenir.
 - Gerçek çekilenler: fiyat/OHLCV ve tüm grafikler, gün içi mumlar, şirket künyesi, haberler,
   endeksler, sektör performansı ve ısı haritası, yükselen/düşenler, değer taraması (Yahoo);
+  gelir kırılımı ve operasyonel göstergeler (SEC EDGAR XBRL);
   Fear & Greed (CNN); ekonomik takvim (ForexFactory); IPO ve bilanço takvimi (Nasdaq).
   Bütün indikatörler, swing taraması, backtest ve pozisyon hesabı bu gerçek fiyatlardan hesaplanır.
 - Kalıcı olarak örnek olan tek yer: Short Term → Açık İşlemlerim tablosunun başlangıçtaki
