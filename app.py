@@ -33,7 +33,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.6"
+APP_VERSION = "3.7"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -60,6 +60,11 @@ if set(_vers.values()) != {APP_VERSION}:
              " · ".join(f"{k} v{v}" for k, v in _vers.items()) +
              ". Upload the latest version of all of them to GitHub and click **Reboot app**.")
     st.stop()
+_uiv = ch.frontend_version()
+if _uiv is not None and _uiv != getattr(ch, "UI_VERSION", _uiv):
+    st.warning(f"**pulse_chart/index.html is outdated** (v{_uiv}, this release needs v{ch.UI_VERSION}). The chart "
+               "keeps working, but its labels, vertical scrolling and gap boxes come from the new file — upload "
+               "`pulse_chart/index.html` to GitHub and click **Reboot app**.")
 
 # ======================================================================
 # Tasarım sabitleri
@@ -109,7 +114,20 @@ def _wkw(fn):
     return {"width": "stretch"} if _WK[name] else {"use_container_width": True}
 
 
+def _light_fig(fig):
+    try:
+        fig.update_layout(template="plotly_white", font=dict(color="#2E3440"),
+                          hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#D9DDE3", font=dict(color="#14171C")))
+        fig.update_xaxes(gridcolor="#E9ECF0", zerolinecolor="#D5D9E0", linecolor="#D5D9E0")
+        fig.update_yaxes(gridcolor="#E9ECF0", zerolinecolor="#D5D9E0", linecolor="#D5D9E0")
+    except Exception:
+        pass
+    return fig
+
+
 def plot(fig, config=None, key=None):
+    if LIGHT:
+        fig = _light_fig(fig)
     st.plotly_chart(fig, config=config if config is not None else {"displayModeBar": False}, key=key,
                     **_wkw(st.plotly_chart))
 
@@ -128,12 +146,37 @@ def toggle(label, key, help=None):
     return fn(label, key=key, help=help)
 
 
+LIGHT = False
+# Beyaz tema: koyu paletteki her renk açık karşılığına çevrilir (HTML, CSS, Plotly, grafik bileşeni)
+LMAP = {
+    # zeminler
+    "#0A0B0D": "#F4F5F7", "#0C0D10": "#F3F5F8", "#111317": "#FFFFFF", "#13161C": "#EEF1F5", "#141820": "#EDF0F5",
+    "#151922": "#E8EEFB", "#16191E": "#EEF0F3", "#171A1F": "#EEF0F3", "#1A1D23": "#E9ECF0", "#1B2130": "#E3EAF8",
+    "#15181D": "#F0F2F5", "#0F1A15": "#E8F7F0", "#1A160E": "#FBF4E6", "#1A0F10": "#FDECEC", "#0E0F12": "#F6F7F9",
+    # kenarlar
+    "#1C1F25": "#E6E8EC", "#22262D": "#E1E4EA", "#2A2F37": "#D9DDE3", "#3A404A": "#C5CAD2", "#4A515C": "#B4BAC4",
+    "#1F4D3A": "#A7DCC4", "#4D3D1F": "#EBCF95", "#4D1F24": "#F0B4B8", "#2F3B52": "#BFCDEB",
+    # metin
+    "#ECEEF1": "#14171C", "#C4CAD4": "#2E3440", "#A3ABB8": "#4A5260", "#9AA4B2": "#56606E", "#8D96A5": "#5F6878",
+    "#6B7383": "#6F7787", "#5A6372": "#7A8292", "#C3D4FF": "#1E4FD6", "#9DB8FF": "#2F5BD8",
+    # vurgu renkleri (beyazda okunabilir tonlar)
+    "#5B8CFF": "#3B6EF5", "#34D399": "#0B9466", "#F87171": "#DC2F3E", "#F5B544": "#B7791F", "#C4B5FD": "#7C5CDB",
+    "#6EE7B7": "#10A37F", "#A3D977": "#5E9E2E", "#F08A6A": "#D9603B", "#FCD34D": "#B98A07", "#D8B4FE": "#8B5CF6",
+}
+_HEX6 = re.compile(r"#[0-9A-Fa-f]{6}\b")
+
+
+def lmap(s):
+    """Koyu paletteki hex renkleri beyaz tema karşılıklarıyla değiştirir."""
+    return _HEX6.sub(lambda m: LMAP.get(m.group(0).upper(), m.group(0)), s) if LIGHT else s
+
+
 def H(s):
     # Her zaman <div> ile başlat → Markdown bunu HTML bloğu olarak geçirir
     # (aksi halde metindeki $, *, _ karakterleri biçimlendirmeye dönüşebilir).
     head = s.lstrip()[:6]
     s = s if head.startswith(("<div", "<style")) else f"<div>{s}</div>"
-    st.markdown(s, unsafe_allow_html=True)
+    st.markdown(lmap(s), unsafe_allow_html=True)
 
 
 # ======================================================================
@@ -160,7 +203,7 @@ PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
            "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending",
-           "vp_cfg", "peer_ovr", "vtype_ovr"] + WIDGET_KEYS
+           "vp_cfg", "peer_ovr", "vtype_ovr", "auth"] + WIDGET_KEYS
 
 
 def _qp(key, default=None):
@@ -189,7 +232,8 @@ if not ss.get("_restored"):
 
 def _save_state():
     try:
-        STORE[SID] = {k: copy.deepcopy(ss[k]) for k in PERSIST if k in ss}
+        STORE[SID] = {k: copy.deepcopy(ss[k]) for k in PERSIST if k in ss
+                      and not (k == "auth" and not (ss[k] or {}).get("keep"))}
         if len(STORE) > 800:
             for k in list(STORE)[:200]:
                 STORE.pop(k, None)
@@ -218,6 +262,16 @@ for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journa
 for _k in WIDGET_KEYS:
     if _k in ss:
         ss[_k] = ss[_k]
+
+LIGHT = ss.get("theme") == "beyaz"
+if LIGHT:
+    BG, PANEL, PANEL2, BORDER, LINE = (LMAP.get(x, x) for x in (BG, PANEL, PANEL2, BORDER, LINE))
+    TXT, MUT, SOFT, DIM = (LMAP.get(x, x) for x in (TXT, MUT, SOFT, DIM))
+    UP, DOWN, NEU, WARN, ACCENT, VIOLET = (LMAP.get(x, x) for x in (UP, DOWN, NEU, WARN, ACCENT, VIOLET))
+    UP_BG, DOWN_BG, NEU_BG = "rgba(11,148,102,.12)", "rgba(220,47,62,.10)", "rgba(95,104,120,.12)"
+    WARN_BG, ACC_BG = "rgba(183,121,31,.12)", "rgba(59,110,245,.10)"
+    SETUP_STYLE = {k: (LMAP.get(a, a), b) for k, (a, b) in SETUP_STYLE.items()}
+    TONE = {k: tuple(LMAP.get(x, x) for x in v[:3]) + ("#FFFFFF",) for k, v in TONE.items()}
 
 _SYM_RE = re.compile(r"[^A-Za-z0-9.^=\-]")
 SEC = _qp("sec", "Markets")
@@ -511,6 +565,10 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .stat-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 2px;
  border-top:1px solid #1C1F25;font-size:13px}
 .stat-row .lbl{color:#C4CAD4;flex:1}
+.ind-row{align-items:flex-start}
+.ind-row .lbl{min-width:0}
+.ind-row .ind-note{display:block;font-size:11px;color:#8D96A5;margin-top:2px;line-height:1.35}
+.ind-row .mono,.ind-row .badge{margin-top:1px}
 .desc{color:#C4CAD4;font-size:13px;line-height:1.55;margin-top:8px}
 /* endeks kartı */
 .idx{background:#111317;border:1px solid #22262D;border-radius:14px;padding:13px 15px}
@@ -523,8 +581,31 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .wlr .nm b{font-size:12.5px}
 .wlr .nm div{color:#8D96A5;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wlr .px{text-align:right;font-family:ui-monospace,monospace;line-height:1.25}
+.tmap{position:relative;width:100%;border-radius:10px;overflow:hidden;background:#0C0D10}
+.tmb{position:absolute;box-sizing:border-box;border:2px solid #0A0B0D;display:flex;align-items:center;
+ justify-content:center;text-align:center;color:#fff !important;text-decoration:none !important;overflow:hidden;
+ transition:filter .12s}
+.tmb:hover{filter:brightness(1.25);z-index:2;outline:2px solid #FFFFFFAA;outline-offset:-2px}
+.tmi{display:flex;flex-direction:column;align-items:center;gap:1px;padding:2px;line-height:1.15;min-width:0}
+.tmi b{font-family:ui-monospace,monospace;font-weight:800;color:#fff}
+.tmi i{font-style:normal;font-size:10.5px;opacity:.82;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+ max-width:100%}
+.tmi em{font-style:normal;font-family:ui-monospace,monospace;font-weight:600;color:#fff;opacity:.95}
+.mixhead,.mixrow{display:grid;grid-template-columns:minmax(110px,1.6fr) 2fr 78px 52px 62px;gap:10px;align-items:center;
+ padding:6px 2px;font-size:12.5px}
+.mixhead{color:#8D96A5;font-size:11px;border-bottom:1px solid #1C1F25;padding-top:8px}
+.mixrow{border-bottom:1px solid #16191E}
+.mixrow .ml{color:#C4CAD4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mixrow .mb{height:10px;background:#16191E;border-radius:5px;overflow:hidden}
+.mixrow .mb i{display:block;height:100%;background:#5B8CFF;border-radius:5px}
+.mixrow .mv,.mixrow .ms,.mixrow .my,.mixhead .mv,.mixhead .ms,.mixhead .my{text-align:right;
+ font-family:ui-monospace,monospace}
+.kpigrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:8px}
+.kpitile .k{white-space:normal;line-height:1.3}
 .srstrip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;padding-bottom:4px}
 .srstrip .tile{padding:9px 10px;line-height:1.3}
+.gapgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;padding-bottom:4px}
+.gapgrid .tile{padding:8px 10px;line-height:1.3;border-top-left-radius:4px;border-bottom-left-radius:4px}
 .srcap{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 /* A–Z notu */
 .grade{display:flex;align-items:center;gap:14px;margin:4px 0 2px 0}
@@ -594,6 +675,10 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .nwi{width:64px;height:46px;flex:none;border-radius:8px;border:1px solid #1C1F25;background:#0C0D10;
  background-size:cover;background-position:center;display:flex;align-items:center;justify-content:center;
  font-size:11px;font-weight:800;color:#5A6372;overflow:hidden}
+.nwspark{position:relative;width:84px;flex:none;display:flex;align-items:center;border-radius:10px;padding:4px;
+ background:#0C0D10;overflow:hidden}
+.nwspark.hasimg{height:56px}
+.nwspark img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:10px}
 .nwx{color:#5A6372;font-size:13px;flex:none;align-self:center;padding-left:2px}
 .nw:hover .nwx{color:#9DB8FF}
 /* arama */
@@ -793,7 +878,7 @@ def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None):
         H('<div class="muted">Could not load chart data for this symbol.</div>')
         return
     ev = ch.render_chart(payload, ss.draws.get(sym, []), ss.alerts.get(sym, []),
-                         ss.ch_type, height=height, rev=ss.ch_rev, key="pulse_chart")
+                         ss.ch_type, height=height, rev=ss.ch_rev, key="pulse_chart", light=LIGHT)
     handle_chart_event(ev)
 
 
@@ -986,7 +1071,49 @@ THEMES = {
                   "border": "#3E2429", "dot": "#F5B544",
                   "grad": ("radial-gradient(1100px 600px at 18% -6%, rgba(234,88,12,.22), transparent 62%),"
                            "radial-gradient(820px 460px at 88% 14%, rgba(190,24,93,.16), transparent 60%)")},
+    "beyaz": {"name": "White", "bg": "#F4F5F7", "panel": "#FFFFFF", "panel2": "#F3F5F8",
+              "border": "#E1E4EA", "grad": None, "dot": "#3B6EF5", "light": True},
 }
+# Beyaz temada Streamlit'in kendi bileşenleri (koyu temel tema) açık renge çekilir
+LIGHT_CSS = """
+.stApp,[data-testid="stAppViewContainer"]{color:#14171C}
+[data-testid="stMarkdownContainer"],[data-testid="stMarkdownContainer"] p,[data-testid="stCaptionContainer"],
+[data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] p,label,.stRadio label,.stCheckbox label{color:#2E3440}
+[data-testid="stCaptionContainer"]{color:#5F6878 !important}
+[data-baseweb="select"]>div,[data-baseweb="input"],[data-baseweb="input"]>div,[data-baseweb="textarea"],
+[data-baseweb="base-input"],input,textarea{background-color:#FFFFFF !important;color:#14171C !important;
+ border-color:#D9DDE3 !important}
+[data-baseweb="select"] svg,[data-baseweb="input"] svg{fill:#5F6878 !important;color:#5F6878 !important}
+[data-baseweb="select"] span,[data-baseweb="select"] div{color:#14171C}
+[data-baseweb="popover"] ul,[data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"]{background:#FFFFFF !important}
+[data-baseweb="popover"] li,[data-baseweb="popover"] [role="option"]{color:#14171C !important;background:#FFFFFF}
+[data-baseweb="popover"] li:hover,[data-baseweb="popover"] [aria-selected="true"]{background:#EEF1F5 !important}
+[data-testid="stPopoverBody"],[data-baseweb="popover"]>div{background:#FFFFFF !important;color:#14171C;
+ border-color:#E1E4EA !important}
+.stButton button,[data-testid="stBaseButton-secondary"],[data-testid="stPopover"] button,
+[data-testid="stBaseButton-tertiary"]{background:#FFFFFF !important;color:#14171C !important;
+ border:1px solid #D9DDE3 !important}
+.stButton button:hover,[data-testid="stBaseButton-secondary"]:hover{border-color:#3B6EF5 !important;
+ color:#3B6EF5 !important}
+[data-testid="stBaseButton-primary"]{color:#FFFFFF !important}
+[data-testid="stExpander"] details,[data-testid="stExpander"] summary{background:#FFFFFF !important;
+ color:#14171C !important;border-color:#E1E4EA !important}
+[data-testid="stExpander"] summary:hover{color:#3B6EF5 !important}
+[data-testid="stExpander"] svg{fill:#5F6878 !important;color:#5F6878 !important}
+[data-testid="stButtonGroup"] button,[data-testid="stBaseButton-segmented_control"],
+[data-testid="stBaseButton-segmented_controlActive"]{background:#FFFFFF !important;color:#2E3440 !important;
+ border-color:#D9DDE3 !important}
+[data-testid="stBaseButton-segmented_controlActive"]{background:#E8EEFB !important;color:#1E4FD6 !important;
+ border-color:#9FB7F5 !important}
+[data-testid="stTabs"] button p{color:#2E3440}
+[data-testid="stAlert"]{color:#14171C}
+[data-testid="stToast"]{background:#FFFFFF !important;color:#14171C !important}
+[data-testid="stSlider"] div{color:#2E3440}
+[data-testid="stNumberInput"] button{background:#F3F5F8 !important;color:#2E3440 !important}
+[data-testid="stDataFrame"],[data-testid="stDataFrameResizable"]{filter:invert(1) hue-rotate(180deg)}
+[data-testid="stTable"] table,[data-testid="stTable"] td,[data-testid="stTable"] th{color:#14171C}
+header[data-testid="stHeader"] *{color:#2E3440}
+"""
 
 
 def theme_css(key):
@@ -1002,6 +1129,7 @@ def theme_css(key):
         f'.opp,.idx,.feat,.regime,.kpi,.critbar,.wll,.jt{{background:{t["panel"]};border-color:{t["border"]}}}'
         f'.tile,.card,.nwi,.funnel div{{background:{t["panel2"]};border-color:{t["border"]}}}'
         f'.dot-live{{background:{t["dot"]}}}'
+        + (LIGHT_CSS if t.get("light") else "") +
         "</style>")
 
 
@@ -1042,6 +1170,12 @@ def account_body():
       f'<div class="muted small">Local session · <span class="mono">{esc(SID)}</span></div>'
       f'<div class="muted small" style="margin-top:2px">Settings are kept for this browser session; '
       f'if you share the link it opens with the same settings.</div>')
+    au = ss.get("auth") or {}
+    H(f'<div class="muted small" style="margin-top:6px">Signed in as <b>{esc(au.get("user") or "guest")}</b>'
+      f'{" · kept signed in" if au.get("keep") else ""}</div>')
+    if button("Sign out", key="btn_signout"):
+        ss.auth = None
+        st.rerun()
     H('<div style="font-size:12px;font-weight:700;margin:12px 0 4px 0">Background theme</div>')
     names = [THEMES[k]["name"] for k in THEMES]
     cur = THEMES.get(ss.get("theme") or "gece", THEMES["gece"])["name"]
@@ -1050,9 +1184,12 @@ def account_body():
     if key != ss.get("theme"):
         ss.theme = key
         st.rerun()
+    def _rgb(h):     # rgb() yazımı beyaz temadaki renk dönüşümünden etkilenmez → örnekler gerçek renginde
+        h = h.lstrip("#")
+        return "rgb(%d,%d,%d)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
     sw = "".join(f'<span title="{esc(v["name"])}" style="width:26px;height:26px;border-radius:8px;'
-                 f'display:inline-block;border:2px solid {"#ECEEF1" if k == ss.theme else "transparent"};'
-                 f'background:{v["bg"]};box-shadow:inset 0 0 0 1px {v["border"]}"></span>'
+                 f'display:inline-block;border:2px solid {ACCENT if k == ss.theme else "transparent"};'
+                 f'background:{_rgb(v["bg"])};box-shadow:inset 0 0 0 1px {_rgb(v["border"])}"></span>'
                  for k, v in THEMES.items())
     H(f'<div style="display:flex;gap:7px;margin-top:8px">{sw}</div>')
     H('<div style="font-size:12px;font-weight:700;margin:14px 0 4px 0">Data</div>')
@@ -1192,6 +1329,10 @@ def render_chart_panel(sym):
     if en_sum and (d.get("desc") or len(en_sum) > 260):
         with st.expander("About the company — details (Yahoo Finance)"):
             H(f'<div class="desc" style="margin:0">{esc(en_sum)}</div>')
+    anchor("chart")
+    if SECTOR and md.sector_by_etf(SECTOR):
+        H(f'<div class="small" style="margin:6px 0 -4px 0"><a class="lnk" target="_self" '
+          f'href="{link(f="sectormap")}">↓ back to the {esc(md.sector_by_etf(SECTOR)[0])} heat map</a></div>')
     lb, tf = range_controls("w_lb", "w_tf")
     full, bars, intr = chart_data(sym, tf, lb)
     df = full.tail(bars)
@@ -1201,7 +1342,7 @@ def render_chart_panel(sym):
       f'<span class="muted">{esc(ch.LOOKBACKS[ch.norm_lb(lb)]["name"])} · {candle_label(tf, intr)}</span>'
       f'<span style="flex:1"></span>'
       f'<span class="muted small">wheel / double-click: zoom in · right-click or ＋− buttons: zoom out · '
-      f'drag: pan · click a drawing: colour · “Fullscreen”</span></div>'
+      f'drag: pan (also up / down) · ▲ ▼ · ↑ ↓ or Shift + wheel: scroll up / down · trackpad: two fingers · click a drawing: colour · “Fullscreen”</span></div>'
       + (f'<div class="muted small" style="color:{WARN};margin-bottom:6px">{esc(note)}</div>' if note else ""))
     render_big_chart(sym, tf, height=620, tf_key="w_tf", lb=lb)
     fired = ch.check_alerts(ss.alerts.get(sym, []), daily)
@@ -1290,20 +1431,41 @@ def render_tech(df, tf="1A", sym=""):
     else:
         H('<div class="muted" style="margin:8px 0">Not enough bars on this timeframe for a grade '
           '(at least 30 candles needed).</div>')
-    t = compute_tech(df)
-    H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin:12px 0 2px 0">Indicators</div>')
+    try:
+        t = en.indicator_board(df, ss.ch_cfg, ch.norm_tf(tf), ch.DEFAULT_CFG)
+    except Exception:
+        t = None
+    if not t or not t["rows"]:
+        H('<div class="muted small" style="margin:10px 0">Not enough bars to evaluate indicators.</div>')
+        return
+    n_chart = sum(1 for r in t["rows"] if r["src"] == "chart")
+    n_auto = len(t["rows"]) - n_chart
+    lc = UP if "Buy" in t["label"] else DOWN if "Sell" in t["label"] else NEU
+    sub = (f'{n_chart} on your chart' + (f' + {n_auto} auto-picked for {en.TF_KIND_NAME[t["kind"]]}' if n_auto else ""))
+    H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:12px 0 2px 0">'
+      f'<span style="font-size:12px;font-weight:700;color:{SOFT}">Indicators <span class="muted" '
+      f'style="font-weight:500">· {esc(sub)}</span></span>'
+      f'<span class="badge" style="color:{lc};background:{lc}22">{esc(t["label"])}</span></div>')
     tiles = "".join(f'<div class="tile" style="align-items:center"><span class="k">{k}</span>'
                     f'<span class="v" style="font-size:17px;color:{c}">{v}</span></div>'
                     for k, v, c in [("Sell", t["sell"], DOWN), ("Neutral", t["neutral"], NEU), ("Buy", t["buy"], UP)])
     H(f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:6px 0 4px 0">{tiles}</div>')
     rows = ""
-    for name, val, v in t["signals"]:
+    for r in t["rows"]:
+        v = r["sig"]
         lab, fg, bg = ("Buy", UP, UP_BG) if v > 0 else ("Sell", DOWN, DOWN_BG) if v < 0 else ("Neutral", NEU, NEU_BG)
-        rows += (f'<div class="stat-row"><span class="lbl">{name}</span><span class="mono" style="font-size:12px">'
-                 f'{val}</span><span class="badge" style="color:{fg};background:{bg};width:44px;text-align:center">'
+        tag = ('<span class="chip" style="font-size:9.5px;padding:0 5px;margin-left:5px">auto</span>'
+               if r["src"] == "auto" else "")
+        rows += (f'<div class="stat-row ind-row"><span class="lbl">{esc(r["name"])}{tag}'
+                 f'<span class="ind-note">{esc(r["note"])}</span></span>'
+                 f'<span class="mono" style="font-size:12px;white-space:nowrap">{esc(r["value"])}</span>'
+                 f'<span class="badge" style="color:{fg};background:{bg};width:52px;text-align:center">'
                  f'{lab}</span></div>')
     H(rows)
-    H('<div style="height:4px"></div>')
+    hint = ("Add indicators on the chart (Indicators button) and they are evaluated here with your settings."
+            if t["auto"] else "Evaluating the indicators on your chart with your settings. Remove the extras "
+            "to get the auto-picked set for this timeframe again.")
+    H(f'<div class="muted small" style="margin:8px 0 4px 0">{esc(hint)}</div>')
 
 
 def render_sr(df, sym):
@@ -1316,6 +1478,29 @@ def render_sr(df, sym):
       f'<span class="panel-title">Support &amp; Resistance</span>'
       f'<span class="muted small srcap">Classic pivots · daily · last price {tr(price, dec)}</span></div>'
       f'<div class="srstrip">{cells}</div>')
+    try:
+        gaps = en.price_gaps(df, lookback=260, max_n=6)
+    except Exception:
+        gaps = []
+    if gaps:
+        gaps = sorted(gaps, key=lambda g: -g["hi"])          # yukarıdan aşağıya: direnç → destek
+        gc = ""
+        for g in gaps:
+            fg = DOWN if g["kind"] == "res" else UP
+            role = "Resistance" if g["kind"] == "res" else "Support"
+            arrow = "▲ gap up" if g["dir"] == "up" else "▼ gap down"
+            when = pd.Timestamp(g["date"]).strftime("%b %d, %Y")
+            gc += (f'<div class="tile gaptile" style="border-left:3px solid {fg}">'
+                   f'<span class="k" style="color:{fg};font-weight:800">{role} · {arrow}</span>'
+                   f'<span class="v" style="font-size:13px">{tr(g["lo"], dec)} – {tr(g["hi"], dec)}</span>'
+                   f'<span class="mono" style="font-size:11px;color:{MUT}">{pct(g["dist"], 1)} · {when} · '
+                   f'size {tr(g["pct"], 1)}%</span></div>')
+        H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:12px 0 6px 0">'
+          f'<span style="font-size:12px;font-weight:700;color:{SOFT}">Unfilled price gaps</span>'
+          f'<span class="muted small">daily · last 12 months · a gap below price acts as support, above as '
+          f'resistance · partly filled gaps shrink</span></div><div class="gapgrid">{gc}</div>')
+    else:
+        H('<div class="muted small" style="margin-top:10px">No unfilled price gaps in the last 12 months.</div>')
     H('<div style="height:6px"></div>')   # kutunun alt kenarına değmesin
 
 
@@ -1373,16 +1558,69 @@ def render_watchlist_compact():
     H(f'<div class="wll">{rows}</div>')
 
 
-def treemap(cons, height=380):
-    fig = go.Figure(go.Treemap(
-        labels=[c["ticker"] for c in cons], parents=[""] * len(cons), values=[c["weight"] for c in cons],
-        text=[f'{c["name"]}<br>{pct(c["change_pct"])}' for c in cons], textinfo="label+text",
-        marker=dict(colors=[max(-4, min(4, c["change_pct"])) for c in cons], cmin=-3, cmax=3, cmid=0,
-                    colorscale=[[0, "#B92D37"], [0.5, "#2A2F37"], [1, "#107A57"]], line=dict(width=2, color=BG)),
-        hovertemplate="<b>%{label}</b><br>%{text}<extra></extra>", textfont=dict(color="#FFFFFF", size=13),
-        tiling=dict(pad=2)))
-    fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
-    return fig
+def squarify(values, x, y, w, h):
+    """Kare-yakın treemap yerleşimi (Bruls vd.). values büyükten küçüğe sıralı olmalı.
+    Döner: [(x, y, w, h)] — values ile aynı sırada."""
+    vals = [max(1e-9, float(v)) for v in values]
+    tot = sum(vals)
+    if not vals or tot <= 0 or w <= 0 or h <= 0:
+        return []
+    area = [v / tot * w * h for v in vals]
+    out = []
+
+    def worst(row, side):
+        s_ = sum(row)
+        return max(max(side * side * r / (s_ * s_), (s_ * s_) / (side * side * r)) for r in row)
+
+    i = 0
+    while i < len(area):
+        side = min(w, h)
+        row = [area[i]]
+        j = i + 1
+        while j < len(area) and worst(row + [area[j]], side) <= worst(row, side):
+            row.append(area[j])
+            j += 1
+        s_ = sum(row)
+        if w >= h:                      # dikey şerit (solda)
+            cw = s_ / h
+            cy = y
+            for r in row:
+                rh = r / cw
+                out.append((x, cy, cw, rh))
+                cy += rh
+            x, w = x + cw, w - cw
+        else:                           # yatay şerit (üstte)
+            rh = s_ / w
+            cx = x
+            for r in row:
+                rw = r / rh
+                out.append((cx, y, rw, rh))
+                cx += rw
+            y, h = y + rh, h - rh
+        i = j
+    return out
+
+
+def html_treemap(cons, height=560):
+    """Tıklanabilir şirket ısı haritası: her kutu o şirketin grafiğini açar."""
+    items = sorted([c for c in cons if (c.get("weight") or 0) > 0], key=lambda c: -c["weight"])
+    if not items:
+        return ""
+    W, Hh = 100.0, 100.0
+    rects = squarify([c["weight"] for c in items], 0, 0, W, Hh)
+    boxes = ""
+    for c, (x, y, w, h) in zip(items, rects):
+        big_ = w * h
+        fs = 15 if big_ > 260 else 13 if big_ > 120 else 11.5 if big_ > 45 else 10
+        name = esc(c.get("name") or "") if big_ > 70 else ""
+        boxes += (f'<a class="tmb" target="_self" href="{link(sec="Markets", sym=c["ticker"], f="chart")}" '
+                  f'title="{esc(c["ticker"])} · {esc(c.get("name") or "")} · {pct(c["change_pct"])} — open chart" '
+                  f'style="left:{x:.3f}%;top:{y:.3f}%;width:{w:.3f}%;height:{h:.3f}%;'
+                  f'background:{heat_color(c["change_pct"], 3)}">'
+                  f'<span class="tmi"><b style="font-size:{fs}px">{esc(c["ticker"])}</b>'
+                  + (f'<i>{name}</i>' if name else "") +
+                  f'<em style="font-size:{max(9.5, fs - 3):.1f}px">{pct(c["change_pct"])}</em></span></a>')
+    return f'<div class="tmap" style="height:{int(height)}px">{boxes}</div>'
 
 
 def heat_color(ch, scale=2.5):
@@ -1398,7 +1636,7 @@ def render_sector_block():
       f'company heat map</span><span style="margin-left:auto">'
       f'{src_chip("real" if srcs == {"real"} else "none" if srcs == {"none"} else "mock")}</span></div>')
     tiles = "".join(f'<a class="plain" target="_self" '
-                    f'href="{link(sector=None if SECTOR == s["etf"] else s["etf"], f="sector")}">'
+                    f'href="{link(sector=None if SECTOR == s["etf"] else s["etf"], f="sector" if SECTOR == s["etf"] else "sectormap")}">'
                     f'<div class="heat{" sel" if SECTOR == s["etf"] else ""}" style="background:{heat_color(s["change_pct"])}">'
                     f'<b>{esc(s["name"])} <span style="font-size:11px;opacity:.7;font-family:inherit">{s["etf"]}</span>'
                     f'</b><span>{pct(s["change_pct"])}</span></div></a>' for s in secs)
@@ -1421,12 +1659,12 @@ def render_sector_map():
     with st.container(border=True):
         H(f'<div class="sec-head" style="flex-wrap:wrap"><h3>{esc(sec[0])} · company heat map</h3>'
           f'<span class="muted">{SECTOR} constituents · box size ≈ ETF weight · {up} up / '
-          f'{len(cons) - up} down · ⛶ at the top right of the map for fullscreen</span>'
+          f'{len(cons) - up} down · click a box → its chart opens</span>'
           f'<a class="lnk small" style="margin-left:auto" target="_self" '
           f'href="{link(sector=None, f="sector")}">✕ Close</a></div>')
         if cons:
-            plot(treemap(cons, height=560), key=f"tm_{SECTOR}")
-            cells = "".join(f'<a class="plain" target="_self" href="{link(sec="Markets", sym=c["ticker"])}">'
+            H(html_treemap(cons, height=520))
+            cells = "".join(f'<a class="plain" target="_self" href="{link(sec="Markets", sym=c["ticker"], f="chart")}">'
                             f'<div class="heat" style="background:{heat_color(c["change_pct"], 3)}"><b>{esc(c["ticker"])}'
                             f' <span style="font-size:10px;opacity:.75;font-family:inherit">{esc(c["name"])}</span></b>'
                             f'<span>{pct(c["change_pct"])}</span></div></a>'
@@ -1710,7 +1948,7 @@ def fin_bar_chart(f, keys, names, colors, height=240, pct=False):
         vals = [v / 1e9 if not pct and en._ok(v) else v for v in f[k]]
         fig.add_trace(go.Bar(x=[str(y) for y in f["years"]], y=vals, name=n, marker_color=c))
     fig.update_layout(barmode="group", legend=dict(orientation="h", y=1.18, x=0))
-    fig.update_yaxes(ticksuffix="%" if pct else " mr")
+    fig.update_yaxes(ticksuffix="%" if pct else " bn")
     return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=26, b=4))
 
 
@@ -1879,24 +2117,6 @@ def fair_path_chart(path, px, price, height=300):
     return _layout(fig, height, legend=True, margin=dict(l=4, r=10, t=28, b=4))
 
 
-def path_mult_fig(path, height=220):
-    """Her yıl kullanılan ileri kâr ve çarpan — patikanın nereden geldiği."""
-    yrs = [str(path["today"]["year"])] + [str(r["year"]) for r in path["rows"]]
-    rows = [path["today"]] + path["rows"]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=yrs, y=[r["fwd_eps"]["base"] for r in rows], name="Next-12-month EPS (base)",
-                         marker_color=rgba(ACCENT, 0.55), hovertemplate="%{x}: %{y:.2f}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=yrs, y=[r["mult"]["base"] for r in rows], name="Multiple", yaxis="y2",
-                             mode="lines+markers", line=dict(color=WARN, width=2),
-                             hovertemplate="%{x}: %{y:.1f}x<extra></extra>"))
-    fig.update_layout(yaxis2=dict(overlaying="y", side="right", showgrid=False, ticksuffix="x",
-                                  tickfont=dict(color=MUT, size=10)),
-                      legend=dict(orientation="h", y=1.2, x=0))
-    fig = _layout(fig, height, legend=True, margin=dict(l=36, r=36, t=26, b=4))
-    fig.update_layout(yaxis=dict(side="left"))
-    return fig
-
-
 def _cell(v, med, dec=1, lower_better=True, suffix=""):
     """Medyana göre renklenen hücre."""
     if not en._ok(v):
@@ -2053,7 +2273,7 @@ def render_value_fundamentals(b):
             H('<div class="panel-title">Debt and Cash</div><div class="muted small">Billions</div>')
             plot(bar_fig(yrs, [("Total debt", [v / 1e9 if en._ok(v) else None for v in f["debt"]], DOWN),
                                ("Cash", [v / 1e9 if en._ok(v) else None for v in f["cash"]], "#6EE7B7")],
-                         height=220, suffix=" mr"), key="v_debt")
+                         height=220, suffix=" bn"), key="v_debt")
     with c7:
         with st.container(border=True):
             H('<div class="panel-title">Shareholder Returns</div><div class="muted small">Buybacks + dividends, '
@@ -2061,7 +2281,7 @@ def render_value_fundamentals(b):
             plot(bar_fig(yrs, [("Buybacks", [abs(v) / 1e9 if en._ok(v) else None for v in f["buyback"]], ACCENT),
                                ("Dividends", [abs(v) / 1e9 if en._ok(v) else None for v in f["dividends_paid"]],
                                 WARN)],
-                         height=220, suffix=" mr", barmode="stack"), key="v_sh")
+                         height=220, suffix=" bn", barmode="stack"), key="v_sh")
     with st.container(border=True):
         rows = [("Current ratio", tr(r.get("current_ratio"), 2), "above 1.5 is comfortable"),
                 ("Net debt / EBITDA", tr(r.get("net_debt_ebitda"), 2), "above 3 is high leverage"),
@@ -2076,6 +2296,116 @@ def render_value_fundamentals(b):
             f'<span class="mono">{v}</span>'
             f'<span class="muted small" style="width:180px;text-align:right">{esc(n)}</span></div>'
             for k, v, n in rows))
+    render_revenue_mix(ACTIVE)
+
+
+def fmt_count(v):
+    if not en._ok(v):
+        return "—"
+    a = abs(v)
+    if a >= 1e9:
+        return f"{v / 1e9:,.2f}B"
+    if a >= 1e6:
+        return f"{v / 1e6:,.2f}M"
+    if a >= 1e4:
+        return f"{v:,.0f}"
+    return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+
+
+def _fy_label(end):
+    try:
+        return "FY" + pd.Timestamp(end).strftime("%y")
+    except Exception:
+        return str(end)
+
+
+def render_revenue_mix(sym):
+    """Gelir kırılımı (ürün/hizmet · segment · coğrafya) + abone/müşteri gibi operasyonel göstergeler — SEC XBRL."""
+    try:
+        rb = md.get_revenue_breakdown(sym)
+    except Exception:
+        rb = {"src": "none", "why": "SEC EDGAR could not be reached right now."}
+    with st.container(border=True):
+        rev = rb.get("rev") or {}
+        src = ""
+        if rb.get("src") == "real":
+            fy = pd.Timestamp(rev["ends"][0]).strftime("%b %d, %Y") if rev.get("ends") else rb.get("report") or ""
+            src = (f'SEC {esc(rb.get("form"))} · fiscal year ending {esc(fy)} · filed {esc(rb.get("filed"))} · '
+                   f'<a class="lnk" href="{esc(safe_url(rb.get("url")))}" target="_blank">filing ↗</a>')
+        H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'
+          f'<span class="panel-title">Where the Revenue Comes From</span>'
+          f'<span class="muted small">{src}</span></div>')
+        if rb.get("src") != "real":
+            H(f'<div class="muted" style="margin:8px 0 4px 0">{esc(rb.get("why") or "No segment data.")} '
+              f'Revenue by business line and operating metrics are read from SEC filings (XBRL).</div>')
+            return
+        c1, c2 = st.columns([1.45, 1], gap="large")
+        with c1:
+            groups = rev.get("groups") or []
+            cur = rev.get("currency") or "USD"
+            if not groups:
+                H('<div class="muted" style="margin-top:8px">This filing reports revenue only as one total — no '
+                  'breakdown by product, segment or region is tagged.</div>')
+            else:
+                names = [g["name"] for g in groups]
+                pick = seg("Breakdown", names, f"w_revmix_{sym}", names[0]) if len(names) > 1 else names[0]
+                g = next((x for x in groups if x["name"] == pick), groups[0])
+                ends = rev.get("ends") or []
+                tot0 = (rev.get("total") or [None])[0]
+                mx = max(r["values"][0] for r in g["rows"]) or 1
+                rows = ""
+                for r in g["rows"]:
+                    v0 = r["values"][0]
+                    yoy = r.get("yoy")
+                    hist = " → ".join(f'{_fy_label(e)} {big(v, cur)}' for e, v in
+                                      reversed(list(zip(ends, r["values"]))) if en._ok(v))
+                    rows += (f'<div class="mixrow" title="{esc(hist)}"><span class="ml">{esc(r["label"])}</span>'
+                             f'<span class="mb"><i style="width:{max(1.5, v0 / mx * 100):.1f}%"></i></span>'
+                             f'<span class="mv">{big(v0, cur)}</span>'
+                             f'<span class="ms">{tr(r["share"], 1) + "%" if en._ok(r.get("share")) else "—"}</span>'
+                             f'<span class="my" style="color:{col(yoy) if en._ok(yoy) else MUT}">'
+                             f'{pct(yoy, 1) if en._ok(yoy) else "—"}</span></div>')
+                H(f'<div class="mixhead"><span class="ml">{esc(g["name"])}</span><span class="mb"></span>'
+                  f'<span class="mv">{_fy_label(ends[0]) if ends else ""}</span><span class="ms">share</span>'
+                  f'<span class="my">YoY</span></div>{rows}')
+                notes = [f'Total revenue {big(tot0, cur)}' + (f' ({pct((tot0 / rev["total"][1] - 1) * 100, 1)} YoY)'
+                                                               if len(rev.get("total") or []) > 1 and
+                                                               en._ok(rev["total"][1]) and rev["total"][1] else "")]
+                if g.get("overlap"):
+                    notes.append("some lines overlap (a line can include another), so shares add up to more than 100%")
+                notes.append("hover a line for its 3-year history")
+                H(f'<div class="muted small" style="margin-top:6px">{esc(" · ".join(notes))}</div>')
+                subs = [r for gg in groups for r in gg["rows"]
+                        if re.search(r"subscri|recurring|membership|saas", r["label"], re.I)
+                        and gg["key"] == "product"]
+                if subs:
+                    sv = max(subs, key=lambda r: r["values"][0])
+                    H(f'<div class="gtext" style="margin-top:8px"><b>{esc(sv["label"])}</b> brings in '
+                      f'<b>{tr(sv["share"], 0)}%</b> of revenue'
+                      + (f', growing {pct(sv["yoy"], 1)} a year' if en._ok(sv.get("yoy")) else "")
+                      + ' — the recurring part of the business.</div>')
+        with c2:
+            kp = rb.get("kpis") or []
+            ks = rb.get("kpi_src") or {}
+            H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin-top:2px">Operating metrics '
+              f'<span class="muted" style="font-weight:500">· customers, subscribers, members, backlog'
+              + (f' · {esc(ks.get("form"))} filed {esc(ks.get("filed"))}' if ks else "") + '</span></div>')
+            if kp:
+                tiles = ""
+                for k in kp:
+                    val = big(k["value"], k.get("currency") or "USD") if k["kind"] == "money" else fmt_count(k["value"])
+                    yoy = k.get("yoy")
+                    per = {"i": "as of", "q": "quarter to", "y": "year to"}.get(k["period"], "period to")
+                    when = pd.Timestamp(k["end"]).strftime("%b %Y") if k.get("end") else ""
+                    tiles += (f'<div class="tile kpitile"><span class="k">{esc(k["label"])}</span>'
+                              f'<span class="v">{val}</span><span class="muted small">{per} {when}'
+                              + (f' · <span style="color:{col(yoy)}">{pct(yoy, 1)} YoY</span>' if en._ok(yoy) else "")
+                              + '</span></div>')
+                H(f'<div class="kpigrid">{tiles}</div>')
+            else:
+                H('<div class="muted small" style="margin-top:8px">No customer, subscriber or member counts are '
+                  'tagged in this company\'s filings. Many companies publish them only in earnings releases and '
+                  'investor presentations — see the filing link above.</div>')
 def render_longterm():
     H('<div class="page-title">Long Term</div><div class="muted" style="margin-bottom:12px">Sentiment, sectors '
       'and a value screen for long-term investing</div>')
@@ -3373,12 +3703,13 @@ def render_forex():
     l, r = st.columns([1, 1.15], gap="medium")
     with l:
         fs, fb = sbg.get(f["sentiment"], (NEU, NEU_BG))
-        img = (f'<img src="{esc(f["thumb"])}" alt="">' if safe_url(f.get("thumb")) else "[NEWS IMAGE]")
+        img = (f'<div class="img"><img src="{esc(f["thumb"])}" alt="" loading="lazy" '
+               f'onerror="this.parentNode.style.display=\'none\'"></div>' if safe_url(f.get("thumb")) else "")
         furl = news_link(f)
         ttl = f'<a href="{esc(furl)}" target="_blank" rel="noopener">{esc(f["title"])} ↗</a>'
         tags = " ".join(f'<span class="chip mono">{esc(t)}</span>' for t in f.get("tags", []))
         H(f'<a class="plain" href="{esc(furl)}" target="_blank" rel="noopener">'
-          f'<div class="feat"><div class="img">{img}</div><div style="padding:16px 18px"><div style="display:flex;'
+          f'<div class="feat">{img}<div style="padding:16px 18px"><div style="display:flex;'
           f'align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap"><span class="badge" style="color:{fs};'
           f'background:{fb}">{esc(f["sentiment"])}</span><span class="muted small">{esc(f["category"])} · '
           f'{esc(f["source"])} · {esc(f["when"])}</span>{src_chip(data["src"])}</div><b style="font-size:20px;'
@@ -3390,9 +3721,11 @@ def render_forex():
             H('<div class="muted small" style="margin-bottom:2px">Click a headline → opens on the source website</div>')
 
             def _spark(it, sc):
-                return (f'<span style="width:84px;flex:none;display:flex;align-items:center;'
-                        f'background:#0C0D10;border-radius:10px;padding:4px">'
-                        f'{svg_spark(it["spark"], sc, 76, 40)}</span>')
+                th = safe_url(it.get("thumb"))
+                # haberin kendi görseli varsa üste gelir; yüklenemezse (alt="" → boş) altındaki mini grafik görünür
+                img = (f'<img src="{esc(th)}" alt="" loading="lazy" referrerpolicy="no-referrer">' if th else "")
+                return (f'<span class="nwspark{" hasimg" if th else ""}">'
+                        f'{svg_spark(it["spark"], sc, 76, 40)}{img}</span>')
             H(news_rows(data["items"], left=_spark) or '<div class="muted">No news in this category.</div>')
             st.caption("The Bullish/Bearish tag is derived automatically from wording in the headline.")
 
@@ -3400,11 +3733,144 @@ def render_forex():
 # ======================================================================
 # AKIŞ
 # ======================================================================
+# ======================================================================
+# GİRİŞ EKRANI (Pulse — App Entry tasarımı) · şimdilik her e-posta / şifre kabul edilir
+# ======================================================================
+ENTRY_ACC = "#3DDC97"
+ENTRY_LOGO = ('<svg viewBox="0 0 56 56" width="{w}" height="{w}" fill="none" aria-hidden="true">'
+              '<circle cx="28" cy="28" r="26" stroke="#243042" stroke-width="1.5"></circle>'
+              '<path d="M11 29 H19.5 L23 19.5 L28.5 37.5 L33 25.5 L36.5 29 H45" stroke="{c}" stroke-width="2.6" '
+              'stroke-linecap="round" stroke-linejoin="round"{cls}></path></svg>')
+_ENTRY_BARS = "".join(f'<rect x="{24 + i * 60}" y="{y}" width="26" height="{860 - y}"></rect>' for i, y in enumerate(
+    [820, 800, 828, 788, 812, 776, 818, 796, 824, 782, 806, 830, 790, 814, 772, 810, 826, 786, 804, 822, 780, 808, 768]))
+_ENTRY_PATH = ("M0 700 L60 660 L120 690 L180 620 L240 640 L300 580 L360 602 L420 540 L480 575 L540 520 L600 558 "
+               "L660 480 L720 505 L780 450 L840 472 L900 410 L960 440 L1020 380 L1080 418 L1140 350 L1200 374 "
+               "L1260 320 L1320 344 L1380 290 L1440 268")
+_ECARD = ('.st-key-entry_card', 'div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] '
+          '.entry-mark)', 'div[data-testid="stVerticalBlock"]:has(> .element-container .entry-mark)')
+
+
+def _ecss(rule_tail, body):
+    """Giriş kartı seçicilerini (yeni / eski Streamlit DOM) her kurala uygular."""
+    return ",".join(f"{c}{rule_tail}" for c in _ECARD) + "{" + body + "}"
+
+
+ENTRY_CSS = ("<style>"
+             "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap');"
+             '.stApp,[data-testid="stAppViewContainer"]{background:#0A0E14 !important;background-image:none !important}'
+             'header[data-testid="stHeader"]{display:none}'
+             ".block-container{padding-top:0 !important;max-width:100% !important}"
+             ".entry-bg{position:fixed;inset:0;z-index:0;pointer-events:none}"
+             ".entry-bg svg{width:100%;height:100%;opacity:.17}"
+             + _ecss("", "position:relative;z-index:2;background:rgba(15,21,30,.88);border:1px solid #1E2838;"
+                         "border-radius:18px;padding:44px 40px 30px;gap:14px;margin-top:9vh;"
+                         "font-family:Inter,'Helvetica Neue',Arial,sans-serif;box-shadow:0 24px 60px rgba(0,0,0,.35)")
+             + ".entry-head{display:flex;flex-direction:column;align-items:center;gap:18px;margin-bottom:10px}"
+             ".entry-head h1{margin:0;padding:0;font-family:'Space Grotesk',Inter,sans-serif;font-weight:700;font-size:26px;"
+             "line-height:1;letter-spacing:.22em;text-transform:uppercase;color:#E6EAF0}"
+             ".entry-head p{margin:0;font-size:14px;color:#94A3B8}"
+             + _ecss(' [data-testid="stForm"]', "border:0;padding:0;background:transparent")
+             + _ecss(' [data-testid="stWidgetLabel"] p', "font-size:13px;font-weight:500;color:#B9C4D2 !important")
+             + _ecss(' [data-baseweb="input"]', "background:#0C131C !important;border-color:#243042 !important;"
+                                                "border-radius:10px !important")
+             + _ecss(' [data-baseweb="base-input"]', "background:#0C131C !important")
+             + _ecss(" input", "height:46px;font-size:15px;color:#E6EAF0 !important;background:#0C131C !important;"
+                               "font-family:Inter,sans-serif")
+             + _ecss(" input::placeholder", "color:#8A99AD")
+             + _ecss(' [data-testid="stCheckbox"] p', "font-size:13px;color:#B9C4D2 !important")
+             + _ecss(' [data-testid="stFormSubmitButton"] button',
+                     "width:100%;min-height:48px;border-radius:10px;border:0 !important;background:#3DDC97 !important;"
+                     "color:#04150E !important;font-weight:600;font-size:15px;margin-top:6px")
+             + _ecss(' [data-testid="stFormSubmitButton"] button p', "color:#04150E !important;font-weight:600")
+             + _ecss(' [data-testid="stFormSubmitButton"] button:hover', "background:#62E6AE !important")
+             + "@media (max-width:640px){" + _ecss("", "padding:32px 22px 24px !important;margin-top:3vh !important") + "}"
+             + ".entry-foot{text-align:center;font-size:13px;color:#94A3B8;margin-top:4px}"
+             ".entry-foot b{color:#3DDC97;font-weight:600}"
+             "</style>")
+
+
+def _entry_bg():
+    grid_h = "".join(f'<line x1="0" y1="{y}" x2="1440" y2="{y}"></line>' for y in (250, 370, 490, 610, 730))
+    grid_v = "".join(f'<line x1="{x}" y1="0" x2="{x}" y2="900"></line>' for x in (240, 480, 720, 960, 1200))
+    return (f'<div class="entry-bg"><svg viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">'
+            f'<g stroke="#3C4A5E" stroke-width="1">{grid_h}</g><g stroke="#2F3C4D" stroke-width="1">{grid_v}</g>'
+            f'<g fill="#55657B">{_ENTRY_BARS}</g>'
+            f'<path d="{_ENTRY_PATH} L1440 900 L0 900 Z" fill="{ENTRY_ACC}" opacity="0.14"></path>'
+            f'<path d="{_ENTRY_PATH}" fill="none" stroke="{ENTRY_ACC}" stroke-width="3" stroke-linejoin="round"></path>'
+            f'</svg></div>')
+
+
+def render_login():
+    """Pulse giriş ekranı. Şimdilik her girdi kabul edilir; 'Keep me signed in' oturumu bu bağlantıda saklar."""
+    st.markdown(ENTRY_CSS, unsafe_allow_html=True)
+    st.markdown(_entry_bg(), unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 1.05, 1])
+    with mid:
+        try:
+            card = st.container(key="entry_card")
+        except TypeError:          # eski Streamlit: key yok → :has() seçicisi devreye girer
+            card = st.container()
+        with card:
+            st.markdown('<div class="entry-mark"></div><div class="entry-head">'
+                        + ENTRY_LOGO.format(w=72, c=ENTRY_ACC, cls="") +
+                        '<div style="display:flex;flex-direction:column;align-items:center;gap:8px">'
+                        '<h1>Pulse</h1><p>Sign in to open your dashboard</p></div></div>', unsafe_allow_html=True)
+            with st.form("entry_form", border=False):
+                email = st.text_input("Email", placeholder="you@example.com", key="entry_email")
+                st.text_input("Password", type="password", placeholder="Enter your password", key="entry_pw")
+                keep = st.checkbox("Keep me signed in", value=True, key="entry_keep")
+                go_ = st.form_submit_button("Sign in", type="primary", **_wkw(st.form_submit_button))
+            st.markdown('<div class="entry-foot">Open preview — any email and password let you in for now.<br>'
+                        'Accounts and <b>Request access</b> come later.</div>', unsafe_allow_html=True)
+    if go_:
+        ss.auth = {"user": (email or "").strip()[:80] or "guest", "keep": bool(keep),
+                   "at": pd.Timestamp.now(tz=md.TZ).strftime("%Y-%m-%d %H:%M")}
+        ss["_boot"] = True        # ilk yüklemede açılış (loading) ekranı
+        st.rerun()
+
+
+LOADING_HTML = """<div class="p-load-wrap"><style>
+@keyframes pulse-ring{0%{transform:scale(.92);opacity:.5}75%{transform:scale(1.4);opacity:0}100%{transform:scale(1.4);opacity:0}}
+@keyframes pulse-trace{0%{stroke-dashoffset:120}55%{stroke-dashoffset:0}100%{stroke-dashoffset:-120}}
+@keyframes bar-slide{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.p-load{position:fixed;inset:0;z-index:1000000;background:#0A0E14;display:flex;flex-direction:column;align-items:center;
+ justify-content:center;gap:44px;font-family:Inter,'Helvetica Neue',Arial,sans-serif}
+.p-load .ring{position:absolute;inset:0;border-radius:999px;border:1px solid #3DDC97;animation:pulse-ring 2.4s ease-out infinite}
+.p-load .trace{stroke-dasharray:120;animation:pulse-trace 2.4s linear infinite}
+.p-load .bar{width:55%;height:100%;border-radius:999px;background:#3DDC97;animation:bar-slide 1.8s cubic-bezier(.4,0,.2,1) infinite}
+.p-load h1{margin:0;padding:0;font-family:'Space Grotesk',Inter,sans-serif;font-weight:700;font-size:44px;line-height:1;
+ letter-spacing:.24em;text-transform:uppercase;color:#E6EAF0}
+</style>
+<div class="p-load"><div style="display:flex;flex-direction:column;align-items:center;gap:28px">
+<div style="position:relative;width:120px;height:120px;display:flex;align-items:center;justify-content:center">
+<span class="ring"></span>
+<svg viewBox="0 0 56 56" width="120" height="120" fill="none" aria-hidden="true">
+<circle cx="28" cy="28" r="26" stroke="#243042" stroke-width="1.5"></circle>
+<path d="M11 29 H19.5 L23 19.5 L28.5 37.5 L33 25.5 L36.5 29 H45" stroke="#243042" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></path>
+<path class="trace" d="M11 29 H19.5 L23 19.5 L28.5 37.5 L33 25.5 L36.5 29 H45" stroke="#3DDC97" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg></div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:12px"><h1>Pulse</h1>
+<p style="margin:0;font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:#94A3B8">Market &amp; Swing Intelligence</p></div></div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:18px;width:min(260px,100%)">
+<div style="width:100%;height:3px;border-radius:999px;background:#1B2431;overflow:hidden"><div class="bar"></div></div>
+<p style="margin:0;font-size:13px;color:#94A3B8">Loading market data...</p></div></div></div>"""
+
+
 def main():
-    render_header()
-    {"Markets": render_piyasalar, "Valuation": render_value, "Long Term": render_longterm,
-     "Short Term": render_short, "Backtest": render_backtest,
-     "Forex & News": render_forex}[SEC]()
+    if not ss.get("auth"):
+        render_login()
+        return
+    boot = st.empty() if ss.pop("_boot", False) else None
+    if boot is not None:
+        boot.markdown(LOADING_HTML, unsafe_allow_html=True)     # sayfa hesaplanırken açılış ekranı
+    try:
+        render_header()
+        {"Markets": render_piyasalar, "Valuation": render_value, "Long Term": render_longterm,
+         "Short Term": render_short, "Backtest": render_backtest,
+         "Forex & News": render_forex}[SEC]()
+    finally:
+        if boot is not None:
+            boot.empty()
 
 
 
@@ -3449,31 +3915,6 @@ def checks_html(rows):
                 f'<span class="n" style="color:{TXT};font-family:ui-monospace,monospace;text-align:right">'
                 f'{esc(r_["value"])}</span></div>')
     return out or '<div class="muted">Not enough data for these checks.</div>'
-
-
-def football_fig(ms, price, bl, height=None):
-    """Her yöntemin değer aralığı (çubuk), taban değeri (elmas), bugünkü fiyat ve harman değer."""
-    fig = go.Figure()
-    names = [m["name"] for m in ms]
-    for m in ms:
-        c_ = ACCENT if (m["weight"] > 0 and not m.get("excluded")) else MUT
-        fig.add_trace(go.Scatter(x=[m["low"], m["high"]], y=[m["name"], m["name"]], mode="lines",
-                                 line=dict(color=rgba(c_, 0.55), width=16), showlegend=False,
-                                 hovertemplate=f"{esc(m['name'])}: {tr(m['low'])} – {tr(m['high'])}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=[m["base"] for m in ms], y=names, mode="markers", showlegend=False,
-                             marker=dict(size=11, color=TXT, symbol="diamond", line=dict(width=1, color="#0A0B0D")),
-                             hovertemplate="%{y}: %{x:.2f}<extra></extra>"))
-    fig.add_vline(x=price, line=dict(color=TXT, width=1.4, dash="dot"),
-                  annotation_text=f"price {tr(price)}", annotation_position="top",
-                  annotation_font=dict(color=SOFT, size=10))
-    if bl:
-        fig.add_vline(x=bl["value"], line=dict(color=UP if bl["value"] >= price else DOWN, width=2, dash="dash"),
-                      annotation_text=f"blended {tr(bl['value'])}", annotation_position="bottom",
-                      annotation_font=dict(color=SOFT, size=10))
-    fig = _layout(fig, height or (90 + 46 * len(ms)), margin=dict(l=8, r=16, t=26, b=24))
-    fig.update_yaxes(side="left", categoryorder="array", categoryarray=names[::-1], showgrid=False)
-    fig.update_layout(hovermode="closest")
-    return fig
 
 
 def cycle_fig(wk, timing, height=300):
@@ -3669,12 +4110,6 @@ def render_value_model(b, sym):
             else:
                 H('<div class="muted" style="margin-top:6px">Not enough data for the methods of this type. '
                   'Try another model type above.</div>')
-    if ms:
-        with st.container(border=True):
-            H('<div class="panel-title">Valuation Range by Method</div><div class="muted small">Bar = low–high, '
-              'diamond = base case · dotted line today\'s price, dashed line blended fair value · grey methods '
-              'are shown for reference only</div>')
-            plot(football_fig(ms, price, bl), key="v_ff")
     c3, c4 = st.columns([1.3, 1], gap="medium")
     with c3:
         with st.container(border=True):
@@ -3904,9 +4339,6 @@ def render_value_future(b):
               '<div class="muted small">Bars are reported EPS · filled dot analyst estimate, hollow dot '
               'model</div>')
             plot(eps_proj_fig(b["f"], path), key="v_eps")
-            H('<div class="panel-title" style="margin-top:10px">Building Blocks of the Path</div>'
-              '<div class="muted small">Each year: next-12-month EPS × that year\'s multiple = value</div>')
-            plot(path_mult_fig(path), key="v_pmult")
     with c6:
         with st.container(border=True):
             band, ps = b["band"], b.get("pe_ser")
@@ -3915,9 +4347,9 @@ def render_value_future(b):
             if ps is not None and len(ps) > 20:
                 hl = []
                 if band:
-                    hl = [(band["high"], f'top 90% · {tr(band["high"], 1)}x', DOWN),
+                    hl = [(band["high"], f'90th pct · {tr(band["high"], 1)}x', DOWN),
                           (band["median"], f'median · {tr(band["median"], 1)}x', MUT),
-                          (band["low"], f'alt %10 · {tr(band["low"], 1)}x', UP)]
+                          (band["low"], f'10th pct · {tr(band["low"], 1)}x', UP)]
                 plot(line_fig([("P/E", ps.index, ps.values, ACCENT, False, False)],
                               height=250, suffix="x", hlines=hl, legend=False), key="v_peband")
             else:
@@ -4212,28 +4644,6 @@ def render_value_quality(b):
                              f'<span class="t">{esc(r["t"])}</span>'
                              f'<span class="n">{r["hit"]}/{r["of"]} yrs</span></div>')
                 H(rows)
-    f = b["f"]
-    yrs = [str(y) for y in f["years"]]
-    c3, c4 = st.columns([1.2, 1], gap="medium")
-    with c3:
-        with st.container(border=True):
-            H('<div class="panel-title">Profitability Trend</div><div class="muted small">Return on equity and on '
-              'assets, net margin — can it hold the same level over the years</div>')
-            plot(line_fig([("Return on equity", yrs, f["roe"], ACCENT, False, False),
-                           ("Return on assets", yrs, f["roa"], "#6EE7B7", False, False),
-                           ("Net margin", yrs, f["net_m"], VIOLET, True, False)],
-                          height=240, suffix="%"), key="v_prof")
-    with c4:
-        with st.container(border=True):
-            H('<div class="panel-title">Altman Z — Component Contributions</div><div class="muted small">Weighted '
-              'contribution; they add up to the Z-score</div>')
-            parts = en.altman_contrib(zsc)
-            if parts:
-                plot(bar_fig([k for k, _ in parts], [("Contribution", [v for _, v in parts],
-                                                      [UP if v >= 0 else DOWN for _, v in parts])],
-                             height=240, legend=False, horizontal=True, text=True, dec=2), key="v_altman")
-            else:
-                H('<div class="muted" style="padding:20px 0">Could not be calculated.</div>')
 
 
 try:
