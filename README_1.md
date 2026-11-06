@@ -1,4 +1,4 @@
-# Pulse — Market Dashboard (Streamlit) · v3.7
+# Pulse — Market Dashboard (Streamlit) · v3.8
 
 Swing-trade paneli (koyu temalar + **White** açık tema). **Arayüz İngilizce** (v3.5). Bölümler: **Markets · Valuation ·
 Long Term · Short Term · Backtest · Forex & News**. Eski Türkçe bağlantılar
@@ -25,13 +25,44 @@ Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda
 itibaren `pulse_chart/index.html` de kontrol edilir (dosyanın başında `<meta name="pulse-ui">`).
 Grafikte Türkçe yazı görüyorsan sunucudaki `index.html` eskidir.
 
-## Giriş ekranı (v3.7)
+## Giriş — kimlik doğrulama (v3.8)
 
-Uygulama **Pulse giriş ekranıyla** açılır (tasarım: *Pulse – App Entry*). Şimdilik **her e-posta ve
-şifre kabul edilir**, boş bırakılırsa *guest* olarak girilir. *Keep me signed in* işaretliyse oturum
-bu bağlantıda (`?sid=…`) saklanır; değilse sekme kapanınca yeniden giriş istenir. Girişten sonra
-ilk sayfa hesaplanırken açılış ekranı ("Loading market data…") gösterilir. Çıkış: sağ üstteki
-**A** kutusunda *Sign out*. Gerçek hesap / şifre doğrulaması henüz yok.
+Uygulama her açılışta **Pulse giriş ekranıyla** başlar (tasarım: *Pulse – App Entry*).
+
+* **İlk açılış:** henüz giriş bilgisi yoksa "First start" ekranı çıkar — e-posta ve şifre (en az 8
+  karakter, iki kez) **bir kez** belirlenir. Ardından **kurtarma kodu** (ör. `K7QM-4TXR-9WPA-HN3E`)
+  yalnızca bir kez gösterilir; indirilebilir. "I have saved my recovery code" işaretlenince uygulama açılır.
+* **Sonraki açılışlar:** tam olarak bu e-posta ve şifreyle giriş gerekir (e-posta büyük/küçük harf
+  duyarsız). Yeni sekme / yeni açılış her zaman giriş ister; açık oturumda **15 dakika** işlem yapılmazsa
+  da yeniden giriş istenir. Oturum tarayıcıya bağlıdır — `?sid=` bağlantısını başka cihaza kopyalamak girişi
+  atlatmaz. Çıkış: sağ üstteki **A** kutusunda *Sign out*.
+* **Tarayıcıya kaydetme:** alanlar şifre yöneticisi için işaretli (`autocomplete="username"` /
+  `current-password` / `new-password`). Başarılı girişten sonra Chrome / Edge "Şifre kaydedilsin mi?" diye
+  sorar; sonraki açılışlarda alanlar otomatik dolar. **Giriş yine yalnızca *Sign in* düğmesine (ya da
+  Enter'a) basınca olur** — otomatik doldurma uygulamayı kendiliğinden açmaz.
+* **Şifremi / e-postamı unuttum:** giriş ekranındaki **Forgot email or password?** → kurtarma kodu + yeni
+  e-posta + yeni şifre → *Reset and save*. Yeni bir kurtarma kodu gösterilir, sonra yeni bilgilerle giriş
+  yapılır. Kod yanlışsa hiçbir şey değişmez.
+* **Güvenlik:** şifre ve kurtarma kodu düz metin saklanmaz (PBKDF2-SHA256, 240.000 tur, rastgele tuz).
+  Art arda 5 yanlış denemeden sonra giriş ve sıfırlama giderek uzayan sürelerle (30 sn → 15 dk) kilitlenir.
+* **Nerede saklanır:** sunucuda `.pulse_auth.json`. **Streamlit Community Cloud'da bu dosya uygulama yeniden
+  başlatılınca / yeniden deploy edilince silinir** — o zaman ilk kurulum ekranı yeniden çıkar. Kalıcı olması
+  için kurulumdan sonra gösterilen bloğu (yalnızca karmalar, şifrenin kendisi değil) *App settings → Secrets*
+  içine yapıştır:
+
+  ```toml
+  [pulse_auth]
+  email = "sen@ornek.com"
+  password_hash = "pbkdf2_sha256$240000$…"
+  recovery_hash = "pbkdf2_sha256$240000$…"
+  ```
+
+  Secrets doluysa uygulama ilk kurulum istemez. Sıfırlama yapılırsa yeni bilgiler dosyaya yazılır ve
+  Secrets'taki bloğu yenisiyle değiştirmen istenir (yoksa yeniden başlatmadan sonra eski giriş geri gelir).
+* **Kurtarma kodu da kaybolduysa:** uygulama sahibi Secrets'taki `[pulse_auth]` bloğunu siler ve uygulamayı
+  *Reboot* eder (dosya da silinir) → ilk kurulum ekranı yeniden açılır.
+
+Girişten sonra ilk sayfa hesaplanırken açılış ekranı ("Loading market data…") gösterilir.
 
 ## Grafik
 
@@ -185,23 +216,42 @@ aralığındaki yeri ve tahmin revizyonları; fiyat genelde kâr dönüşünden 
 (fiyat kârdan önce dönmüş), Downswing, Bottoming. Kâr zirvesi tahmini değer patikasının varsayılan zirve
 yılı olur. Bu bir tarih kehaneti değil, aralıktır.
 
-**Analist tahmini değer patikası** (açılır bölüm, Cyclical'da açık gelir). Mali yıl bazında kurulur ve
-çarpanla kâr hep aynı döneme aittir:
+**Analist tahmini değer patikası** (açılır bölüm, Cyclical'da açık gelir) — v3.8'de **mali yıl bazında
+ve yıllık (YoY) büyümeyle** kurulur:
 
-* **EPS:** ilk iki yıl analistlerin mali yıl tahminleri (`0y` = içinde bulunulan mali yıl,
-  `+1y` = sonraki). Taban = ortalama, kötümser = en düşük, iyimser = en yüksek tahmin. Sonraki
-  yıllar uzun vade büyümesiyle ilerler. Çeyreklik `earningsGrowth` (son çeyrek ÷ geçen yılın aynı
-  çeyreği) beklenti olmadığı için kullanılmaz.
-* **Döngüsel mod** (bellek, yarı iletken ekipman, otomotiv, petrol, çelik… ve geçmişi döngüsel
-  çıkan hisselerde varsayılan açık): kâr seçilen mali yılda zirve yapar, sonraki iki yılda seçilen
-  oranda geriler, sonra döngü ortasına doğru toparlanır. Varsayılan düşüş şirketin kendi geçmiş
-  döngülerinden gelir (%30–80 aralığına sınırlı).
-* **Değer:** her yıl = o andaki çarpan × **önümüzdeki 12 ayın EPS'i**. Çarpan bugünkü fiyata
-  kalibre edilir — taban senaryo bugünkü fiyattan başlar. İstenirse rakiplerin ileri F/K medyanı,
-  kendi F/K medyanı ya da elle girilen bir çarpana 3 yılda kayar. İleri kâr kullanıldığı için
-  döngüsellerde fiyat, kâr zirvesinden önce tepe yapar.
-* **Model Ayarları** paneli: döngüsel mod, kâr zirvesi yılı, zirve sonrası düşüş, uzun vade büyüme,
-  hedef çarpan, piyasanın ufku (1–2 yıl). Ayarlar hisse başına saklanır.
+* **Değer_FY = o mali yılın EPS'i × çarpan.** Kâr ve çarpan aynı yıla aittir; grafikte her nokta mali yıl
+  sonuna oturur. Çarpan bugünkü fiyata içinde bulunulan mali yılın (FY0) EPS'iyle kalibre edilir, bu yüzden
+  FY0 değeri = bugünkü fiyat. Çok yıllık ortalama / "piyasanın ufku" penceresi ve CAGR kaldırıldı;
+  tabloda her yıl için **YoY** değişim (EPS ve değer) yazar.
+* **EPS:** ilk iki yıl analistlerin mali yıl tahminleri (`0y`, `+1y`; taban = ortalama, kötümser = en düşük,
+  iyimser = en yüksek). Sonraki her yıl = önceki yıl × (1 + **Long-term growth (YoY)**). Kaydırıcı artık
+  **−%20 … %150** (güçlü büyüme dönemleri için %100 üstü). Varsayılan: son analist yılının YoY büyümesi,
+  yoksa son raporlanan yılın EPS büyümesi.
+* **Döngüsel mod — zirve tam seçilen yılda:** *Earnings peak* (FY0 … FY0+4) hangi yıl seçilirse değer
+  patikasının en yüksek noktası **tam o yıldır** (her üç senaryoda; çeyrek görünümünde o yılın 4. çeyreği).
+  Zirveye kadar EPS azalmaz (gerekirse "held" etiketiyle önceki yılın üstünde tutulur), zirveden sonra
+  seçilen oranda iki yılda geriler ve ufuk içinde zirvenin altında kalır. Zirveden sonraki yıllar için
+  analist tahmini daha yüksek olsa bile düşüş modeli geçerlidir ("post-peak" etiketi; Micron'da zirve FY2028
+  seçilince FY2029'dan itibaren değer düşer). Hedef çarpana kayış döngüselde zirveden sonra başlar; bu kayış
+  bir yılı zirvenin üstüne itseydi o yıl zirvenin hemen altına çekilir ve not düşülür.
+* **Model Settings:** döngüsel mod, kâr zirvesi yılı, zirve sonrası düşüş, uzun vade büyüme (YoY), hedef
+  çarpan. Ayarlar hisse başına saklanır.
+
+**Quarter by Quarter (v3.8).** Değer patikasının altında: önce **mali yılı** seç (FY2026 · reported, FY2027,
+FY2028 …), sonra **çeyreği** (Full year · Q1 · Q2 · Q3 · Q4). Seçim değer grafiğinde de vurgulanır (yıl
+gölgeli, çeyrek elmas işaretli; noktalı çizgi çeyrek çeyrek değer). Tabloda her çeyrek için: bitiş tarihi,
+EPS (tahminlerde kötümser–iyimser aralığı), **QoQ** (önceki çeyreğe göre), **YoY** (geçen yılın aynı
+çeyreğine göre), ciro, TTM EPS, değer (TTM EPS × o tarihteki çarpan; 4. çeyrek = yıllık değer; geçmiş
+çeyreklerde gerçek hisse fiyatı) ve **kaynak**:
+
+| Kaynak | Ne demek |
+|---|---|
+| reported | Şirketin açıkladığı EPS (Yahoo `earnings_history`, analist tahminiyle aynı baz; yoksa GAAP) — beklenti ve sürpriz yüzdesiyle |
+| analyst | Henüz açıklanmadı: sıradaki iki çeyrek için analist ortalaması (analist sayısı, en düşük–en yüksek, ciro tahmini, sonraki bilanço tarihi) |
+| model | Henüz açıklanmadı ve analist çeyrek tahmini yok: o yılın EPS'inden bilinen çeyrekler çıkarılır, kalan geçen yılın aynı çeyrekleri oranında dağıtılır (her çeyrek aynı YoY büyür). Toplam = yıllık EPS |
+
+Gelecek bir çeyrek seçildiğinde ("2027'ye tıklayınca") rakamın bir **beklenti** olduğu ve nereden geldiği
+açıkça yazar.
 
 Grafikler: değer patikası (kötümser–iyimser aralığı dolgulu), yıl yıl değer + çarpan tablosu,
 mali yıl EPS tablosu (analist / model etiketli), **duyarlılık ızgarası** (döngüselde zirve sonrası
@@ -292,6 +342,15 @@ indirip "JSON'dan geri yükle" kutusundan geri verebilirsin.
 listesinin tamamı tıklanabilir: tıklayınca sayfa aşağıdaki **Forex Piyasası** grafiğine kayar ve o
 sembol açılır, seçili kart vurgulanır. Parite listesinde bu makro semboller için ayrıca bir
 **Makro** kategorisi var.
+
+**Ekonomik takvim (v3.8).** Gün ve önem (Impact) filtrelerinin yanında **para birimi seçimi**:
+*Currencies* kutusunda USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD, CNY, TRY alt alta, bayrak ve adıyla listelenir;
+istediğini işaretle (ör. yalnızca USD), *All / Majors / None* hızlı seçim. Seçim kaydedilir. Açıklanan
+değer (**Actual**) yayından sonra kendiliğinden gelir: ForexFactory takvimine TradingView'in ekonomik takvim
+akışından açıklanan değer eklenir (aynı para birimi, ±75 dk, başlık / beklenti eşleşmesi); bölüm açıkken
+2 dakikada bir yenilenir. Actual **yeşil** = beklentiden iyi, **kırmızı** = kötü (işsizlik oranı ve
+işsizlik başvurularında düşük değer iyidir). Yayın saati geçmiş ama değer henüz yoksa *pending…*.
+TradingView akışı resmi bir API değildir; ulaşılamazsa takvim yine görünür, yalnızca Actual boş kalır.
 
 **Haber görselleri (v3.7).** Haberin kaynağı bir görsel veriyorsa (Yahoo haber küçük resmi, RSS
 `media:content`) öne çıkan haberde ve listede gösterilir. Görsel yoksa ya da yüklenemezse yer
