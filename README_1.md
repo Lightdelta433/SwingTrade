@@ -1,4 +1,4 @@
-# Pulse — Market Dashboard (Streamlit) · v3.8
+# Pulse — Market Dashboard (Streamlit) · v3.9
 
 Swing-trade paneli (koyu temalar + **White** açık tema). **Arayüz İngilizce** (v3.5). Bölümler: **Markets · Valuation ·
 Long Term · Short Term · Backtest · Forex & News**. Eski Türkçe bağlantılar
@@ -25,9 +25,25 @@ Dosya sürümleri uyuşmazsa uygulama hangi dosyanın eski kaldığını ekranda
 itibaren `pulse_chart/index.html` de kontrol edilir (dosyanın başında `<meta name="pulse-ui">`).
 Grafikte Türkçe yazı görüyorsan sunucudaki `index.html` eskidir.
 
-## Giriş — kimlik doğrulama (v3.8)
+## Giriş — kimlik doğrulama (v3.8, v3.9'da çok kullanıcılı)
 
 Uygulama her açılışta **Pulse giriş ekranıyla** başlar (tasarım: *Pulse – App Entry*).
+
+**v3.9 — sahip (owner) ve arkadaşlar:** ilk kurulumu yapan hesap **owner** olur. Owner sağ üstteki **A** kutusunda
+**Users** bölümünü görür:
+
+* **Add user:** arkadaşın e-postası → tek seferlik **geçici şifre** gösterilir. Arkadaş ilk girişte kendi
+  şifresini seçer (ve kendi kurtarma kodunu alır).
+* **Reset password:** arkadaş şifresini / kurtarma kodunu unuttuysa listeden seç → *Reset password* → yeni
+  geçici şifre. Eski şifre ve eski geçici şifre hemen geçersiz olur; arkadaş geçici şifreyle girer ve
+  **New password** ekranında yeni şifresini belirler. Owner hiçbir zaman arkadaşın şifresini görmez.
+* **Remove user:** hesabı siler; açık oturumu da kapanır.
+* **Owner kendi girişini unuttuysa:** kurtarma koduyla (*Forgot email or password?*) ya da Secrets'a eklenen
+  **owner anahtarıyla**: `[pulse_admin]` altında `key = "en-az-8-karakter"` (veya `PULSE_ADMIN_KEY`). Bu
+  anahtar sıfırlama ekranındaki "Recovery code (or owner key)" kutusuna yazılınca owner hesabı yeni
+  e-posta/şifreyle sıfırlanır.
+* Kalıcı saklama için Users altındaki *Keep logins after app restarts* bloğu tüm hesapları
+  `[[pulse_users]]` olarak verir (yalnızca karmalar). Eski `[pulse_auth]` bloğu da owner olarak okunur.
 
 * **İlk açılış:** henüz giriş bilgisi yoksa "First start" ekranı çıkar — e-posta ve şifre (en az 8
   karakter, iki kez) **bir kez** belirlenir. Ardından **kurtarma kodu** (ör. `K7QM-4TXR-9WPA-HN3E`)
@@ -51,16 +67,27 @@ Uygulama her açılışta **Pulse giriş ekranıyla** başlar (tasarım: *Pulse 
   içine yapıştır:
 
   ```toml
-  [pulse_auth]
+  [[pulse_users]]
   email = "sen@ornek.com"
+  role = "owner"
   password_hash = "pbkdf2_sha256$240000$…"
   recovery_hash = "pbkdf2_sha256$240000$…"
+
+  [[pulse_users]]
+  email = "arkadas@ornek.com"
+  role = "user"
+  password_hash = "pbkdf2_sha256$240000$…"
+  recovery_hash = "pbkdf2_sha256$240000$…"
+
+  [pulse_admin]
+  key = "sadece-senin-bildigin-anahtar"
   ```
 
   Secrets doluysa uygulama ilk kurulum istemez. Sıfırlama yapılırsa yeni bilgiler dosyaya yazılır ve
   Secrets'taki bloğu yenisiyle değiştirmen istenir (yoksa yeniden başlatmadan sonra eski giriş geri gelir).
-* **Kurtarma kodu da kaybolduysa:** uygulama sahibi Secrets'taki `[pulse_auth]` bloğunu siler ve uygulamayı
-  *Reboot* eder (dosya da silinir) → ilk kurulum ekranı yeniden açılır.
+* **Kurtarma kodu da kaybolduysa:** arkadaşlar için owner *Reset password* yapar. Owner için: owner anahtarı;
+  o da yoksa Secrets'taki `[[pulse_users]]` / `[pulse_auth]` bloklarını silip uygulamayı *Reboot* et (dosya da
+  silinir) → ilk kurulum ekranı yeniden açılır.
 
 Girişten sonra ilk sayfa hesaplanırken açılış ekranı ("Loading market data…") gösterilir.
 
@@ -164,6 +191,21 @@ yayımlanmadığından o sembollerde yalnızca fiyat tabanlı bölümler çalı�
 büyüme oranları (ciro ve EPS, bir önceki yıla göre), borç ve nakit, hissedar getirisi (geri alım +
 temettü). Altında cari oran, net borç/FAVÖK, faiz karşılama, aktif kârlılığı, kazanç kalitesi.
 
+**Quarterly Results (v3.9).** Gelir tablosu / marj / nakit akışı / bilanço grafiklerinde **bir yıla tıklayınca**
+(ya da paneldeki yıl seçiciden) o mali yılın **Q1–Q4 sonuçları** açılır: ciro (QoQ, YoY), brüt kâr ve marj,
+faaliyet kârı ve marj, net kâr ve marj, seyreltilmiş EPS (YoY), faaliyet nakit akışı, capex, serbest nakit
+akışı ve yanında yıllık toplam. Kaynak: **SEC 10-Q / 10-K** (companyfacts — birkaç yıl geriye); 4. çeyrek
+10-K'da ayrı yer almadığı için **yıl − ilk üç çeyrek** olarak türetilir, nakit akışları yılbaşından bugüne
+(YTD) farklarıyla hesaplanır (Δ işareti). SEC verisi yoksa Yahoo'nun son ~5 çeyreği. İçinde bulunulan yılda
+henüz açıklanmamış çeyrekler **expected** (analist EPS/ciro ortalaması, aralık ve analist sayısıyla) ya da
+*no estimate* olarak açıkça işaretlenir. Tıklama Streamlit ≥ 1.35 ister; eski sürümde yıl seçici çalışır.
+
+**Analyst Ratings & Expectations (v3.9, Fundamentals'ın en altında).** Konsensüs notu ve dağılımı (Strong Buy …
+Strong Sell, 3 ay önceye göre değişim), 12 aylık hedef fiyat aralığı (düşük · ortalama · yüksek, bugünkü fiyatın
+yeri, ortalamaya göre potansiyel), beklentiler tablosu (bu çeyrek / gelecek çeyrek / bu mali yıl / gelecek mali
+yıl: EPS tahmini ve aralığı, EPS YoY, ciro tahmini, ciro YoY, analist sayısı), son 90 günde tahmin revizyonları
+(yukarı/aşağı) ve son not değişiklikleri (kurum, tarih, eski → yeni not, hedef fiyat).
+
 **Where the Revenue Comes From (v3.7).** Gelirin hangi iş kolundan geldiği şirketin SEC'e verdiği
 son yıllık raporun (10-K / 20-F) XBRL verisinden okunur: **ürün / hizmet** (ör. Subscription vs
 Professional Services), **iş segmentleri** ve **coğrafya** — son mali yıl tutarı, toplam içindeki
@@ -216,8 +258,34 @@ aralığındaki yeri ve tahmin revizyonları; fiyat genelde kâr dönüşünden 
 (fiyat kârdan önce dönmüş), Downswing, Bottoming. Kâr zirvesi tahmini değer patikasının varsayılan zirve
 yılı olur. Bu bir tarih kehaneti değil, aralıktır.
 
-**Analist tahmini değer patikası** (açılır bölüm, Cyclical'da açık gelir) — v3.8'de **mali yıl bazında
-ve yıllık (YoY) büyümeyle** kurulur:
+**Değer patikası — sürücü modeli (v3.9).** Patika artık yalnızca EPS büyümesiyle değil, şirketin
+tablolarından kurulan bir **sürücü modeliyle** hesaplanır (açılır bölüm: *Value path (revenue · margin · debt ·
+capex model)*; Cyclical'da açık gelir):
+
+* **Ciro** her yıl önceki yıl × (1 + **YoY büyüme**). Analist yıllarında analist ciro tahmini; sonrasında
+  ayarlar. **Model Settings → Revenue growth per year** satırında her mali yıl için büyüme **elle yazılabilir**
+  (ör. döngüsel şirkette "FY2028 %35, FY2029 %20"); girilen değer "your input" olarak saklanır, *Reset* ile
+  varsayılana döner. Varsayılanlar: döngüselde zirveye kadar **Upswing growth**, zirveden sonra *Revenue drop
+  after peak* (iki yılda), sonra **Long-term growth** (dipten sonraki trend büyümesi); döngüsel olmayanda
+  Long-term growth.
+* **Faaliyet marjı:** analist yıllarında analist EPS'ini veren marj (EPS = konsensüs). Sonra döngüsel olmayanda
+  3 yılda **Target op. margin**'e; döngüselde zirveye doğru **Peak op. margin**'e, düşüşte ciro düştükçe
+  **Trough op. margin**'e (faaliyet kaldıracı: EPS ciroden daha çok düşer).
+* **Faiz:** net borç × borç maliyeti (net nakitte risksiz faizle faiz geliri) · **vergi:** son yılların
+  medyanı · **hisse sayısı:** *Shares / yr %* (− = geri alım, + = seyreltme) → **EPS**.
+* **Capex % revenue**, D&A ve işletme sermayesi (ciro değişiminin %5'i) → **serbest nakit akışı**; FCF'nin
+  dağıtılmayan kısmı **net borcu** azaltır (net borç / FAVÖK tabloda).
+* **Valuation lens:** P/E (EPS × F/K), EV/EBIT ((EBIT × çarpan − net borç) ÷ hisse — borç ve nakit doğrudan
+  etki eder) ya da **Blend** (ikisinin ortalaması, varsayılan). İki çarpan da bugünkü fiyata FY0 ile
+  kalibre edilir → FY0 değeri ≈ bugünkü fiyat.
+* **Model Drivers** tablosu her yılı satır satır gösterir: ciro, büyüme ve kaynağı, marj, EBIT, net faiz,
+  net kâr, hisse, EPS, EPS YoY, capex, FCF, net borç, net borç/FAVÖK, P/E değeri, EV/EBIT değeri ve sonuç
+  (Bear/Base/Bull seçilebilir). Kötümser: en düşük analist tahminleri, büyüme 3 puan (veya %30) düşük,
+  model marjları −%10, çarpan −%15; iyimser tersi.
+* Döngüsel zirve kuralı aynen geçerli: seçilen *Earnings peak* yılında EPS ve değer tam zirvede.
+* Şirketin finansal tabloları yoksa eski EPS modeli (aşağıda) kullanılır.
+
+**EPS modeli (v3.8, tablolar yoksa yedek)** — **mali yıl bazında ve yıllık (YoY) büyümeyle**:
 
 * **Değer_FY = o mali yılın EPS'i × çarpan.** Kâr ve çarpan aynı yıla aittir; grafikte her nokta mali yıl
   sonuna oturur. Çarpan bugünkü fiyata içinde bulunulan mali yılın (FY0) EPS'iyle kalibre edilir, bu yüzden
@@ -235,7 +303,8 @@ ve yıllık (YoY) büyümeyle** kurulur:
   seçilince FY2029'dan itibaren değer düşer). Hedef çarpana kayış döngüselde zirveden sonra başlar; bu kayış
   bir yılı zirvenin üstüne itseydi o yıl zirvenin hemen altına çekilir ve not düşülür.
 * **Model Settings:** döngüsel mod, kâr zirvesi yılı, zirve sonrası düşüş, uzun vade büyüme (YoY), hedef
-  çarpan. Ayarlar hisse başına saklanır.
+  çarpan (v3.9'da + yıl yıl ciro büyümesi, marjlar, yükseliş büyümesi, hisse değişimi, capex, mercek).
+  Ayarlar hisse başına saklanır.
 
 **Quarter by Quarter (v3.8).** Değer patikasının altında: önce **mali yılı** seç (FY2026 · reported, FY2027,
 FY2028 …), sonra **çeyreği** (Full year · Q1 · Q2 · Q3 · Q4). Seçim değer grafiğinde de vurgulanır (yıl
@@ -255,7 +324,7 @@ açıkça yazar.
 
 Grafikler: değer patikası (kötümser–iyimser aralığı dolgulu), yıl yıl değer + çarpan tablosu,
 mali yıl EPS tablosu (analist / model etiketli), **duyarlılık ızgarası** (döngüselde zirve sonrası
-düşüş × hedef çarpan, değilse uzun vade büyüme × hedef çarpan), EPS geçmişi ve projeksiyonu
+ciro düşüşü × hedef F/K, değilse uzun vade büyüme × hedef F/K; sürücü modeliyle), EPS geçmişi ve projeksiyonu
 (kâr zirvesi işaretli), **nakit akışı iskontosu** (10 yıllık DCF + **ters DCF**) ve **tarihsel F/K
 bandı**. (v3.7'de *Valuation Range by Method* ve *Building Blocks of the Path* grafikleri kaldırıldı;
 yöntem aralıkları Methods tablosunda duruyor.)
