@@ -38,7 +38,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.8"
+APP_VERSION = "3.9"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -130,11 +130,34 @@ def _light_fig(fig):
     return fig
 
 
-def plot(fig, config=None, key=None):
+_HAS_SELECT = "on_select" in str(inspect.signature(st.plotly_chart))
+
+
+def plot(fig, config=None, key=None, select=False):
+    """Plotly grafiği. select=True: tıklanan noktayı döndürür (Streamlit ≥ 1.35)."""
     if LIGHT:
         fig = _light_fig(fig)
-    st.plotly_chart(fig, config=config if config is not None else {"displayModeBar": False}, key=key,
-                    **_wkw(st.plotly_chart))
+    kw = {}
+    if select and _HAS_SELECT:
+        kw = {"on_select": "rerun", "selection_mode": "points"}
+    ev = st.plotly_chart(fig, config=config if config is not None else {"displayModeBar": False}, key=key,
+                         **_wkw(st.plotly_chart), **kw)
+    return ev if select else None
+
+
+def picked_x(ev, key):
+    """Grafikte yeni tıklanan noktanın x değeri (aynı seçim tekrar gelirse None)."""
+    try:
+        pts = (ev or {}).get("selection", {}).get("points") or []
+    except AttributeError:
+        try:
+            pts = ev.selection.points
+        except Exception:
+            pts = []
+    x = str(pts[0].get("x")) if pts else None
+    last = ss.get("_pick_" + key)
+    ss["_pick_" + key] = x
+    return x if (x and x != last) else None
 
 
 def table(df, **kw):
@@ -595,8 +618,26 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .tmi i{font-style:normal;font-size:10.5px;opacity:.82;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
  max-width:100%}
 .tmi em{font-style:normal;font-family:ui-monospace,monospace;font-weight:600;color:#fff;opacity:.95}
+.qfin td,.qfin th{text-align:right;white-space:nowrap}
+.qfin td:first-child,.qfin th:first-child{text-align:left}
+.qfin tr.qsub td{color:#8D96A5;font-size:11.5px}
+.qfin tr.qsub td:first-child{padding-left:14px}
+.qfin td.qexp{font-style:italic;background:rgba(91,140,255,.05)}
+.qfin td.fytot{border-left:1px solid #22262D;color:#C4CAD4}
+.ratebar{display:flex;height:10px;border-radius:5px;overflow:hidden;margin:6px 0 6px 0;background:#16191E}
+.ratebar i{display:block;height:100%}
+.ptrange{position:relative;height:16px;margin:6px 4px 8px 4px;background:#16191E;border-radius:8px}
+.ptrange .rng{position:absolute;top:5px;height:6px;background:#5B8CFF55;border-radius:3px}
+.ptrange .mk{position:absolute;top:1px;width:3px;height:14px;margin-left:-1px;border-radius:2px}
+.ptrange .mk.mean{background:#5B8CFF}
+.ptrange .mk.now{background:#ECEEF1}
 .ptab tr.qsel td{background:#151922}
 .ptab tr.qsel td:first-child{box-shadow:inset 3px 0 0 #5B8CFF}
+.dtab-wrap{overflow-x:auto;margin-top:8px}
+.dtab td{padding:7px 8px;font-size:12px}
+.dtab td.lbl{color:#C4CAD4;font-weight:600;font-family:inherit}
+.dtab td.qsel,.dtab th.qsel{background:#151922}
+.dtab tr:last-child td{border-top:1px solid #2A2F38;border-bottom:0;font-size:13px}
 .qtab tr.qtot td{border-top:1px solid #2A2F37;color:#C4CAD4}
 .qtiles{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .qtiles .tile{padding:7px 9px}
@@ -1191,6 +1232,8 @@ def account_body():
         ss.auth = None
         ss["auth_mode"] = None
         st.rerun()
+    if is_owner():
+        users_admin()
     H('<div style="font-size:12px;font-weight:700;margin:12px 0 4px 0">Background theme</div>')
     names = [THEMES[k]["name"] for k in THEMES]
     cur = THEMES.get(ss.get("theme") or "gece", THEMES["gece"])["name"]
@@ -1840,6 +1883,14 @@ def value_bundle(sym, token, peer_ovr=()):
     cap_hi = 30.0 if is_cyc else 50.0
     g_lt = next((max(-5.0, min(cap_hi, x)) for x in (yoy_an, yoy_rep, an.get("growth_5y")) if en._ok(x)), 8.0)
     drop_hist = en.hist_eps_drop(f["eps"]) if f else None
+    # sürücü modeli için ciro büyümesi (YoY): son analist ciro yılı, yoksa son raporlanan yıl
+    rv_ = [e for e in (an.get("rev_fy") or []) if en._ok(e.get("avg"))]
+    g_rev = None
+    if len(rv_) >= 2 and rv_[-2]["avg"] > 0:
+        g_rev = (rv_[-1]["avg"] / rv_[-2]["avg"] - 1) * 100
+    elif f and len(f["revenue"]) >= 2 and en._ok(f["revenue"][-1]) and en._ok(f["revenue"][-2]) and f["revenue"][-2] > 0:
+        g_rev = (f["revenue"][-1] / f["revenue"][-2] - 1) * 100
+    g_rev = max(-5.0, min(cap_hi, g_rev)) if en._ok(g_rev) else 6.0
     eps_last = next((x for x in (an.get("eps_last_fy"), d.get("eps"), (f["eps"][-1] if f else None))
                      if en._ok(x)), None)
     dcfv = rdcf = None
@@ -1853,7 +1904,8 @@ def value_bundle(sym, token, peer_ovr=()):
             "cls": cls, "rf": rf, "rf_src": rf_src, "capm": cp, "wacc": wc, "timing": timing, "divst": divst,
             "wk": wk, "tnx_w": tnx_w,
             "dcf": dcfv, "rdcf": rdcf, "g_lt": g_lt, "is_cyc": is_cyc, "drop_hist": drop_hist,
-            "g_yoy_rep": yoy_rep,
+            "g_yoy_rep": yoy_rep, "g_rev": g_rev,
+            "dhist": en.driver_hist(f, an, wc, rf) if f else None,
             "eps_last": eps_last, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
             "px": px.tail(1300) if px is not None else None,
             "bench": bench.tail(1300) if bench is not None else None,
@@ -1876,30 +1928,53 @@ def vp_state(b, sym):
     if b["is_cyc"] and et.get("kind") == "peak" and et.get("fy"):
         peak0 = int(min(PEAK_MAX, max(0, et["fy"] - fy0)))      # döngü zamanlamasının kâr zirvesi tahmini
     dh = b.get("drop_hist")
-    drop0 = float(round(min(80.0, max(30.0, dh if en._ok(dh) else 45.0)) / 5) * 5) if b["is_cyc"] else 45.0
+    dhist = b.get("dhist")
+    if dhist:   # sürücü modeli: düşüş = ciro düşüşü (kâr düşüşünün kabaca yarısı)
+        drop0 = float(round(min(60.0, max(10.0, (dh if en._ok(dh) else 50.0) * 0.5)) / 5) * 5) if b["is_cyc"] else 25.0
+    else:
+        drop0 = float(round(min(80.0, max(30.0, dh if en._ok(dh) else 45.0)) / 5) * 5) if b["is_cyc"] else 45.0
+    md_ = en.driver_margin_defaults(dhist, an, fy0) if dhist else {"last": 15.0, "peak": 25.0, "trough": 5.0}
+    g_rev = b.get("g_rev") if en._ok(b.get("g_rev")) else 6.0
+    if dhist:   # döngüselde uzun vade = dip sonrası trend büyümesi; yükseliş büyümesi = analist ivmesi
+        glt0 = min(g_rev, 5.0) if b["is_cyc"] else g_rev
+    else:
+        glt0 = b["g_lt"]
     defaults = {"cyc": bool(b["is_cyc"]), "peak": int(min(PEAK_MAX, peak0)), "drop": drop0,
-                "glt": float(round(b["g_lt"])),
+                "glt": float(round(glt0 if en._ok(glt0) else 6.0)),
                 "mmode": MULT_MODES[0], "mult": float(round(b.get("pe_now") or 15.0, 1))
-                if en._ok(b.get("pe_now")) else 15.0}
+                if en._ok(b.get("pe_now")) else 15.0,
+                "gup": float(round(min(40.0, max(g_rev, 5.0)))),
+                "mtg": float(round(md_["last"], 1)), "mpk": float(round(md_["peak"], 1)),
+                "mtr": float(round(md_["trough"], 1)),
+                "shc": float(round(dhist["share_chg"], 1)) if dhist else 0.0,
+                "cpx": float(round(dhist["capex_pct"], 1)) if dhist else 5.0,
+                "lens": en.LENSES[0]}
     saved = dict(defaults)
-    saved.update((ss.get("vp_cfg") or {}).get(sym) or {})
+    raw = dict((ss.get("vp_cfg") or {}).get(sym) or {})
+    gov = {str(k): float(v) for k, v in (raw.pop("gov", None) or {}).items() if en._ok(v)}
+    saved.update(raw)
     if saved.get("mmode") not in MULT_MODES:
         saved["mmode"] = MULT_MODES[0]
+    if saved.get("lens") not in en.LENSES:
+        saved["lens"] = en.LENSES[0]
     if saved.get("peak") not in range(0, PEAK_MAX + 1):
         saved["peak"] = defaults["peak"]
     saved.pop("win", None)
-    for k, lo, hi in (("drop", 0.0, 90.0), ("glt", GLT_MIN, GLT_MAX), ("mult", 1.0, 80.0)):
+    for k, lo, hi in (("drop", 0.0, 90.0), ("glt", GLT_MIN, GLT_MAX), ("mult", 1.0, 80.0), ("gup", GLT_MIN, GLT_MAX),
+                      ("mtg", -50.0, 80.0), ("mpk", -50.0, 80.0), ("mtr", -50.0, 80.0), ("shc", -10.0, 10.0),
+                      ("cpx", 0.0, 80.0)):
         try:
             saved[k] = float(min(hi, max(lo, float(saved[k]))))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, KeyError):
             saved[k] = defaults[k]
     keys = {k: f"vp_{k}_{sym}" for k in defaults}
     cur = {k: (ss[wk] if wk in ss else saved[k]) for k, wk in keys.items()}
-    return {"fy0": fy0, "keys": keys, "saved": saved, "cur": cur, "n_est": len(est), "dh": dh}
+    return {"fy0": fy0, "keys": keys, "saved": saved, "cur": cur, "n_est": len(est), "dh": dh, "gov": gov,
+            "defaults": defaults, "driver": bool(dhist)}
 
 
 def vp_kwargs(b, st_):
-    """Ayar sözlüğünden value_path argümanları."""
+    """Ayar sözlüğünden model argümanları (sürücü modeli; geçmiş tablo yoksa EPS tabanlı value_path)."""
     an, cur = b["an"], st_["cur"]
     mmode = cur["mmode"]
     tm = None
@@ -1911,11 +1986,64 @@ def vp_kwargs(b, st_):
         tm = cur["mult"]
     tm = tm if en._ok(tm) and tm > 0 else None
     gy = b.get("g_yoy_rep")
-    return {"cyclical": bool(cur["cyc"]), "peak_idx": int(cur["peak"]), "drop": float(cur["drop"]),
-            "g_lt": float(cur["glt"]), "target_mult": tm, "fy0": st_["fy0"], "fy0_left": an.get("fy0_left", 0.5),
-            "fy0_end": an.get("fy0_end"),
-            "g_near": max(-20.0, min(100.0, gy)) if en._ok(gy) else None,
-            "_mmode": mmode, "_n_est": st_["n_est"]}
+    kw = {"cyclical": bool(cur["cyc"]), "peak_idx": int(cur["peak"]), "drop": float(cur["drop"]),
+          "g_lt": float(cur["glt"]), "target_mult": tm, "fy0": st_["fy0"], "fy0_left": an.get("fy0_left", 0.5),
+          "fy0_end": an.get("fy0_end"),
+          "g_near": max(-20.0, min(100.0, gy)) if en._ok(gy) else None,
+          "_mmode": mmode, "_n_est": st_["n_est"], "_driver": st_.get("driver", False)}
+    if st_.get("driver"):
+        dfl = st_.get("defaults") or {}
+
+        def _chg(k):        # varsayılandan farklıysa ver, değilse model kendi hesaplasın
+            v = cur.get(k)
+            return float(v) if en._ok(v) and abs(float(v) - float(dfl.get(k, v))) > 1e-9 else None
+        kw.update({"g_up": float(cur["gup"]), "m_target": _chg("mtg"), "m_peak": _chg("mpk"), "m_trough": _chg("mtr"),
+                   "share_chg": float(cur["shc"]), "capex_pct": float(cur["cpx"]), "lens": cur["lens"],
+                   "g_over": {int(k): v for k, v in (st_.get("gov") or {}).items()}})
+    return kw
+
+
+def build_path(b, kw, price=None):
+    """Seçili modele göre değer patikası: sürücü modeli (tablolar varsa) ya da EPS modeli."""
+    price = b["d"]["last"] if price is None else price
+    k_ = _model_kwargs(kw)
+    if kw.get("_driver") and b.get("dhist"):
+        p = en.driver_path(price, b["dhist"], b["an"], years=5, **k_)
+        if p:
+            return p
+    for k in ("g_up", "m_target", "m_peak", "m_trough", "share_chg", "capex_pct", "lens", "g_over"):
+        k_.pop(k, None)
+    return en.value_path(price, b["eps_last"], b["an"].get("fy") or [], years=5, **k_)
+
+
+def _vg_changed(sym, fy, key):
+    """Yıl yıl büyüme kutusu değişti: varsayılandan farklıysa elle girilen değer olarak sakla."""
+    v = ss.get(key)
+    dflt = ss.get(key + "_def")
+    allc = dict(ss.get("vp_cfg") or {})
+    c = dict(allc.get(sym) or {})
+    gov = dict(c.get("gov") or {})
+    if en._ok(v) and (dflt is None or abs(float(v) - float(dflt)) > 0.049):
+        gov[str(fy)] = float(v)
+    else:
+        gov.pop(str(fy), None)
+    c["gov"] = gov
+    allc[sym] = c
+    ss.vp_cfg = allc
+
+
+def _vg_reset(sym):
+    allc = dict(ss.get("vp_cfg") or {})
+    c = dict(allc.get(sym) or {})
+    c["gov"] = {}
+    allc[sym] = c
+    ss.vp_cfg = allc
+    for k in [k for k in ss.keys() if str(k).startswith(f"vg_{sym}_")]:
+        del ss[k]
+
+
+G_SRC = {"analyst": "analyst estimate", "upswing": "upswing growth", "downturn": "post-peak decline",
+         "recovery": "recovery (long-term growth)", "model": "long-term growth", "override": "your input"}
 
 
 def value_cfg(b, sym):
@@ -1926,37 +2054,100 @@ def value_cfg(b, sym):
         if wk not in ss:
             ss[wk] = saved[k]
     fy_opts = list(range(0, PEAK_MAX + 1))
+    drv = st_.get("driver")
     with st.container(border=True):
         H('<div class="panel-title">Model Settings</div><div class="muted small">Defaults come from analyst '
-          'estimates and the company\'s history; anything you change is saved for this stock.</div>')
+          'estimates and the company\'s history; anything you change is saved for this stock. '
+          + ('Revenue growth drives the model: revenue → operating margin → interest on net debt → tax → share '
+             'count → EPS; capex sets free cash flow and net debt.' if drv else '') + '</div>')
         c = st.columns([1, 1, 1.3, 1.3, 1.6], gap="small")
         with c[0]:
             cyc = toggle("Cyclical mode", keys["cyc"], help="Earnings climb to a peak, then pull back.")
         with c[1]:
             st.selectbox("Earnings peak", fy_opts, key=keys["peak"], disabled=not cyc,
                          format_func=lambda i: f"FY{fy0 + i}",
-                         help="The fiscal year in which earnings — and therefore the value path — peak. "
-                              "Years after it follow the post-peak drop, even where analysts expect more.")
+                         help="The fiscal year in which earnings — and therefore the value path — peak.")
         with c[2]:
-            st.slider("Post-peak drop", 0.0, 90.0, step=5.0, key=keys["drop"], disabled=not cyc,
-                      format="%.0f%%",
-                      help="EPS loss from peak to trough (over 2 years). In the company's past cycles: "
-                           + (f"{tr(dh, 0)}%" if en._ok(dh) else "no data"))
+            st.slider("Revenue drop after peak" if drv else "Post-peak drop", 0.0, 90.0, step=5.0, key=keys["drop"],
+                      disabled=not cyc, format="%.0f%%",
+                      help=("Revenue decline from peak to trough over 2 years; margins shrink with it (operating "
+                            "leverage), so EPS falls more. " if drv else "EPS loss from peak to trough (over 2 years). ")
+                           + "EPS drop in the company's past cycles: " + (f"{tr(dh, 0)}%" if en._ok(dh) else "no data"))
         with c[3]:
             st.slider("Long-term growth (YoY)", GLT_MIN, GLT_MAX, step=1.0, key=keys["glt"], format="%.0f%%",
-                      help="Year-over-year EPS growth applied to every year after the analyst estimates end "
-                           "(each year = previous year × (1 + growth)). Up to 150% for strong growth phases.")
+                      help=("Yearly revenue growth after the analyst years (cyclical: trend growth after the "
+                            "trough). " if drv else "Year-over-year EPS growth after the analyst years. ")
+                           + "Each year = previous year × (1 + growth). Up to 150%.")
         with c[4]:
             mmode = st.selectbox("Target multiple", MULT_MODES, key=keys["mmode"],
                                  help="Today's multiple: the stock keeps being priced the way the market prices it "
                                       "today. The others move the multiple to that value over 3 years.")
             if mmode == "Manual":
                 st.number_input("P/E", 1.0, 80.0, step=0.5, key=keys["mult"])
+        if drv:
+            cur0 = {k: ss.get(wk) for k, wk in keys.items()}
+            defs = en.driver_defaults(b["dhist"], b["an"], bool(cur0["cyc"]), int(cur0["peak"]), 5,
+                                      float(cur0["glt"]), float(cur0["gup"]), float(cur0["drop"]), fy0)
+            gov = st_["gov"]
+            H('<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:10px">'
+              '<span style="font-size:12px;font-weight:700">Revenue growth per year <span class="muted" '
+              'style="font-weight:500">(YoY %, editable — defaults follow the settings above)</span></span></div>')
+            gc = st.columns(len(defs) + 1, gap="small")
+            for i, d in enumerate(defs):
+                k = f"vg_{sym}_{d['fy']}"
+                ov = gov.get(str(d["fy"]))
+                g_def = float(round(min(400.0, max(-90.0, d["g"])), 1))
+                if ov is None and (k not in ss or ss.get(k + "_def") != g_def):
+                    ss[k] = g_def
+                elif ov is not None and k not in ss:
+                    ss[k] = float(min(400.0, max(-90.0, ov)))
+                ss[k + "_def"] = g_def
+                with gc[i]:
+                    st.number_input(f"FY{d['fy']}", -90.0, 400.0, step=1.0, key=k, format="%.1f",
+                                    on_change=_vg_changed, args=(sym, d["fy"], k),
+                                    help=f"Default {tr(g_def, 1)}% — {G_SRC.get(d['src'], d['src'])}.")
+                    src_ = "your input" if ov is not None else G_SRC.get(d["src"], d["src"])
+                    H(f'<div class="muted" style="font-size:10.5px;margin-top:-6px">{esc(src_)}</div>')
+            with gc[-1]:
+                H('<div style="height:26px"></div>')
+                st.button("Reset", key=f"vg_reset_{sym}", on_click=_vg_reset, args=(sym,),
+                          help="Back to the default growth for every year.")
+            d2 = st.columns([1, 1, 1, 1, 1, 1.2], gap="small")
+            with d2[0]:
+                st.number_input("Upswing growth", GLT_MIN, GLT_MAX, step=1.0, key=keys["gup"], format="%.0f",
+                                disabled=not cyc, help="Cyclical: yearly revenue growth from the last analyst year "
+                                                       "up to the peak (%).")
+            with d2[1]:
+                if cyc:
+                    st.number_input("Peak op. margin %", -50.0, 80.0, step=0.5, key=keys["mpk"], format="%.1f",
+                                    help="Operating margin at the cycle peak (default: higher of the analyst-implied "
+                                         "and the company's best margin).")
+                else:
+                    st.number_input("Target op. margin %", -50.0, 80.0, step=0.5, key=keys["mtg"], format="%.1f",
+                                    help="Operating margin the company moves to over 3 years after the analyst years "
+                                         "(default: the margin implied by the last analyst estimate).")
+            with d2[2]:
+                st.number_input("Trough op. margin %", -50.0, 80.0, step=0.5, key=keys["mtr"], format="%.1f",
+                                disabled=not cyc, help="Cyclical: operating margin at the bottom of the cycle "
+                                                       "(default: 40% of the company's median margin).")
+            with d2[3]:
+                st.number_input("Shares / yr %", -10.0, 10.0, step=0.1, key=keys["shc"], format="%.1f",
+                                help="Yearly change in the share count: negative = buybacks, positive = dilution.")
+            with d2[4]:
+                st.number_input("Capex % revenue", 0.0, 80.0, step=0.5, key=keys["cpx"], format="%.1f",
+                                help="Capital expenditure as % of revenue (default: last 3 years). Lower capex = "
+                                     "more free cash flow = faster debt reduction.")
+            with d2[5]:
+                st.selectbox("Valuation lens", en.LENSES, key=keys["lens"],
+                             help="P/E: EPS × multiple. EV/EBIT: (EBIT × multiple − net debt) / shares — debt and "
+                                  "cash count directly. Blend: average of both.")
     cur = {k: ss.get(wk) for k, wk in keys.items()}
     allc = dict(ss.get("vp_cfg") or {})
+    cur["gov"] = dict(((allc.get(sym) or {}).get("gov")) or {})
     allc[sym] = cur
     ss.vp_cfg = dict(list(allc.items())[-40:])
     st_["cur"] = cur
+    st_["gov"] = {k: v for k, v in cur["gov"].items()}
     return vp_kwargs(b, st_)
 
 
@@ -1964,13 +2155,20 @@ def _model_kwargs(cfg):
     return {k: v for k, v in cfg.items() if not k.startswith("_")}
 
 
-def fin_bar_chart(f, keys, names, colors, height=240, pct=False):
-    """Yıllık kalemler için çubuk grafiği."""
+def fin_bar_chart(f, keys, names, colors, height=240, pct=False, sel=None):
+    """Yıllık kalemler için çubuk grafiği. sel: vurgulanan yıl (çeyrek sonuçları açık)."""
     fig = go.Figure()
+    yrs = [str(y) for y in f["years"]]
     for k, n, c in zip(keys, names, colors):
         vals = [v / 1e9 if not pct and en._ok(v) else v for v in f[k]]
-        fig.add_trace(go.Bar(x=[str(y) for y in f["years"]], y=vals, name=n, marker_color=c))
+        fig.add_trace(go.Bar(x=yrs, y=vals, name=n, marker_color=c,
+                             hovertemplate="%{x}: %{y:.1f}" + ("%" if pct else " bn") + "<extra>" + n +
+                                           " · click for quarters</extra>"))
+    if sel is not None and str(sel) in yrs:
+        i = yrs.index(str(sel))
+        fig.add_vrect(x0=i - 0.5, x1=i + 0.5, fillcolor=rgba(ACCENT, 0.10), line_width=0)
     fig.update_layout(barmode="group", legend=dict(orientation="h", y=1.18, x=0))
+    fig.update_xaxes(type="category")       # "2025" sayı sanılmasın: vurgu kutusu kategori sırasına göre
     fig.update_yaxes(ticksuffix="%" if pct else " bn")
     return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=26, b=4))
 
@@ -2442,10 +2640,253 @@ def render_value_head(b, sym):
                   f'<span style="color:{col(up)}">({pct(up)})</span></span></div>')
 
 
+def _qv(v, kind, dec=2):
+    if not en._ok(v):
+        return '<span class="muted">—</span>'
+    if kind == "bn":
+        return big(v)
+    if kind == "pct":
+        return f'{tr(v, 1)}%'
+    if kind == "chg":
+        return f'<span style="color:{col(v)}">{pct(v, 1)}</span>'
+    return tr(v, dec)
+
+
+def quarter_fin_fig(fq, sel_fy, height=230):
+    """Seçili yıl + önceki yıl: çeyrek ciro ve net kâr (beklenen çeyrekler açık renk)."""
+    xs = [(fy, q) for fy in (sel_fy - 1, sel_fy) if fy in fq for q in fq[fy]["quarters"]]
+    cats = [f"{fy % 100:02d} Q{q['q']}" for fy, q in xs]
+    fig = go.Figure()
+    rev = [q.get("revenue") / 1e9 if en._ok(q.get("revenue")) else None for _, q in xs]
+    ni = [q.get("net_income") / 1e9 if en._ok(q.get("net_income")) else None for _, q in xs]
+    fig.add_trace(go.Bar(x=cats, y=rev, name="Revenue",
+                         marker=dict(color=[ACCENT if q["src"] == "reported" else rgba(ACCENT, 0.35) for _, q in xs]),
+                         hovertemplate="FY%{x}: %{y:.2f} bn<extra>Revenue</extra>"))
+    fig.add_trace(go.Bar(x=cats, y=ni, name="Net income", marker_color=VIOLET,
+                         hovertemplate="FY%{x}: %{y:.2f} bn<extra>Net income</extra>"))
+    fig.update_layout(barmode="group", legend=dict(orientation="h", y=1.2, x=0))
+    fig.update_xaxes(categoryorder="array", categoryarray=cats)
+    fig.update_yaxes(ticksuffix=" bn")
+    if any(fy == sel_fy for fy, _ in xs):
+        i0 = [i for i, (fy, _) in enumerate(xs) if fy == sel_fy][0]
+        fig.add_vrect(x0=i0 - 0.5, x1=len(xs) - 0.5, fillcolor=rgba(ACCENT, 0.07), line_width=0)
+    return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=30, b=4))
+
+
+def render_fund_quarters(b, fq, fy_labels, k_y):
+    """Fundamentals: seçili mali yılın çeyrek sonuçları (raporlanan; içinde bulunulan yılda beklenti)."""
+    with st.container(border=True):
+        H('<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'
+          '<span class="panel-title">Quarterly Results</span><span class="muted small">click a year in any chart '
+          'above, or pick it here</span></div>')
+        if not fq:
+            H('<div class="muted">No quarterly statements available for this symbol.</div>')
+            return
+        labs = list(fy_labels.values())
+        seg("Fiscal year", labs, k_y, ss.get(k_y) or labs[-1])
+        sel = {v: k for k, v in fy_labels.items()}.get(ss.get(k_y), max(fq))
+        y = fq[sel]
+        qs = y["quarters"]
+        if not any(q["src"] in ("reported", "expected") for q in qs):
+            H(f'<div class="muted" style="margin:8px 0">No quarterly figures for FY{sel}. Yahoo Finance only keeps '
+              f'the last ~5 quarters; older years come from SEC filings, which this company does not provide in '
+              f'machine-readable form.</div>')
+            return
+        fa = b["f"]
+        fyi = fa["years"].index(sel) if sel in fa["years"] else None
+
+        def annual(k):
+            return fa[k][fyi] if fyi is not None and k in fa else None
+        head = "".join(
+            f'<th>Q{q["q"]}<div class="muted" style="font-size:10.5px;font-weight:400">{q["end"].strftime("%b %Y")}'
+            f'{" · expected" if q["src"] == "expected" else " · no estimate" if q["src"] == "no estimate" else ""}'
+            f'</div></th>' for q in qs) + f'<th>FY{sel}</th>'
+        rows_def = [("Revenue", "revenue", "bn", "revenue"), ("  QoQ", "revenue_qoq", "chg", None),
+                    ("  YoY", "revenue_yoy", "chg", None), ("Gross profit", "gross", "bn", "gross"),
+                    ("  Gross margin", "gross_m", "pct", "gross_m"), ("Operating income", "op_income", "bn", "op_income"),
+                    ("  Operating margin", "op_m", "pct", "op_m"), ("Net income", "net_income", "bn", "net_income"),
+                    ("  Net margin", "net_m", "pct", "net_m"), ("EPS (diluted)", "eps", "eps", "eps"),
+                    ("  EPS YoY", "eps_yoy", "chg", None), ("Operating cash flow", "ocf", "bn", "ocf"),
+                    ("Capex", "capex", "bn", "capex"), ("Free cash flow", "fcf", "bn", "fcf")]
+        body = ""
+        for lab, k, kind, ak in rows_def:
+            if not any(en._ok(q.get(k)) for q in qs) and not (ak and en._ok(annual(ak))):
+                continue
+            sub = lab.startswith("  ")
+            cells = ""
+            for q in qs:
+                v = q.get(k)
+                if k == "capex" and en._ok(v):
+                    v = abs(v)
+                txt = _qv(v, kind)
+                if q["src"] == "expected" and k == "eps" and q.get("eps_range") and en._ok(v):
+                    lo, hi = q["eps_range"]
+                    txt += (f'<div class="muted" style="font-size:10px">{tr(lo, 2)} – {tr(hi, 2)}'
+                            f'{" · " + str(q["n"]) + " analysts" if q.get("n") else ""}</div>')
+                der = " title=\"derived: full year minus the first three quarters (or year-to-date difference)\"" \
+                    if k in q.get("derived", []) else ""
+                cls = "qexp" if q["src"] == "expected" else ""
+                cells += f'<td class="{cls}"{der}>{txt}{"<sup class=muted>Δ</sup>" if der else ""}</td>'
+            av = annual(ak) if ak else None
+            if ak == "capex" and en._ok(av):
+                av = abs(av)
+            cells += f'<td class="fytot">{_qv(av, kind) if ak else ""}</td>'
+            body += (f'<tr class="{"qsub" if sub else ""}"><td>{esc(lab.strip())}</td>{cells}</tr>')
+        c1, c2 = st.columns([1.6, 1], gap="large")
+        with c1:
+            H(f'<div style="overflow-x:auto"><table class="ptab qfin"><thead><tr><th></th>{head}</tr></thead>'
+              f'<tbody>{body}</tbody></table></div>')
+            notes = []
+            if y.get("src"):
+                notes.append(f'source: {y["src"]}')
+            if any(q.get("derived") for q in qs):
+                notes.append("Δ = derived (Q4 = full year minus Q1–Q3; cash flows from year-to-date figures)")
+            if y["status"] == "in progress":
+                notes.append("expected = analyst consensus (EPS and revenue) for quarters not reported yet")
+            notes.append("QoQ vs the previous quarter, YoY vs the same quarter a year earlier")
+            H(f'<div class="muted small" style="margin-top:6px">{esc(" · ".join(notes))}</div>')
+        with c2:
+            plot(quarter_fin_fig(fq, sel), key="v_fq")
+            rq = [q for q in qs if q["src"] == "reported" and en._ok(q.get("revenue"))]
+            if len(rq) >= 2:
+                best = max(rq, key=lambda q: q["revenue"])
+                g = rq[-1].get("revenue_yoy")
+                H(f'<div class="gtext">FY{sel}: strongest quarter by revenue was <b>Q{best["q"]}</b> '
+                  f'({big(best["revenue"])})' + (f'; the latest reported quarter grew <b>{pct(g, 1)}</b> year over '
+                                                  f'year' if en._ok(g) else "") + '.</div>')
+
+
+def render_analyst_panel(sym, b):
+    """Analist notları, hedef fiyatlar, tahminler, revizyonlar ve son not değişiklikleri."""
+    try:
+        ad = md.get_analyst_detail(sym)
+    except Exception:
+        ad = {"src": "none"}
+    price = b["d"]["last"]
+    dec = 2
+    with st.container(border=True):
+        H('<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'
+          '<span class="panel-title">Analyst Ratings & Expectations</span><span class="muted small">consensus of '
+          'the analysts covering the stock · Yahoo Finance</span></div>')
+        if ad.get("src") != "real":
+            H('<div class="muted">No analyst coverage data for this symbol.</div>')
+            return
+        c1, c2, c3 = st.columns([1, 1.45, 1], gap="large")
+        with c1:
+            dist = ad.get("dist") or {}
+            tot = sum(dist.values())
+            if tot:
+                parts = [("Strong Buy", "strongBuy", "#16A34A"), ("Buy", "buy", "#34D399"), ("Hold", "hold", "#F5B544"),
+                         ("Sell", "sell", "#F87171"), ("Strong Sell", "strongSell", "#B91C1C")]
+                bar = "".join(f'<i style="width:{dist[k] / tot * 100:.1f}%;background:{c}" title="{n}: {dist[k]}"></i>'
+                              for n, k, c in parts if dist.get(k))
+                leg = "".join(f'<div class="stat-row"><span class="lbl"><span style="color:{c}">■</span> {n}</span>'
+                              f'<span class="mono">{dist.get(k, 0)}</span>'
+                              + (f'<span class="muted small" style="width:56px;text-align:right">'
+                                 f'{dist.get(k, 0) - (ad.get("dist_3m") or {}).get(k, 0):+d} 3m</span>'
+                                 if ad.get("dist_3m") else "") + '</div>' for n, k, c in parts)
+                buyp = (dist.get("strongBuy", 0) + dist.get("buy", 0)) / tot * 100
+                H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:4px">'
+                  f'<b style="font-size:16px">{esc(ad.get("rec_key") or "—")}</b><span class="muted small">'
+                  f'{tot} analysts · {tr(buyp, 0)}% buy'
+                  + (f' · score {tr(ad["rec_mean"], 2)} (1 = strong buy, 5 = sell)' if en._ok(ad.get("rec_mean")) else "")
+                  + f'</span></div><div class="ratebar">{bar}</div>{leg}')
+            tg = ad.get("targets") or {}
+            if en._ok(tg.get("low")) and en._ok(tg.get("high")) and tg["high"] > tg["low"]:
+                lo, hi = min(tg["low"], price), max(tg["high"], price)
+                span = hi - lo
+
+                def xpos(v):
+                    return (v - lo) / span * 100
+                mean = tg.get("mean") or tg.get("median")
+                up = (mean / price - 1) * 100 if en._ok(mean) else None
+                H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin:12px 0 4px 0">Price targets '
+                  f'<span class="muted" style="font-weight:500">· 12 months</span></div>'
+                  f'<div class="ptrange"><span class="rng" style="left:{xpos(tg["low"]):.1f}%;width:'
+                  f'{xpos(tg["high"]) - xpos(tg["low"]):.1f}%"></span>'
+                  + (f'<span class="mk mean" style="left:{xpos(mean):.1f}%" title="mean {tr(mean, dec)}"></span>'
+                     if en._ok(mean) else "") +
+                  f'<span class="mk now" style="left:{xpos(price):.1f}%" title="price {tr(price, dec)}"></span></div>'
+                  f'<div class="stat-row"><span class="lbl">Low · Mean · High</span><span class="mono">'
+                  f'{tr(tg["low"], dec)} · {tr(mean, dec) if en._ok(mean) else "—"} · {tr(tg["high"], dec)}</span></div>'
+                  + (f'<div class="stat-row"><span class="lbl">Upside to mean</span><span class="mono" '
+                     f'style="color:{col(up)}">{pct(up)}</span></div>' if up is not None else ""))
+        with c2:
+            est = ad.get("est") or []
+            if est:
+                trs = ""
+                for e in est:
+                    rng_ = (f'<div class="muted" style="font-size:10.5px">{tr(e["eps_low"], 2)} – {tr(e["eps_high"], 2)}'
+                            f'</div>' if en._ok(e.get("eps_low")) and en._ok(e.get("eps_high")) else "")
+                    trs += (f'<tr><td>{esc(e["name"])}</td><td><b>{tr(e.get("eps"), 2) if en._ok(e.get("eps")) else "—"}'
+                            f'</b>{rng_}</td><td>{_qv(e.get("growth"), "chg")}</td>'
+                            f'<td>{big(e["rev"]) if en._ok(e.get("rev")) else "—"}</td>'
+                            f'<td>{_qv(e.get("rev_growth"), "chg")}</td>'
+                            f'<td class="muted">{int(e["n"]) if en._ok(e.get("n")) else "—"}</td></tr>')
+                H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin:2px 0 4px 0">Expectations</div>'
+                  f'<table class="ptab"><thead><tr><th>Period</th><th>EPS est.</th><th>EPS YoY</th><th>Revenue est.</th>'
+                  f'<th>Rev. YoY</th><th>#</th></tr></thead><tbody>{trs}</tbody></table>')
+            trd, rev = ad.get("trend") or {}, ad.get("revisions") or {}
+            lines = []
+            for idx, nm in (("0q", "current quarter"), ("0y", "current year"), ("+1y", "next year")):
+                t_ = trd.get(idx) or {}
+                if en._ok(t_.get("current")) and en._ok(t_.get("90daysAgo")) and t_["90daysAgo"]:
+                    ch = (t_["current"] / t_["90daysAgo"] - 1) * 100
+                    rv = rev.get(idx) or {}
+                    lines.append(f'<div class="stat-row"><span class="lbl">EPS estimate, {nm}</span>'
+                                 f'<span class="mono">{tr(t_["90daysAgo"], 2)} → {tr(t_["current"], 2)}</span>'
+                                 f'<span class="mono" style="width:70px;text-align:right;color:{col(ch)}">{pct(ch, 1)}</span>'
+                                 f'<span class="muted small" style="width:120px;text-align:right">'
+                                 f'{rv.get("upLast30days", 0)}↑ {rv.get("downLast30days", 0)}↓ in 30 days</span></div>')
+            if lines:
+                H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin:12px 0 2px 0">Estimate revisions '
+                  f'<span class="muted" style="font-weight:500">· last 90 days</span></div>' + "".join(lines))
+        with c3:
+            ch_ = ad.get("changes") or []
+            H(f'<div style="font-size:12px;font-weight:700;color:{SOFT};margin:2px 0 4px 0">Latest rating changes</div>')
+            if ch_:
+                out = ""
+                for c in ch_[:7]:
+                    act = c["action"].lower()
+                    colr = UP if act in ("up", "init") and "sell" not in c["to"].lower() else DOWN if act == "down" else SOFT
+                    pt_ = (f' · PT {tr(c["pt_prev"], 0) + " → " if en._ok(c.get("pt_prev")) and c["pt_prev"] else ""}'
+                           f'{tr(c["pt"], 0)}' if en._ok(c.get("pt")) and c["pt"] else "")
+                    out += (f'<div class="stat-row" style="align-items:flex-start"><span class="lbl">'
+                            f'<b>{esc(c["firm"])}</b><div class="muted" style="font-size:11px;font-weight:500;line-height:1.3">'
+                            f'{esc(c["date"])}{pt_}</div></span>'
+                            f'<span class="small" style="color:{colr};text-align:right">'
+                            f'{esc((c["from"] + " → ") if c["from"] and c["from"] != c["to"] else "")}{esc(c["to"])}'
+                            f'</span></div>')
+                H(out)
+            else:
+                H('<div class="muted small">No recent rating changes.</div>')
+
+
 def render_value_fundamentals(b):
     f, r = b["f"], b["r"]
+    sym = ACTIVE
     H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">01</span>'
-      '<h3>Fundamentals</h3><span class="muted">Statements for the last ' + str(f["n"]) + ' years</span></div>')
+      '<h3>Fundamentals</h3><span class="muted">Statements for the last ' + str(f["n"]) + ' years · click a year '
+      'for its quarterly results</span></div>')
+    # çeyrek sonuçları: seçili yıl (grafiğe tıklama ya da aşağıdaki seçici)
+    try:
+        fq = en.fiscal_quarters(f["dates"], md.get_sec_quarterly(sym), md.get_yf_quarterly_fin(sym),
+                                (md.get_quarterly(sym) or {}).get("est"), cur_fy_end=(b.get("an") or {}).get("fy0_end"))
+    except Exception:
+        fq = {}
+    k_y = f"fq_year_{sym}"
+    fy_labels = {fy: (f"FY{fy} · in progress" if v["status"] == "in progress" else f"FY{fy}")
+                 for fy, v in sorted(fq.items())}
+    lab2fy = {v: k for k, v in fy_labels.items()}
+    if fq and ss.get(k_y) not in lab2fy:
+        rep_ = [fy for fy, v in fq.items() if any(q["src"] == "reported" for q in v["quarters"])
+                and v["status"] == "reported"]
+        ss[k_y] = fy_labels[max(rep_) if rep_ else max(fq)]
+    for ck in ("v_inc", "v_marg", "v_cf", "v_bs"):        # önceki çalıştırmadaki tıklama
+        x = picked_x(ss.get(ck), ck) if _HAS_SELECT else None
+        if x and x.isdigit() and int(x) in fy_labels:
+            ss[k_y] = fy_labels[int(x)]
+    sel_fy = lab2fy.get(ss.get(k_y)) if fq else None
     c1, c2 = st.columns(2, gap="medium")
     with c1:
         with st.container(border=True):
@@ -2453,13 +2894,13 @@ def render_value_fundamentals(b):
               'currency</div>')
             plot(fin_bar_chart(f, ["revenue", "gross", "op_income", "net_income"],
                                ["Revenue", "Gross profit", "Operating income", "Net income"],
-                               [ACCENT, "#6EE7B7", WARN, VIOLET]), key="v_inc")
+                               [ACCENT, "#6EE7B7", WARN, VIOLET], sel=sel_fy), key="v_inc", select=True)
     with c2:
         with st.container(border=True):
             H('<div class="panel-title">Margins</div><div class="muted small">As % of revenue</div>')
             plot(fin_bar_chart(f, ["gross_m", "op_m", "net_m", "fcf_m"],
                                ["Gross", "Operating", "Net", "Free cash flow"],
-                               ["#6EE7B7", WARN, VIOLET, ACCENT], pct=True), key="v_marg")
+                               ["#6EE7B7", WARN, VIOLET, ACCENT], pct=True, sel=sel_fy), key="v_marg", select=True)
     c3, c4 = st.columns(2, gap="medium")
     with c3:
         with st.container(border=True):
@@ -2467,13 +2908,14 @@ def render_value_fundamentals(b):
               'free cash flow</div>')
             plot(fin_bar_chart(f, ["ocf", "capex", "fcf"],
                                ["Operating cash flow", "Capital expenditure", "Free cash flow"],
-                               [ACCENT, DOWN, "#6EE7B7"]), key="v_cf")
+                               [ACCENT, DOWN, "#6EE7B7"], sel=sel_fy), key="v_cf", select=True)
     with c4:
         with st.container(border=True):
             H('<div class="panel-title">Balance Sheet</div><div class="muted small">Assets, equity and net debt</div>')
             plot(fin_bar_chart(f, ["assets", "equity", "net_debt"],
                                ["Total assets", "Equity", "Net debt"],
-                               ["#4A515C", "#6EE7B7", DOWN]), key="v_bs")
+                               ["#4A515C", "#6EE7B7", DOWN], sel=sel_fy), key="v_bs", select=True)
+    render_fund_quarters(b, fq, fy_labels, k_y)
     yrs = [str(y) for y in f["years"]]
     c5, c6, c7 = st.columns(3, gap="medium")
     with c5:
@@ -2510,6 +2952,7 @@ def render_value_fundamentals(b):
             f'<span class="muted small" style="width:180px;text-align:right">{esc(n)}</span></div>'
             for k, v, n in rows))
     render_revenue_mix(ACTIVE)
+    render_analyst_panel(ACTIVE, b)
 
 
 def fmt_count(v):
@@ -4148,45 +4591,130 @@ def _new_code():
     return "-".join(raw[i:i + 4] for i in range(0, 16, 4))
 
 
-def auth_load():
-    """Kayıtlı giriş bilgisi (karma): önce dosya, yoksa Secrets. Hiçbiri yoksa None → ilk kurulum."""
+def _rec(d, role=None):
+    return {"email": _norm_email(d.get("email")), "password_hash": str(d.get("password_hash") or ""),
+            "recovery_hash": str(d.get("recovery_hash") or ""), "role": role or str(d.get("role") or "user"),
+            "must_change": bool(d.get("must_change")), "created": str(d.get("created") or "")}
+
+
+def auth_store():
+    """Kayıtlı kullanıcılar: önce dosya (v2: users listesi, v1: tek kayıt → owner), yoksa Secrets
+    ([[pulse_users]] listesi ya da eski [pulse_auth] tek kayıt). Hiçbiri yoksa None → ilk kurulum."""
     try:
         with open(AUTH_FILE, encoding="utf-8") as fh:
             d = json.load(fh)
-        if d.get("email") and d.get("password_hash") and d.get("recovery_hash"):
-            d["where"] = "file"
-            return d
-    except (OSError, ValueError):
+        users = [_rec(u) for u in d.get("users", [])] if "users" in d else \
+            ([_rec(d, "owner")] if d.get("email") else [])
+        users = [u for u in users if u["email"] and u["password_hash"]]
+        if users:
+            if not any(u["role"] == "owner" for u in users):
+                users[0]["role"] = "owner"
+            return {"users": users, "where": "file"}
+    except (OSError, ValueError, AttributeError):
         pass
     try:
-        sec = st.secrets.get("pulse_auth") if hasattr(st, "secrets") else None
-        if sec and sec.get("email") and sec.get("password_hash"):
-            return {"email": _norm_email(sec["email"]), "password_hash": str(sec["password_hash"]),
-                    "recovery_hash": str(sec.get("recovery_hash") or ""), "where": "secrets"}
+        sec = st.secrets if hasattr(st, "secrets") else {}
+        lst = sec.get("pulse_users") if hasattr(sec, "get") else None
+        users = []
+        if lst:
+            users = [_rec(dict(u)) for u in lst]
+        elif hasattr(sec, "get") and sec.get("pulse_auth"):
+            users = [_rec(dict(sec["pulse_auth"]), "owner")]
+        users = [u for u in users if u["email"] and u["password_hash"]]
+        if users:
+            if not any(u["role"] == "owner" for u in users):
+                users[0]["role"] = "owner"
+            return {"users": users, "where": "secrets"}
     except Exception:
         pass
     return None
 
 
-def auth_save(email, pw):
-    """Yeni giriş bilgisini kaydeder, tek seferlik gösterilecek kurtarma kodunu döndürür."""
-    code = _new_code()
-    rec = {"v": 1, "email": _norm_email(email), "password_hash": _pw_hash(pw),
-           "recovery_hash": _pw_hash(_norm_code(code)), "created": pd.Timestamp.now(tz="UTC").isoformat()}
+def auth_load():
+    """Geriye uyumluluk: owner kaydı (yoksa None)."""
+    stv = auth_store()
+    if not stv:
+        return None
+    o = next((u for u in stv["users"] if u["role"] == "owner"), stv["users"][0])
+    return {**o, "where": stv["where"]}
+
+
+def auth_user(email):
+    stv = auth_store()
+    e = _norm_email(email)
+    return next((u for u in (stv or {}).get("users", []) if hmac.compare_digest(u["email"], e)), None)
+
+
+def _auth_write(users):
     tmp = AUTH_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(rec, fh)
+        json.dump({"v": 2, "users": users}, fh)
     try:
         os.chmod(tmp, 0o600)
     except OSError:
         pass
     os.replace(tmp, AUTH_FILE)
+
+
+def auth_upsert(email, pw, role=None, old_email=None, must_change=False, new_code=True):
+    """Kullanıcı ekler / günceller. Yeni kurtarma kodunu döndürür (new_code=False ise None)."""
+    stv = auth_store() or {"users": []}
+    users = [dict(u) for u in stv["users"]]
+    key = _norm_email(old_email or email)
+    cur = next((u for u in users if u["email"] == key), None)
+    code = _new_code() if new_code else None
+    rec = {"email": _norm_email(email), "password_hash": _pw_hash(pw),
+           "recovery_hash": _pw_hash(_norm_code(code)) if code else (cur or {}).get("recovery_hash", ""),
+           "role": role or (cur or {}).get("role") or ("owner" if not users else "user"),
+           "must_change": bool(must_change), "created": (cur or {}).get("created") or
+           pd.Timestamp.now(tz="UTC").isoformat()}
+    users = [u for u in users if u["email"] not in (key, rec["email"])]
+    users.append(rec)
+    users.sort(key=lambda u: (u["role"] != "owner", u["created"]))
+    _auth_write(users)
     return code, rec
 
 
-def secrets_snippet(rec):
-    return (f'[pulse_auth]\nemail = "{rec["email"]}"\npassword_hash = "{rec["password_hash"]}"\n'
-            f'recovery_hash = "{rec["recovery_hash"]}"')
+def auth_remove(email):
+    stv = auth_store() or {"users": []}
+    users = [u for u in stv["users"] if u["email"] != _norm_email(email) or u["role"] == "owner"]
+    _auth_write(users)
+
+
+def auth_save(email, pw):
+    """İlk kurulum: owner hesabı."""
+    code, rec = auth_upsert(email, pw, role="owner")
+    return code, rec
+
+
+def owner_key():
+    """Uygulama sahibinin anahtarı (Streamlit Secrets'ta, yalnızca sahibi görür):
+    [pulse_admin] key = "…"  ya da  PULSE_ADMIN_KEY = "…"."""
+    try:
+        sec = st.secrets if hasattr(st, "secrets") else {}
+        k = None
+        if hasattr(sec, "get"):
+            adm = sec.get("pulse_admin")
+            k = (adm.get("key") if hasattr(adm, "get") else None) or sec.get("PULSE_ADMIN_KEY")
+        k = k or os.environ.get("PULSE_ADMIN_KEY")
+        return str(k) if k and len(str(k)) >= 8 else None
+    except Exception:
+        return os.environ.get("PULSE_ADMIN_KEY") or None
+
+
+def _temp_password():
+    return "".join(secrets.choice(_CODE_ABC.lower() + "23456789") for _ in range(12))
+
+
+def secrets_snippet(rec=None):
+    """Tüm kullanıcılar için kalıcı Secrets bloğu (yalnızca karmalar)."""
+    stv = auth_store() or {"users": [rec] if rec else []}
+    out = []
+    for u in stv["users"]:
+        out.append(f'[[pulse_users]]\nemail = "{u["email"]}"\nrole = "{u["role"]}"\n'
+                   f'password_hash = "{u["password_hash"]}"\nrecovery_hash = "{u["recovery_hash"]}"\n'
+                   + ('must_change = true\n' if u.get("must_change") else ""))
+    return "\n".join(out)
 
 
 @st.cache_resource(show_spinner=False)
@@ -4231,12 +4759,23 @@ def auth_valid():
     if a.get("tag") and tag and a["tag"] != tag:
         ss.auth = None
         return False
+    u = auth_user(a["user"]) if auth_store() else None
+    if auth_store() and (u is None or u.get("must_change")):      # silindi ya da şifresi sıfırlandı
+        ss.auth = None
+        return False
+    if u:
+        a["role"] = u["role"]
     return True
 
 
+def is_owner():
+    return (ss.get("auth") or {}).get("role") == "owner"
+
+
 def _sign_in(email):
+    u = auth_user(email) or {}
     ss.auth = {"user": _norm_email(email), "at": pd.Timestamp.now(tz=md.TZ).strftime("%Y-%m-%d %H:%M"),
-               "last": time.time(), "tag": _client_tag()}
+               "last": time.time(), "tag": _client_tag(), "role": u.get("role", "user")}
     ss["_boot"] = True            # ilk yüklemede açılış ekranı
     ss["_cred_store"] = True      # tarayıcı şifre yöneticisine kaydetmeyi önersin
 
@@ -4301,15 +4840,19 @@ def _set_mode(m):
     ss.pop("_auth_err", None)
 
 
+def _btn_link():
+    return {"type": "tertiary"} if "tertiary" in str(inspect.signature(st.button)) else {}
+
+
 def render_auth():
-    """Giriş kapısı: ilk kurulum · giriş · şifre/e-posta sıfırlama · kurtarma kodu."""
+    """Giriş kapısı: ilk kurulum · giriş · şifre değiştirme (geçici şifreden sonra) · sıfırlama · kurtarma kodu."""
     st.markdown(ENTRY_CSS, unsafe_allow_html=True)
     st.markdown(_entry_bg(), unsafe_allow_html=True)
-    cred = auth_load()
-    mode = ss.get("auth_mode") or ("login" if cred else "setup")
-    if cred and mode == "setup":
+    stv = auth_store()
+    mode = ss.get("auth_mode") or ("login" if stv else "setup")
+    if stv and mode == "setup":
         mode = "login"
-    if not cred and mode in ("login", "reset"):
+    if not stv and mode in ("login", "reset", "change"):
         mode = "setup"
     err = ss.pop("_auth_err", None)
     ok_ = ss.pop("_auth_ok", None)
@@ -4335,8 +4878,9 @@ def render_auth():
                     p2 = st.text_input("Repeat password", type="password", placeholder="Same password again",
                                        key="setup_pw2", autocomplete="new-password")
                     go_ = st.form_submit_button("Create login", type="primary", **_wkw(st.form_submit_button))
-                st.markdown('<div class="entry-foot">This is done once. From then on Pulse asks for exactly this '
-                            'email and password every time it is opened.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="entry-foot">This is done once and makes you the <b>owner</b>: you can '
+                            'later add friends and reset their logins. From then on Pulse asks for your email and '
+                            'password every time it is opened.</div>', unsafe_allow_html=True)
                 if go_:
                     e = _norm_email(em)
                     if not _EMAIL_RE.match(e):
@@ -4345,7 +4889,7 @@ def render_auth():
                         ss["_auth_err"] = "The password needs at least 8 characters."
                     elif p1 != p2:
                         ss["_auth_err"] = "The two passwords do not match."
-                    elif auth_load():
+                    elif auth_store():
                         ss["_auth_err"] = "A login was created a moment ago — please sign in."
                         ss["auth_mode"] = "login"
                     else:
@@ -4354,13 +4898,42 @@ def render_auth():
                         except OSError:
                             ss["_auth_err"] = "The login could not be saved on the server (write access denied)."
                         else:
-                            ss["_new_code"] = code
-                            ss["_new_rec"] = rec
-                            ss["_code_next"] = "app"
+                            ss["_new_code"], ss["_new_rec"], ss["_code_next"] = code, rec, "app"
                             ss["auth_mode"] = "code"
                             _sign_in(e)
                             ss["_hold_auth"] = ss.auth      # önce kurtarma kodu gösterilir
                             ss.auth = None
+                    st.rerun()
+            elif mode == "change":
+                who = ss.get("_chg_user") or ""
+                _auth_header("New password", f"{who} — your password was reset, choose a new one")
+                if err:
+                    _auth_msg("err", err)
+                with st.form("entry_change", border=False):
+                    st.text_input("Email", value=who, key="chg_email", autocomplete="username", disabled=True)
+                    p1 = st.text_input("New password", type="password", placeholder="At least 8 characters",
+                                       key="chg_pw", autocomplete="new-password")
+                    p2 = st.text_input("Repeat new password", type="password", key="chg_pw2",
+                                       autocomplete="new-password")
+                    go_ = st.form_submit_button("Save new password", type="primary", **_wkw(st.form_submit_button))
+                st.button("← Back to sign in", key="chg_back", on_click=_set_mode, args=("login",), **_btn_link())
+                if go_:
+                    u = auth_user(who)
+                    if not u or not ss.get("_chg_ok"):
+                        ss["_auth_err"] = "Please sign in with the temporary password again."
+                        ss["auth_mode"] = "login"
+                    elif len(p1 or "") < 8:
+                        ss["_auth_err"] = "The new password needs at least 8 characters."
+                    elif p1 != p2:
+                        ss["_auth_err"] = "The two passwords do not match."
+                    else:
+                        code, rec = auth_upsert(who, p1, old_email=who, must_change=False)
+                        ss.pop("_chg_ok", None)
+                        ss["_new_code"], ss["_new_rec"], ss["_code_next"] = code, rec, "app"
+                        ss["auth_mode"] = "code"
+                        _sign_in(who)
+                        ss["_hold_auth"] = ss.auth
+                        ss.auth = None
                     st.rerun()
             elif mode == "reset":
                 _auth_header("Reset login", "Forgot your email or password? Use your recovery code")
@@ -4368,8 +4941,8 @@ def render_auth():
                     _auth_msg("err", err)
                 wait = _auth_locked()
                 with st.form("entry_reset", border=False):
-                    rc = st.text_input("Recovery code", placeholder="XXXX-XXXX-XXXX-XXXX", key="reset_code",
-                                       autocomplete="off")
+                    rc = st.text_input("Recovery code (or owner key)", placeholder="XXXX-XXXX-XXXX-XXXX",
+                                       key="reset_code", type="password", autocomplete="off")
                     em = st.text_input("New email", placeholder="you@example.com", key="reset_email",
                                        autocomplete="username")
                     p1 = st.text_input("New password", type="password", placeholder="At least 8 characters",
@@ -4377,35 +4950,45 @@ def render_auth():
                     p2 = st.text_input("Repeat new password", type="password", key="reset_pw2",
                                        autocomplete="new-password")
                     go_ = st.form_submit_button("Reset and save", type="primary", **_wkw(st.form_submit_button))
-                st.button("← Back to sign in", key="reset_back", on_click=_set_mode, args=("login",),
-                          type="tertiary" if "tertiary" in str(inspect.signature(st.button)) else "secondary")
-                st.markdown('<div class="entry-foot">The recovery code was shown once when the login was created. '
-                            'Lost it too? The app owner can delete the saved login (see README) and set it up again.'
-                            '</div>', unsafe_allow_html=True)
+                st.button("← Back to sign in", key="reset_back", on_click=_set_mode, args=("login",), **_btn_link())
+                st.markdown('<div class="entry-foot">Use the recovery code you got when your login was created. '
+                            'No code? Ask the app owner — they can reset your login in <b>Account → Users</b>. '
+                            'The owner can also reset the owner login here with the owner key from the app\'s '
+                            'Secrets.</div>', unsafe_allow_html=True)
                 if go_:
                     e = _norm_email(em)
+                    target = None
                     if wait:
                         ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
-                    elif not cred or not cred.get("recovery_hash") or not _pw_check(_norm_code(rc), cred["recovery_hash"]):
-                        _auth_fail()
-                        ss["_auth_err"] = "This recovery code is not correct."
-                    elif not _EMAIL_RE.match(e):
-                        ss["_auth_err"] = "Please enter a valid email address."
-                    elif len(p1 or "") < 8:
-                        ss["_auth_err"] = "The new password needs at least 8 characters."
-                    elif p1 != p2:
-                        ss["_auth_err"] = "The two passwords do not match."
                     else:
-                        try:
-                            code, rec = auth_save(e, p1)
-                        except OSError:
-                            ss["_auth_err"] = "The new login could not be saved on the server."
+                        okey = owner_key()
+                        if okey and hmac.compare_digest(str(rc or "").strip(), okey):
+                            target = next((u for u in stv["users"] if u["role"] == "owner"), None)
                         else:
-                            ss["_new_code"] = code
-                            ss["_new_rec"] = rec
-                            ss["_was_secrets"] = cred.get("where") == "secrets"
-                            ss["_code_next"] = "login"
-                            ss["auth_mode"] = "code"
+                            nc = _norm_code(rc)
+                            target = next((u for u in stv["users"] if u.get("recovery_hash") and
+                                           _pw_check(nc, u["recovery_hash"])), None) if nc else None
+                        if target is None:
+                            _auth_fail()
+                            ss["_auth_err"] = "This recovery code (or owner key) is not correct."
+                    if target is not None:
+                        if not _EMAIL_RE.match(e):
+                            ss["_auth_err"] = "Please enter a valid email address."
+                        elif len(p1 or "") < 8:
+                            ss["_auth_err"] = "The new password needs at least 8 characters."
+                        elif p1 != p2:
+                            ss["_auth_err"] = "The two passwords do not match."
+                        elif e != target["email"] and auth_user(e):
+                            ss["_auth_err"] = "Another account already uses this email."
+                        else:
+                            try:
+                                code, rec = auth_upsert(e, p1, old_email=target["email"])
+                            except OSError:
+                                ss["_auth_err"] = "The new login could not be saved on the server."
+                            else:
+                                ss["_new_code"], ss["_new_rec"], ss["_code_next"] = code, rec, "login"
+                                ss["_was_secrets"] = stv.get("where") == "secrets"
+                                ss["auth_mode"] = "code"
                     st.rerun()
             else:
                 _auth_header("Pulse", "Sign in to open your dashboard")
@@ -4421,13 +5004,18 @@ def render_auth():
                                        key="login_pw", autocomplete="current-password")
                     go_ = st.form_submit_button("Sign in", type="primary", **_wkw(st.form_submit_button))
                 st.button("Forgot email or password?", key="login_forgot", on_click=_set_mode, args=("reset",),
-                          type="tertiary" if "tertiary" in str(inspect.signature(st.button)) else "secondary")
+                          **_btn_link())
                 if go_:
+                    u = auth_user(em)
                     if wait:
                         ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
-                    elif cred and hmac.compare_digest(_norm_email(em), cred["email"]) and _pw_check(pw, cred["password_hash"]):
-                        ss["auth_mode"] = None
-                        _sign_in(em)
+                    elif u and _pw_check(pw, u["password_hash"]):
+                        if u.get("must_change"):
+                            ss["_chg_user"], ss["_chg_ok"] = u["email"], True
+                            ss["auth_mode"] = "change"
+                        else:
+                            ss["auth_mode"] = None
+                            _sign_in(u["email"])
                     else:
                         _auth_fail()
                         ss["_auth_err"] = "Email or password is not correct."
@@ -4450,15 +5038,16 @@ def _auth_code_screen():
     st.download_button("Download code (.txt)", data=f"Pulse recovery code: {code}\nLogin email: {rec['email']}\n",
                        file_name="pulse-recovery-code.txt", key="code_dl", **_wkw(st.download_button))
     if ss.get("_was_secrets"):
-        st.markdown('<div class="entry-foot" style="text-align:left;color:#F5B544">Your login was stored in the '
-                    'app\'s Secrets. Replace the [pulse_auth] block there with the lines below, otherwise the old '
-                    'login returns after the next app restart.</div>', unsafe_allow_html=True)
-    with st.expander("Keep the login after app restarts (recommended on Streamlit Cloud)"):
-        st.markdown('<div class="entry-foot" style="text-align:left">On Streamlit Community Cloud the saved login '
-                    'file is cleared when the app restarts or is redeployed — Pulse would then show the first-start '
-                    'screen again. Paste these lines into <b>App settings → Secrets</b> to make it permanent. They '
-                    'contain only salted hashes, not your password.</div>', unsafe_allow_html=True)
-        st.code(secrets_snippet(rec), language="toml")
+        st.markdown('<div class="entry-foot" style="text-align:left;color:#F5B544">Logins were stored in the '
+                    'app\'s Secrets. Replace the [[pulse_users]] / [pulse_auth] block there with the lines below, '
+                    'otherwise the old login returns after the next app restart.</div>', unsafe_allow_html=True)
+    if rec.get("role") == "owner" or ss.get("_was_secrets"):
+        with st.expander("Keep the logins after app restarts (recommended on Streamlit Cloud)"):
+            st.markdown('<div class="entry-foot" style="text-align:left">On Streamlit Community Cloud the saved '
+                        'login file is cleared when the app restarts or is redeployed — Pulse would then show the '
+                        'first-start screen again. Paste these lines into <b>App settings → Secrets</b> to make it '
+                        'permanent. They contain only salted hashes, not passwords.</div>', unsafe_allow_html=True)
+            st.code(secrets_snippet(rec), language="toml")
     saved = st.checkbox("I have saved my recovery code", key="code_saved")
     if st.button("Continue to Pulse" if nxt == "app" else "Continue to sign in", key="code_go", type="primary",
                  disabled=not saved, **_wkw(st.button)):
@@ -4473,6 +5062,62 @@ def _auth_code_screen():
             ss["auth_mode"] = "login"
             ss["_auth_ok"] = "Login updated — sign in with your new email and password."
         st.rerun()
+
+
+def users_admin():
+    """Owner: kullanıcı ekle, şifre sıfırla (geçici şifre), kaldır, kalıcı Secrets bloğu."""
+    stv = auth_store() or {"users": [], "where": "file"}
+    users = stv["users"]
+    H('<div style="font-size:12px;font-weight:700;margin:14px 0 4px 0">Users <span class="muted" '
+      'style="font-weight:500">· owner only</span></div>')
+    rows = "".join(f'<div class="stat-row"><span class="lbl">{esc(u["email"])}</span><span class="muted small">'
+                   f'{"owner" if u["role"] == "owner" else "user"}{" · must set new password" if u.get("must_change") else ""}'
+                   f'</span></div>' for u in users)
+    H(rows)
+    res = ss.pop("_adm_result", None)
+    if res:
+        H(f'<div class="gtext" style="margin-top:6px">{res}</div>')
+    others = [u["email"] for u in users if u["role"] != "owner"]
+    if others:
+        pick = st.selectbox("Account", others, key="adm_pick")
+        # popover zaten sütun içinde: ikinci sütun seviyesi açılmaz, düğmeler alt alta
+        if button("Reset password", key="adm_reset", help="Creates a temporary password; they choose a new "
+                                                           "one at the next sign-in."):
+            tmp = _temp_password()
+            auth_upsert(pick, tmp, old_email=pick, must_change=True, new_code=False)
+            ss["_adm_result"] = (f'Temporary password for <b>{esc(pick)}</b>: <span class="mono" '
+                                 f'style="font-size:14px">{tmp}</span><br><span class="muted small">Give it to '
+                                 f'them — at the next sign-in they must choose a new password. Shown only now.'
+                                 f'</span>')
+            st.rerun()
+        if button("Remove user", key="adm_remove"):
+            auth_remove(pick)
+            ss["_adm_result"] = f'Removed <b>{esc(pick)}</b>.'
+            st.rerun()
+    with st.form("adm_add", border=False):
+        ne = st.text_input("Add a user (email)", placeholder="friend@example.com", key="adm_new")
+        add = st.form_submit_button("Add user", **_wkw(st.form_submit_button))
+    if add:
+        e = _norm_email(ne)
+        if not _EMAIL_RE.match(e):
+            ss["_adm_result"] = "Please enter a valid email address."
+        elif auth_user(e):
+            ss["_adm_result"] = f"{esc(e)} already has a login — use Reset password."
+        else:
+            tmp = _temp_password()
+            auth_upsert(e, tmp, role="user", must_change=True, new_code=False)
+            ss["_adm_result"] = (f'Added <b>{esc(e)}</b>. Temporary password: <span class="mono" style="font-size:14px">'
+                                 f'{tmp}</span><br><span class="muted small">They choose their own password at the '
+                                 f'first sign-in. Shown only now.</span>')
+        st.rerun()
+    with st.expander("Keep logins after app restarts"):
+        H('<div class="muted small">On Streamlit Cloud the login file is cleared on restart / redeploy. Paste this '
+          'into <b>App settings → Secrets</b> (hashes only). Optional owner key for emergencies: add '
+          '<span class="mono">[pulse_admin]</span> <span class="mono">key = "…"</span> (at least 8 characters) — it '
+          'resets the owner login from the sign-in screen.</div>')
+        st.code(secrets_snippet(), language="toml")
+    H(f'<div class="muted small">Logins stored {"on this server" if stv.get("where") == "file" else "in Secrets"} · '
+      f'owner key {"set" if owner_key() else "not set"}.</div>')
 
 
 LOADING_HTML = """<div class="p-load-wrap"><style>
@@ -4717,7 +5362,7 @@ def render_value_model(b, sym):
     kw = vp_kwargs(b, st_)
     path = None
     if en._ok(b.get("eps_last")):
-        path = en.value_path(price, b["eps_last"], an.get("fy") or [], years=5, **_model_kwargs(kw))
+        path = build_path(b, kw, price)
     extra, pbpos, ms, checks = {}, None, [], []
     if vt == "cyclical":
         ms.append(en.normalized_earnings(f, an, en._shares(f, d), ke))
@@ -4828,23 +5473,111 @@ def render_value_model(b, sym):
             H('<div class="panel-title">Profits vs Debt</div><div class="muted small">EBITDA and total debt by '
               'year · line: net debt ÷ EBITDA</div>')
             plot(debt_fig(f), key="v_type")
-    with st.expander("Analyst-estimate value path, sensitivity & DCF", expanded=(vt == "cyclical")):
+    with st.expander("Value path (revenue · margin · debt · capex model), sensitivity & DCF",
+                     expanded=(vt == "cyclical")):
         render_value_future(b)
+
+
+DRV_SRC = {"analyst": "analyst", "override": "your input", "upswing": "upswing", "downturn": "post-peak",
+           "recovery": "recovery", "model": "long-term", "held": "held ≥ prior", "capped": "below peak"}
+
+
+def render_model_drivers(b, path, sel_fy, dec):
+    """Sürücü tablosu: ciro → marj → faiz → net kâr → hisse → EPS → capex / FCF / net borç → değer."""
+    dv = path["drivers"]
+    base = dv["base"]
+    hist = b["dhist"] or {}
+    cur = b["d"].get("currency") or "USD"
+    rows_fy = path["rows"]
+    n = len(rows_fy)
+    ac = st.session_state.get(f"vdrv_scen_{b['d'].get('ticker') or ACTIVE}") or "Base"
+
+    def cells(vals, fmt, colorize=False):
+        out = ""
+        for k in range(n):
+            v = vals[k] if k < len(vals) else None
+            ok = en._ok(v)
+            st_ = ""
+            if colorize and ok:
+                st_ = f' style="color:{col(v)}"'
+            out += f'<td class="{"qsel" if rows_fy[k]["fy"] == sel_fy else ""}"{st_}>{fmt(v) if ok else "—"}</td>'
+        return out
+
+    with st.container(border=True):
+        t1, t2 = st.columns([3, 1.2], vertical_alignment="center")
+        with t1:
+            H('<div class="panel-title">Model Drivers</div><div class="muted small">How each year\'s value is built. '
+              'Analyst years: revenue and EPS follow consensus and the margin is the one that produces it. Later '
+              'years: your growth and margin inputs. Interest = net debt × cost of debt (net cash earns the '
+              'risk-free rate); FCF = net income + D&A − capex − working capital; part of FCF reduces net debt, '
+              'the rest goes to dividends.</div>')
+        with t2:
+            seg("Scenario", ["Bear", "Base", "Bull"], f"vdrv_scen_{b['d'].get('ticker') or ACTIVE}", "Base")
+        ac = st.session_state.get(f"vdrv_scen_{b['d'].get('ticker') or ACTIVE}") or "Base"
+        sc = dv.get(ac.lower()) or base
+        m_ = lambda x: big(x, cur)
+        p1 = lambda x: f"{tr(x, 1)}%"
+        head = "".join(f'<th class="{"qsel" if r["fy"] == sel_fy else ""}">{r["label"]}</th>' for r in rows_fy)
+        last_rev = hist.get("rev_last")
+        eps_prev = [hist.get("eps_last")] + list(sc["eps"][:-1])
+        eps_yoy = [((e / p - 1) * 100) if (en._ok(p) and p > 0 and en._ok(e)) else None
+                   for e, p in zip(sc["eps"], eps_prev)]
+        val_key = {"Bear": "bear", "Base": "base", "Bull": "bull"}[ac]
+        src_row = "".join(
+            f'<td class="{"qsel" if rows_fy[k]["fy"] == sel_fy else ""}"><span class="muted" style="font-size:10.5px">'
+            f'{esc(DRV_SRC.get(sc["src"][k], sc["src"][k]))}</span></td>' for k in range(n))
+        lines = [
+            ("Revenue", f'<td class="muted">{m_(last_rev) if en._ok(last_rev) else "—"}</td>' + cells(sc["rev"], m_)),
+            ("Revenue growth (YoY)", f'<td class="muted">{p1(hist.get("g_rev_last")) if en._ok(hist.get("g_rev_last")) else "—"}</td>'
+             + cells(sc["growth"], lambda x: pct(x, 1), True)),
+            ("Source", '<td></td>' + src_row),
+            ("Operating margin", f'<td class="muted">{p1(hist.get("op_m_last")) if en._ok(hist.get("op_m_last")) else "—"}</td>'
+             + cells(sc["op_m"], p1)),
+            ("EBIT", '<td></td>' + cells(sc["ebit"], m_)),
+            ("Net interest (+ income / − cost)", '<td></td>' + cells([-x for x in sc["interest"]], m_, True)),
+            ("Net income", '<td></td>' + cells(sc["ni"], m_)),
+            ("Shares", f'<td class="muted">{big(hist.get("shares0"), "") if en._ok(hist.get("shares0")) else "—"}</td>'
+             + cells(sc["shares"], lambda x: big(x, ""))),
+            ("EPS", f'<td class="muted">{tr(hist.get("eps_last"), 2) if en._ok(hist.get("eps_last")) else "—"}</td>'
+             + cells(sc["eps"], lambda x: tr(x, 2))),
+            ("EPS growth (YoY)", '<td></td>' + cells(eps_yoy, lambda x: pct(x, 1), True)),
+            ("Capex", '<td></td>' + cells(sc["capex"], m_)),
+            ("Free cash flow", '<td></td>' + cells(sc["fcf"], m_)),
+            ("Net debt (− = net cash)", f'<td class="muted">{m_(hist.get("net_debt0")) if en._ok(hist.get("net_debt0")) else "—"}</td>'
+             + cells(sc["net_debt"], m_)),
+            ("Net debt / EBITDA", '<td></td>' + cells(sc["nd_ebitda"], lambda x: f"{tr(x, 1)}x")),
+            ("Value · P/E", '<td></td>' + cells(sc["value_pe"], lambda x: tr(x, dec))),
+            ("Value · EV/EBIT", '<td></td>' + cells(sc["value_ev"], lambda x: tr(x, dec))),
+            (f"Value ({path['lens']})", f'<td class="muted">{tr(b["d"]["last"], dec)}</td>'
+             + cells([r["value"][val_key] for r in rows_fy], lambda x: f"<b>{tr(x, dec)}</b>")),
+        ]
+        body = "".join(f'<tr><td class="lbl">{esc(lb) if "<" not in lb else lb}</td>{cs}</tr>' for lb, cs in lines)
+        H(f'<div class="dtab-wrap"><table class="ptab dtab"><thead><tr><th></th><th class="muted">Last FY · today</th>'
+          f'{head}</tr></thead><tbody>{body}</tbody></table></div>')
+        a = path.get("assump") or {}
+        H(f'<div class="muted small" style="margin-top:6px">Assumptions: tax {tr(a.get("tax"), 1)}% · shares '
+          f'{pct(a.get("share_chg"), 1)}/yr · capex {tr(a.get("capex_pct"), 1)}% and D&A {tr(a.get("da_pct"), 1)}% '
+          f'of revenue · cost of debt {tr(a.get("kd"), 1)}%, cash yield {tr(a.get("rf"), 1)}% · '
+          f'{tr(a.get("payout"), 0)}% of free cash flow paid out, the rest reduces net debt · working capital '
+          f'5% of the revenue change.</div>')
 
 
 def render_value_future(b):
     d, an = b["d"], b["an"]
     sym = d.get("ticker") or ACTIVE
     dec = pdec(sym, d["last"])
-    H('<div class="muted small" style="margin-bottom:6px">Analyst EPS estimates → cycle → forward multiple · '
-      'three scenarios. This path assumes the market keeps pricing the stock the way it does today, so it is '
-      'shown for reference and not used in the blended fair value.</div>')
+    H('<div class="muted small" style="margin-bottom:6px">' + (
+        'Revenue growth → operating margin → interest on net debt → tax → share count → EPS, with capex, free '
+        'cash flow and net debt rolled forward · valued on P/E and/or EV/EBIT · three scenarios. '
+        if b.get("dhist") else 'Analyst EPS estimates → cycle → forward multiple · three scenarios. ')
+      + 'This path assumes the market keeps pricing the stock the way it does today, so it is shown for reference '
+        'and not used in the blended fair value.</div>')
     if not en._ok(b.get("eps_last")):
         H('<div class="muted">No EPS data, so a target value could not be calculated.</div>')
         return
     cfg = value_cfg(b, sym)
     est = an.get("fy") or []
-    path = en.value_path(d["last"], b["eps_last"], est, years=5, **_model_kwargs(cfg))
+    path = build_path(b, cfg)
     if not path:
         H('<div class="muted">This fiscal year\'s earnings are negative, so a multiple-based value cannot be '
           'built.</div>')
@@ -4879,12 +5612,30 @@ def render_value_future(b):
                     if not path["rerated"] else
                     f'multiple {tr(path["m_cal"], 1)}x → <b>{tr(path["m_target"], 1)}x</b> over 3 years'
                     + (" after the peak" if path["cyclical"] else ""))
+            drv = path.get("drivers")
+            if drv:
+                rv_n = len([e for e in (an.get("rev_fy") or []) if en._ok(e.get("avg"))])
+                src = (f'revenue: {rv_n} analyst year{"s" if rv_n != 1 else ""}, then your growth inputs · '
+                       f'EPS anchored to {len(est)} analyst year{"s" if len(est) != 1 else ""}'
+                       f'{" (" + str(n_an) + " analysts)" if n_an else ""}' if (rv_n or est) else
+                       'no analyst estimates — revenue grows at your yearly inputs')
+                ev_t = (f', EV/EBIT {tr(path["ev_cal"], 1)}x' if path.get("ev_cal") else "")
+                mtxt = (f'{esc(path["lens"])} lens · calibrated to today\'s price: P/E <b>{tr(path["m_cal"], 1)}x</b>{ev_t}'
+                        + (f' → P/E {tr(path["m_target"], 1)}x over 3 years' if path["rerated"] else ""))
             H(f'<div class="panel-title">Value Path</div><div class="muted small">{esc(src)} · {mtxt}'
-              f'{" · earnings peak FY" + str(path["peak_fy"]) + ", then a " + tr(path["drop"], 0) + "% drop" if path["cyclical"] else ""}'
+              f'{" · earnings peak FY" + str(path["peak_fy"]) + ", then a " + tr(path["drop"], 0) + ("% revenue drop" if drv else "% drop") if path["cyclical"] else ""}'
               f'</div>')
             plot(fair_path_chart(path, b["px"], d["last"], qp, sel_fy, sel_q), key="v_path")
             sc = path["scen"]
-            H(f'<div class="muted small">Each fiscal year is valued on <i>that year\'s</i> EPS × the multiple; '
+            if drv:
+                H(f'<div class="muted small">Each fiscal year is valued on <i>that year\'s</i> modelled EPS and EBIT: '
+                  f'P/E value = EPS × P/E, EV/EBIT value = (EBIT × EV/EBIT − net debt) ÷ shares'
+                  f'{" — the chart shows their average" if path["lens"] == "Blend" else ""}. Bear: lowest analyst '
+                  f'estimates, growth lower by 3 pts or 30% of the rate (whichever is more), model margins −10%'
+                  f'{", a 25% deeper revenue drop" if path["cyclical"] else ""}, multiple −15% · Bull: the '
+                  f'opposite. Dotted line: quarter by quarter (TTM EPS × multiple).</div>')
+            else:
+                H(f'<div class="muted small">Each fiscal year is valued on <i>that year\'s</i> EPS × the multiple; '
               f'after the analyst years EPS grows year over year (base {tr(sc["base"]["g"], 0)}% YoY). '
               f'Bear: lowest analyst estimate'
               f'{", " + tr(sc["bear"]["drop"], 0) + "% post-peak drop" if path["cyclical"] else ""}, '
@@ -4933,7 +5684,9 @@ def render_value_future(b):
               f'<tbody>{rows}</tbody></table>')
             erows = ""
             tagmap = {"analyst": ('analyst', "#6EE7B7"), "held": ("held", "#F5B544"),
-                      "post-peak": ("post-peak", "#F5B544")}
+                      "post-peak": ("post-peak", "#F5B544"), "capped": ("post-peak", "#F5B544"),
+                      "downturn": ("post-peak", "#F5B544"), "override": ("your growth", "#93C5FD"),
+                      "upswing": ("upswing", "#93C5FD"), "recovery": ("recovery", "#93C5FD")}
             for e in path["eps_rows"]:
                 g_ = e.get("growth")
                 tg = tagmap.get(e["src"])
@@ -4948,7 +5701,12 @@ def render_value_future(b):
               f'base · bear–bull</span></th><th>YoY</th><th></th></tr></thead><tbody>{erows}</tbody></table>'
               f'<div class="muted small" style="margin-top:6px">Start: last fiscal-year EPS '
               f'{tr(path["eps_last"], 2)}. YoY = change vs the previous fiscal year (first value row: vs today\'s '
-              f'price). FY{path["fy0"]} value = today\'s price, because the multiple is calibrated to it.</div>')
+              f'price). ' + (f'FY{path["fy0"]} value ≈ today\'s price, because both multiples are calibrated to it.'
+                             if path.get("drivers") else
+                             f'FY{path["fy0"]} value = today\'s price, because the multiple is calibrated to it.')
+              + '</div>')
+    if path.get("drivers"):
+        render_model_drivers(b, path, sel_fy, dec)
     # çeyrek çeyrek
     with st.container(border=True):
         H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'
@@ -4975,16 +5733,23 @@ def render_value_future(b):
         mults = [round(m0 * k, 1) for k in (0.7, 0.85, 1.0, 1.15, 1.3)]
         kw = _model_kwargs(cfg)
         kw.pop("target_mult", None)
-        sens = en.value_sensitivity(d["last"], b["eps_last"], est, kw, rv, mults, 5)
+        if path.get("drivers"):
+            sens = en.driver_sensitivity(d["last"], b["dhist"], an, kw, rv, mults, 5)
+        else:
+            for k in ("g_up", "m_target", "m_peak", "m_trough", "share_chg", "capex_pct", "lens", "g_over"):
+                kw.pop(k, None)
+            sens = en.value_sensitivity(d["last"], b["eps_last"], est, kw, rv, mults, 5)
     except Exception:
         sens = None
     b["sens"] = sens
     c3, c4 = st.columns([1.3, 1], gap="medium")
     with c3:
         with st.container(border=True):
-            lab = "post-peak drop" if (sens and sens["key"] == "drop") else "long-term growth"
+            lab = (("revenue drop after peak" if path.get("drivers") else "post-peak drop")
+                   if (sens and sens["key"] == "drop") else "long-term growth (YoY)")
             H(f'<div class="panel-title">Sensitivity</div><div class="muted small">'
-              f'Base value {sens["years"] if sens else 5} years out — rows: {lab}, columns: target multiple</div>')
+              f'Base value {sens["years"] if sens else 5} years out — rows: {lab}, columns: target P/E'
+              f'{" (EV/EBIT moves in the same proportion)" if path.get("drivers") else ""}</div>')
             if sens:
                 head = "".join(f"<th>{tr(m, 1)}x</th>" for m in sens["multiples"])
                 body = ""
