@@ -16,12 +16,17 @@ verisi (izleme listesi, filtre, backtest ayarları, işlem günlüğü) URL'deki
 ========================================================================
 """
 
+import base64
 import copy
+import hashlib
+import hmac
 import html
 import inspect
 import json
+import os
 import re
 import secrets
+import time
 from urllib.parse import urlencode
 
 import numpy as np
@@ -33,7 +38,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.7"
+APP_VERSION = "3.8"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -203,7 +208,7 @@ PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
            "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending",
-           "vp_cfg", "peer_ovr", "vtype_ovr", "auth"] + WIDGET_KEYS
+           "vp_cfg", "peer_ovr", "vtype_ovr", "auth", "cal_ccy"] + WIDGET_KEYS
 
 
 def _qp(key, default=None):
@@ -232,8 +237,7 @@ if not ss.get("_restored"):
 
 def _save_state():
     try:
-        STORE[SID] = {k: copy.deepcopy(ss[k]) for k in PERSIST if k in ss
-                      and not (k == "auth" and not (ss[k] or {}).get("keep"))}
+        STORE[SID] = {k: copy.deepcopy(ss[k]) for k in PERSIST if k in ss}
         if len(STORE) > 800:
             for k in list(STORE)[:200]:
                 STORE.pop(k, None)
@@ -591,6 +595,13 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .tmi i{font-style:normal;font-size:10.5px;opacity:.82;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
  max-width:100%}
 .tmi em{font-style:normal;font-family:ui-monospace,monospace;font-weight:600;color:#fff;opacity:.95}
+.ptab tr.qsel td{background:#151922}
+.ptab tr.qsel td:first-child{box-shadow:inset 3px 0 0 #5B8CFF}
+.qtab tr.qtot td{border-top:1px solid #2A2F37;color:#C4CAD4}
+.qtiles{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.qtiles .tile{padding:7px 9px}
+.cal-act{display:inline-block;padding:1px 6px;border-radius:6px;font-weight:700}
+.cal-row.done{background:rgba(255,255,255,.012)}
 .mixhead,.mixrow{display:grid;grid-template-columns:minmax(110px,1.6fr) 2fr 78px 52px 62px;gap:10px;align-items:center;
  padding:6px 2px;font-size:12.5px}
 .mixhead{color:#8D96A5;font-size:11px;border-bottom:1px solid #1C1F25;padding-top:8px}
@@ -1171,10 +1182,14 @@ def account_body():
       f'<div class="muted small" style="margin-top:2px">Settings are kept for this browser session; '
       f'if you share the link it opens with the same settings.</div>')
     au = ss.get("auth") or {}
-    H(f'<div class="muted small" style="margin-top:6px">Signed in as <b>{esc(au.get("user") or "guest")}</b>'
-      f'{" · kept signed in" if au.get("keep") else ""}</div>')
+    cr = auth_load() or {}
+    where = {"file": "on this server (cleared when the app restarts — add it to Secrets to keep it)",
+             "secrets": "in the app's Secrets (permanent)"}.get(cr.get("where"), "—")
+    H(f'<div class="muted small" style="margin-top:6px">Signed in as <b>{esc(au.get("user") or "")}</b> · '
+      f'login stored {esc(where)} · you are signed out after {AUTH_IDLE // 60} minutes without activity</div>')
     if button("Sign out", key="btn_signout"):
         ss.auth = None
+        ss["auth_mode"] = None
         st.rerun()
     H('<div style="font-size:12px;font-weight:700;margin:12px 0 4px 0">Background theme</div>')
     names = [THEMES[k]["name"] for k in THEMES]
@@ -1815,9 +1830,15 @@ def value_bundle(sym, token, peer_ovr=()):
     # model varsayılanları (kullanıcı değer patikası panelinden değiştirebilir)
     is_cyc = cls["type"] == "cyclical" or md.is_cyclical_industry(sym) or \
         bool(cyc and cyc.get("label") in ("Cyclical", "Highly cyclical"))
-    cap_hi = 20.0 if is_cyc else 25.0
-    g_lt = next((max(-5.0, min(cap_hi, x)) for x in (an.get("growth_5y"), r.get("eps_cagr"), r.get("rev_cagr"))
-                 if en._ok(x)), 8.0)
+    # v3.8: varsayılan büyüme YoY — son analist yılının büyümesi, yoksa son raporlanan yılın EPS büyümesi
+    est_ = an.get("fy") or []
+    yoy_an = ((est_[-1]["avg"] / est_[-2]["avg"] - 1) * 100
+              if len(est_) >= 2 and en._ok(est_[-2].get("avg")) and est_[-2]["avg"] > 0 else None)
+    yoy_rep = None
+    if f and len(f["eps"]) >= 2 and en._ok(f["eps"][-1]) and en._ok(f["eps"][-2]) and f["eps"][-2] > 0:
+        yoy_rep = (f["eps"][-1] / f["eps"][-2] - 1) * 100
+    cap_hi = 30.0 if is_cyc else 50.0
+    g_lt = next((max(-5.0, min(cap_hi, x)) for x in (yoy_an, yoy_rep, an.get("growth_5y")) if en._ok(x)), 8.0)
     drop_hist = en.hist_eps_drop(f["eps"]) if f else None
     eps_last = next((x for x in (an.get("eps_last_fy"), d.get("eps"), (f["eps"][-1] if f else None))
                      if en._ok(x)), None)
@@ -1832,6 +1853,7 @@ def value_bundle(sym, token, peer_ovr=()):
             "cls": cls, "rf": rf, "rf_src": rf_src, "capm": cp, "wacc": wc, "timing": timing, "divst": divst,
             "wk": wk, "tnx_w": tnx_w,
             "dcf": dcfv, "rdcf": rdcf, "g_lt": g_lt, "is_cyc": is_cyc, "drop_hist": drop_hist,
+            "g_yoy_rep": yoy_rep,
             "eps_last": eps_last, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
             "px": px.tail(1300) if px is not None else None,
             "bench": bench.tail(1300) if bench is not None else None,
@@ -1839,6 +1861,8 @@ def value_bundle(sym, token, peer_ovr=()):
 
 
 MULT_MODES = ["Today's market multiple", "Peers' forward P/E median", "Own P/E median", "Manual"]
+GLT_MIN, GLT_MAX = -20.0, 150.0      # "Long-term growth" (YoY) aralığı — güçlü büyüme dönemleri için %100 üstü
+PEAK_MAX = 4                         # kâr zirvesi FY0 … FY0+4 (ufuk FY0+5, zirveden sonra en az bir yıl görünsün)
 
 
 def vp_state(b, sym):
@@ -1850,21 +1874,21 @@ def vp_state(b, sym):
     tm_ = b.get("timing") or {}
     et = tm_.get("earnings_turn") or {}
     if b["is_cyc"] and et.get("kind") == "peak" and et.get("fy"):
-        peak0 = int(min(3, max(0, et["fy"] - fy0)))      # döngü zamanlamasının kâr zirvesi tahmini
+        peak0 = int(min(PEAK_MAX, max(0, et["fy"] - fy0)))      # döngü zamanlamasının kâr zirvesi tahmini
     dh = b.get("drop_hist")
     drop0 = float(round(min(80.0, max(30.0, dh if en._ok(dh) else 45.0)) / 5) * 5) if b["is_cyc"] else 45.0
-    defaults = {"cyc": bool(b["is_cyc"]), "peak": peak0, "drop": drop0, "glt": float(round(b["g_lt"])),
+    defaults = {"cyc": bool(b["is_cyc"]), "peak": int(min(PEAK_MAX, peak0)), "drop": drop0,
+                "glt": float(round(b["g_lt"])),
                 "mmode": MULT_MODES[0], "mult": float(round(b.get("pe_now") or 15.0, 1))
-                if en._ok(b.get("pe_now")) else 15.0, "win": 1}
+                if en._ok(b.get("pe_now")) else 15.0}
     saved = dict(defaults)
     saved.update((ss.get("vp_cfg") or {}).get(sym) or {})
     if saved.get("mmode") not in MULT_MODES:
         saved["mmode"] = MULT_MODES[0]
-    if saved.get("peak") not in range(0, 4):
+    if saved.get("peak") not in range(0, PEAK_MAX + 1):
         saved["peak"] = defaults["peak"]
-    if saved.get("win") not in (1, 2):
-        saved["win"] = 1
-    for k, lo, hi in (("drop", 0.0, 90.0), ("glt", -5.0, 30.0), ("mult", 1.0, 80.0)):
+    saved.pop("win", None)
+    for k, lo, hi in (("drop", 0.0, 90.0), ("glt", GLT_MIN, GLT_MAX), ("mult", 1.0, 80.0)):
         try:
             saved[k] = float(min(hi, max(lo, float(saved[k]))))
         except (TypeError, ValueError):
@@ -1886,10 +1910,11 @@ def vp_kwargs(b, st_):
     elif mmode == "Manual":
         tm = cur["mult"]
     tm = tm if en._ok(tm) and tm > 0 else None
+    gy = b.get("g_yoy_rep")
     return {"cyclical": bool(cur["cyc"]), "peak_idx": int(cur["peak"]), "drop": float(cur["drop"]),
             "g_lt": float(cur["glt"]), "target_mult": tm, "fy0": st_["fy0"], "fy0_left": an.get("fy0_left", 0.5),
-            "window": int(cur["win"]),
-            "g_near": max(-10.0, min(40.0, b["r"]["eps_cagr"])) if en._ok(b["r"].get("eps_cagr")) else None,
+            "fy0_end": an.get("fy0_end"),
+            "g_near": max(-20.0, min(100.0, gy)) if en._ok(gy) else None,
             "_mmode": mmode, "_n_est": st_["n_est"]}
 
 
@@ -1900,35 +1925,33 @@ def value_cfg(b, sym):
     for k, wk in keys.items():
         if wk not in ss:
             ss[wk] = saved[k]
-    fy_opts = list(range(0, 4))
+    fy_opts = list(range(0, PEAK_MAX + 1))
     with st.container(border=True):
         H('<div class="panel-title">Model Settings</div><div class="muted small">Defaults come from analyst '
           'estimates and the company\'s history; anything you change is saved for this stock.</div>')
-        c = st.columns([1, 1, 1.25, 1.25, 1.5, 1], gap="small")
+        c = st.columns([1, 1, 1.3, 1.3, 1.6], gap="small")
         with c[0]:
             cyc = toggle("Cyclical mode", keys["cyc"], help="Earnings climb to a peak, then pull back.")
         with c[1]:
             st.selectbox("Earnings peak", fy_opts, key=keys["peak"], disabled=not cyc,
                          format_func=lambda i: f"FY{fy0 + i}",
-                         help="The fiscal year in which the cycle peaks in earnings.")
+                         help="The fiscal year in which earnings — and therefore the value path — peak. "
+                              "Years after it follow the post-peak drop, even where analysts expect more.")
         with c[2]:
             st.slider("Post-peak drop", 0.0, 90.0, step=5.0, key=keys["drop"], disabled=not cyc,
                       format="%.0f%%",
                       help="EPS loss from peak to trough (over 2 years). In the company's past cycles: "
                            + (f"{tr(dh, 0)}%" if en._ok(dh) else "no data"))
         with c[3]:
-            st.slider("Long-term growth", -5.0, 30.0, step=1.0, key=keys["glt"], format="%.0f%%",
-                      help="Annual EPS growth for the years after analyst estimates end.")
+            st.slider("Long-term growth (YoY)", GLT_MIN, GLT_MAX, step=1.0, key=keys["glt"], format="%.0f%%",
+                      help="Year-over-year EPS growth applied to every year after the analyst estimates end "
+                           "(each year = previous year × (1 + growth)). Up to 150% for strong growth phases.")
         with c[4]:
             mmode = st.selectbox("Target multiple", MULT_MODES, key=keys["mmode"],
                                  help="Today's multiple: the stock keeps being priced the way the market prices it "
                                       "today. The others move the multiple to that value over 3 years.")
             if mmode == "Manual":
-                st.number_input("Fwd P/E", 1.0, 80.0, step=0.5, key=keys["mult"])
-        with c[5]:
-            st.selectbox("Market's horizon", [1, 2], key=keys["win"], format_func=lambda x: f"{x} yr",
-                         help="How many years of earnings the price reflects. With 2 years, "
-                              "the cycle turn shows up in the price earlier.")
+                st.number_input("P/E", 1.0, 80.0, step=0.5, key=keys["mult"])
     cur = {k: ss.get(wk) for k, wk in keys.items()}
     allc = dict(ss.get("vp_cfg") or {})
     allc[sym] = cur
@@ -2082,39 +2105,229 @@ def peer_scatter(sym, vals, peers, height=300):
     return _layout(fig, height, margin=dict(l=8, r=40, t=10, b=34))
 
 
-def fair_path_chart(path, px, price, height=300):
-    """Geçmiş fiyat + önümüzdeki yılların değer bandı (aralık dolgulu)."""
+def fair_path_chart(path, px, price, qp=None, sel_fy=None, sel_q=None, height=320):
+    """Geçmiş fiyat + mali yıl sonlarında değer (FY değeri = o yılın EPS'i × çarpan), çeyrek noktaları,
+    seçili yıl / çeyrek vurgusu ve döngüselde kâr zirvesi çizgisi."""
     fig = go.Figure()
     if px is not None and len(px) > 20:
         h = px.tail(500)
-        fig.add_trace(go.Scatter(x=h.index, y=h["Close"], mode="lines", name="Price",
+        hx = h.index
+        try:
+            hx = hx.tz_localize(None)
+        except (TypeError, AttributeError):
+            pass
+        fig.add_trace(go.Scatter(x=hx, y=h["Close"], mode="lines", name="Price",
                                  line=dict(color=SOFT, width=1.5)))
     x0 = px.index[-1] if (px is not None and len(px)) else pd.Timestamp.today()
     try:
         x0 = pd.Timestamp(x0).tz_localize(None)
     except (TypeError, AttributeError):
         x0 = pd.Timestamp(x0)
-    xs = [x0 + pd.DateOffset(years=r["k"]) for r in path["rows"]]
-    td = path["today"]["value"]
+    rows = path["rows"]
+    xs = [pd.Timestamp(r["end"]) for r in rows]
     allx = [x0] + xs
-    bear = [td["bear"]] + [r["value"]["bear"] for r in path["rows"]]
-    bull = [td["bull"]] + [r["value"]["bull"] for r in path["rows"]]
+    labs = ["today"] + [r["label"] for r in rows]
+    bear = [price] + [r["value"]["bear"] for r in rows]
+    bull = [price] + [r["value"]["bull"] for r in rows]
     fig.add_trace(go.Scatter(x=allx, y=bull, mode="lines", line=dict(width=0), hoverinfo="skip",
                              showlegend=False))
     fig.add_trace(go.Scatter(x=allx, y=bear, mode="lines", line=dict(width=0), fill="tonexty",
                              fillcolor=rgba(ACCENT, 0.10), hoverinfo="skip", showlegend=False))
+    # çeyrek noktaları (taban, TTM × çarpan) — bugünden sonrası
+    if qp:
+        qs = [q_ for q_ in qp["slots"] if q_.get("value") and q_["end"] > x0 and q_["fy"] >= path["fy0"]]
+        if qs:
+            fig.add_trace(go.Scatter(x=[q_["end"] for q_ in qs], y=[q_["value"]["base"] for q_ in qs],
+                                     mode="lines+markers", name="Base · quarterly",
+                                     line=dict(color=ACCENT, width=1, dash="dot"), marker=dict(size=4),
+                                     customdata=[q_["label"] for q_ in qs],
+                                     hovertemplate="%{customdata}: %{y:.2f}<extra></extra>"))
     for key, name, c, dash in (("bull", "Bull", "#6EE7B7", "dot"), ("base", "Base", ACCENT, None),
                                ("bear", "Bear", "#F0883E", "dot")):
-        ys = [price if key == "base" else td[key]] + [r["value"][key] for r in path["rows"]]
+        ys = [price] + [r["value"][key] for r in rows]
         fig.add_trace(go.Scatter(x=allx, y=ys, mode="lines+markers", name=name,
                                  line=dict(color=c, width=2.2 if key == "base" else 1.3, dash=dash),
-                                 marker=dict(size=5),
-                                 hovertemplate=f"{name} %{{x|%b %Y}}: %{{y:.2f}}<extra></extra>"))
+                                 marker=dict(size=7 if key == "base" else 5), customdata=labs,
+                                 hovertemplate=f"{name} %{{customdata}}: %{{y:.2f}}<extra></extra>"))
+    if path.get("cyclical"):
+        pr = next((r for r in rows if r["fy"] == path["peak_fy"]), None)
+        if pr:
+            # Plotly'de tarih + annotation_text birlikte hata verir → x'i epoch milisaniye olarak ver
+            fig.add_vline(x=pd.Timestamp(pr["end"]).timestamp() * 1000, line=dict(color=WARN, width=1, dash="dot"),
+                          annotation_text=f"earnings peak {pr['label']}", annotation_position="top",
+                          annotation_font=dict(color=WARN, size=10))
+    # seçili yıl / çeyrek
+    if qp and sel_fy in (qp.get("fy_end") or {}):
+        fe = pd.Timestamp(qp["fy_end"][sel_fy])
+        fig.add_vrect(x0=fe - pd.DateOffset(years=1), x1=fe, fillcolor=rgba(ACCENT, 0.07), line_width=0)
+        pt = None
+        if sel_q:
+            sq = next((q_ for q_ in qp["by_fy"][sel_fy] if q_["q"] == sel_q), None)
+            if sq:
+                y_ = (sq["value"] or {}).get("base") if not sq.get("past") else sq.get("price")
+                if en._ok(y_):
+                    pt = (sq["end"], y_, sq["label"])
+        else:
+            rr = next((r for r in rows if r["fy"] == sel_fy), None)
+            if rr:
+                pt = (pd.Timestamp(rr["end"]), rr["value"]["base"], rr["label"])
+        if pt:
+            fig.add_trace(go.Scatter(x=[pt[0]], y=[pt[1]], mode="markers+text", name=pt[2],
+                                     marker=dict(size=14, symbol="diamond-open", color=WARN, line=dict(width=2)),
+                                     text=[f"{pt[2]} · {tr(pt[1], 1)}"], textposition="top center",
+                                     textfont=dict(color=WARN, size=11), showlegend=False,
+                                     hovertemplate=f"{pt[2]}: %{{y:.2f}}<extra></extra>"))
     fig.add_hline(y=price, line=dict(color=MUT, width=1, dash="dash"),
                   annotation_text=f"today {tr(price)}", annotation_position="top left",
                   annotation_font=dict(color=MUT, size=10))
     fig.update_layout(legend=dict(orientation="h", y=1.16, x=0))
     return _layout(fig, height, legend=True, margin=dict(l=4, r=10, t=28, b=4))
+
+
+Q_COL = {"reported": "#8D96A5", "analyst": None, "model": None}
+
+
+def quarter_bar_fig(qp, sel_fy, sel_q, height=230):
+    """Seçili yıl + önceki yıl çeyrek EPS'leri; kaynak rengi, tahminlerde kötümser–iyimser aralığı, QoQ etiketi."""
+    xs = [q_ for fy in (sel_fy - 1, sel_fy) for q_ in qp["by_fy"].get(fy, [])]
+    fig = go.Figure()
+    for src, name, colr in (("reported", "Reported", "#8D96A5"), ("analyst", "Analyst estimate", ACCENT),
+                            ("model", "Model estimate", rgba(ACCENT, 0.38))):
+        pts = [q_ for q_ in xs if q_["src"] == src]
+        if not pts:
+            continue
+        base = [q_["eps"]["base"] for q_ in pts]
+        err = dict(type="data", symmetric=False, color=MUT, thickness=1, width=3,
+                   array=[max(0.0, q_["eps"]["bull"] - q_["eps"]["base"]) for q_ in pts],
+                   arrayminus=[max(0.0, q_["eps"]["base"] - q_["eps"]["bear"]) for q_ in pts]) \
+            if src != "reported" else None
+        fig.add_trace(go.Bar(
+            x=[f"{q_['fy'] % 100:02d} Q{q_['q']}" for q_ in pts], y=base, name=name,
+            marker=dict(color=colr, line=dict(color=[WARN if (q_["fy"] == sel_fy and q_["q"] == sel_q)
+                                                     else "rgba(0,0,0,0)" for q_ in pts], width=2)),
+            error_y=err,
+            text=[("" if q_.get("qoq") is None else pct(q_["qoq"], 0)) for q_ in pts], textposition="outside",
+            hovertemplate="FY%{x}: %{y:.2f}<extra>" + name + "</extra>"))
+    fig.update_layout(barmode="overlay", legend=dict(orientation="h", y=1.2, x=0))
+    fig.update_xaxes(categoryorder="array", categoryarray=[f"{q_['fy'] % 100:02d} Q{q_['q']}" for q_ in xs])
+    return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=30, b=4))
+
+
+def _src_badge(q_):
+    s_ = q_["src"]
+    if s_ == "reported":
+        return ('<span class="badge" style="color:#C4CAD4;background:#8D96A51F">reported'
+                + (" · GAAP" if q_.get("gaap") else "") + '</span>')
+    if s_ == "analyst":
+        n_ = q_.get("n")
+        return (f'<span class="badge" style="color:#9DB8FF;background:#5B8CFF1F">analyst'
+                f'{" · " + str(n_) if n_ else ""}</span>')
+    return '<span class="badge" style="color:#A3ABB8;background:#6B73831A">model</span>'
+
+
+def render_quarters(b, path, qp, sym, dec, sel_fy, sel_q):
+    """Çeyrek çeyrek: seçili mali yılın 4 çeyreği — raporlanan / analist / model, QoQ, YoY, TTM, değer."""
+    fys = qp["fy_list"]
+    rows = qp["by_fy"][sel_fy]
+    fe = pd.Timestamp(qp["fy_end"][sel_fy])
+    yr = next((r for r in path["rows"] if r["fy"] == sel_fy), None)
+    c1, c2 = st.columns([1.45, 1], gap="large")
+    with c1:
+        trs = ""
+        for q_ in rows:
+            on = sel_q == q_["q"]
+            e = q_["eps"]
+            rng_ = ("" if q_["src"] == "reported" else
+                    f'<div class="muted" style="font-size:10.5px">{tr(e["bear"], 2)} – {tr(e["bull"], 2)}</div>')
+            val = q_.get("price") if q_.get("past") else (q_.get("value") or {}).get("base")
+            vlab = "price" if q_.get("past") else "value"
+            rev = q_.get("rev")
+            trs += (f'<tr class="{"qsel" if on else ""}"><td><b>Q{q_["q"]}</b><div class="muted" '
+                    f'style="font-size:10.5px">{q_["end"].strftime("%b %Y")}</div></td>'
+                    f'<td><b>{tr(e["base"], 2)}</b>{rng_}</td>'
+                    f'<td style="color:{col(q_["qoq"]) if q_.get("qoq") is not None else MUT}">'
+                    f'{pct(q_["qoq"], 1) if q_.get("qoq") is not None else "—"}</td>'
+                    f'<td style="color:{col(q_["yoy"]) if q_.get("yoy") is not None else MUT}">'
+                    f'{pct(q_["yoy"], 1) if q_.get("yoy") is not None else "—"}</td>'
+                    f'<td>{big(rev) if en._ok(rev) else "—"}</td>'
+                    f'<td>{tr(q_["ttm"]["base"], 2) if q_.get("ttm") else "—"}</td>'
+                    f'<td title="{vlab}">{tr(val, dec) if en._ok(val) else "—"}'
+                    f'{"<span class=muted style=font-size:10px> px</span>" if q_.get("past") and en._ok(val) else ""}</td>'
+                    f'<td>{_src_badge(q_)}</td></tr>')
+        tot = sum(q_["eps"]["base"] for q_ in rows)
+        fy_eps = yr["eps"]["base"] if yr else (path["eps_last"] if sel_fy == path["fy0"] - 1 else None)
+        trs += (f'<tr class="qtot"><td><b>FY{sel_fy}</b></td><td><b>{tr(tot, 2)}</b></td>'
+                f'<td></td><td style="color:{col(yr["eps_yoy"]) if yr and yr.get("eps_yoy") is not None else MUT}">'
+                f'{pct(yr["eps_yoy"], 1) if yr and yr.get("eps_yoy") is not None else ""}</td><td></td>'
+                f'<td>{tr(fy_eps, 2) if en._ok(fy_eps) else ""}</td>'
+                f'<td>{tr(yr["value"]["base"], dec) if yr else ""}</td><td class="muted small">'
+                f'{"Σ Q1–Q4 = FY" if yr else "reported year"}</td></tr>')
+        H(f'<table class="ptab qtab"><thead><tr><th>Quarter</th><th>EPS</th><th>QoQ</th><th>YoY</th>'
+          f'<th>Revenue</th><th>TTM EPS</th><th>Value</th><th>Source</th></tr></thead><tbody>{trs}</tbody></table>')
+        H(f'<div class="muted small" style="margin-top:6px">Fiscal year FY{sel_fy} ends {fe.strftime("%b %d, %Y")}. '
+          f'QoQ = vs the previous quarter, YoY = vs the same quarter a year earlier. Value = TTM EPS (last four '
+          f'quarters) × the multiple at that date — Q4 equals the fiscal-year value. Past quarters show the actual '
+          f'share price ("px") instead.</div>')
+    with c2:
+        plot(quarter_bar_fig(qp, sel_fy, sel_q), key="v_qbars")
+        q_ = next((x for x in rows if x["q"] == sel_q), None) if sel_q else None
+        if q_ is None:
+            srcs = [x["src"] for x in rows]
+            parts = []
+            for k_, nm in (("reported", "reported"), ("analyst", "analyst estimates"), ("model", "model estimates")):
+                qs_ = [f"Q{x['q']}" for x in rows if x["src"] == k_]
+                if qs_:
+                    parts.append(f'{", ".join(qs_)}: {nm}')
+            src_fy = (yr["src"] if yr else "reported")
+            fy_txt = {"analyst": "analyst consensus for the full year", "model": "the model (YoY growth / cycle)",
+                      "held": "the model — held at least at the prior year so the cycle peaks as you set it",
+                      "post-peak": "the post-peak path (replaces the analyst estimate)",
+                      "reported": "the reported year"}.get(src_fy, src_fy)
+            H(f'<div class="gtext"><b>FY{sel_fy}</b> · {"; ".join(parts)}. The full-year EPS comes from '
+              f'{esc(fy_txt)}; quarters that are not reported or covered by analysts are that total minus the known '
+              f'quarters, split like the same quarters a year earlier (equal YoY growth for each).'
+              + ('' if "model" not in srcs else ' <span class="muted">Pick a quarter for its details.</span>')
+              + '</div>')
+        else:
+            e = q_["eps"]
+            if q_["src"] == "reported":
+                bits = [f'Reported EPS <b>{tr(e["base"], 2)}</b>']
+                if en._ok(q_.get("est_then")):
+                    bits.append(f'vs consensus {tr(q_["est_then"], 2)}')
+                if en._ok(q_.get("surprise")):
+                    bits.append(f'surprise <span style="color:{col(q_["surprise"])}">{pct(q_["surprise"], 1)}</span>')
+                if en._ok(q_.get("rev")):
+                    bits.append(f'revenue {big(q_["rev"])}')
+                txt = " · ".join(bits) + (" (GAAP — adjusted EPS not available)" if q_.get("gaap") else "") + "."
+            elif q_["src"] == "analyst":
+                nd = qp.get("next_date")
+                txt = (f'<b>Not reported yet — expectation.</b> Analyst consensus {tr(e["base"], 2)}'
+                       f'{" from " + str(q_["n"]) + " analysts" if q_.get("n") else ""} (range {tr(e["bear"], 2)} – '
+                       f'{tr(e["bull"], 2)})' + (f', revenue estimate {big(q_["rev"])}' if en._ok(q_.get("rev")) else "")
+                       + (f'. Next report around {esc(nd)}' if nd else "") + '.')
+            else:
+                fy_e = yr["eps"]["base"] if yr else None
+                sc_ = q_.get("scale")
+                txt = (f'<b>Not reported yet — model expectation.</b> Analysts publish quarterly estimates only '
+                       f'for the next two quarters. This one is derived from the FY{sel_fy} EPS '
+                       f'({tr(fy_e, 2) if en._ok(fy_e) else "—"}, {esc((yr or {}).get("src", "model"))}) minus the '
+                       f'reported / estimated quarters, split like the same quarter a year earlier'
+                       + (f' (YoY {pct(sc_, 1)})' if sc_ is not None else "") +
+                       f'. Bear – bull {tr(e["bear"], 2)} – {tr(e["bull"], 2)}.')
+            val = q_.get("price") if q_.get("past") else (q_.get("value") or {}).get("base")
+            up = (val / b["d"]["last"] - 1) * 100 if en._ok(val) and not q_.get("past") else None
+            tiles = [("EPS", tr(e["base"], 2), TXT), ("QoQ", pct(q_["qoq"], 1) if q_.get("qoq") is not None else "—",
+                                                       col(q_["qoq"]) if q_.get("qoq") is not None else MUT),
+                     ("YoY", pct(q_["yoy"], 1) if q_.get("yoy") is not None else "—",
+                      col(q_["yoy"]) if q_.get("yoy") is not None else MUT),
+                     ("TTM EPS", tr(q_["ttm"]["base"], 2) if q_.get("ttm") else "—", TXT),
+                     ("Price" if q_.get("past") else "Value", tr(val, dec) if en._ok(val) else "—", TXT),
+                     ("vs today", pct(up) if up is not None else "—", col(up) if up is not None else MUT)]
+            H(f'<div class="qtiles">' + "".join(f'<div class="tile"><span class="k">{k}</span>'
+                                                 f'<span class="v" style="font-size:15px;color:{c_}">{v}</span></div>'
+                                                 for k, v, c_ in tiles) + '</div>'
+              f'<div class="gtext" style="margin-top:8px"><b>{q_["label"]}</b> (ends {q_["end"].strftime("%b %d, %Y")}) · '
+              f'{txt}</div>')
 
 
 def _cell(v, med, dec=1, lower_better=True, suffix=""):
@@ -3573,6 +3786,120 @@ def render_backtest():
 # ======================================================================
 # BÖLÜM: FOREX & HABERLER
 # ======================================================================
+CAL_KEYS = [f"calccy_{c}" for c, _, _ in md.CAL_CCYS]
+
+
+def _cal_sync():
+    ss.cal_ccy = [c for c, _, _ in md.CAL_CCYS if ss.get(f"calccy_{c}")]
+
+
+def _cal_set(codes):
+    for c, _, _ in md.CAL_CCYS:
+        ss[f"calccy_{c}"] = c in codes
+    ss.cal_ccy = [c for c, _, _ in md.CAL_CCYS if c in codes]
+
+
+def cal_currency_picker():
+    """Para birimi seçimi: alt alta, bayrak + kod + ad; kendi listen kaydedilir."""
+    sel = set(ss.get("cal_ccy") if ss.get("cal_ccy") is not None else [c for c, _, _ in md.CAL_CCYS])
+    for c, _, _ in md.CAL_CCYS:
+        k = f"calccy_{c}"
+        if k not in ss:
+            ss[k] = c in sel
+    n = len(sel)
+    lab = ("Currencies: all" if n == len(md.CAL_CCYS) else "Currencies: none" if n == 0 else
+           "Currencies: " + ", ".join(c for c, _, _ in md.CAL_CCYS if c in sel) if n <= 3 else f"Currencies: {n} selected")
+    with panel(lab, "cal_ccy_panel"):
+        H('<div style="font-size:12px;font-weight:700;margin-bottom:2px">Show events for</div>'
+          '<div class="muted small" style="margin-bottom:6px">Your choice is saved.</div>')
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            st.button("All", key="calccy_all", on_click=_cal_set, args=([c for c, _, _ in md.CAL_CCYS],),
+                      **_wkw(st.button))
+        with b2:
+            st.button("Majors", key="calccy_maj", on_click=_cal_set, args=(md.CAL_MAJORS,), **_wkw(st.button))
+        with b3:
+            st.button("None", key="calccy_none", on_click=_cal_set, args=([],), **_wkw(st.button))
+        for c, flag, name in md.CAL_CCYS:          # alt alta, kolay seçilsin
+            st.checkbox(f"{flag}  {c} · {name}", key=f"calccy_{c}", on_change=_cal_sync)
+    return [c for c, _, _ in md.CAL_CCYS if ss.get(f"calccy_{c}")]
+
+
+def render_calendar():
+    with st.container(border=True):
+        f1, f2, f3, f4 = st.columns([1.1, 2, 1.6, 1.5], vertical_alignment="center")
+        with f2:
+            day = seg("Day", md.CAL_DAYS, "w_calday", "Today")
+        with f3:
+            imp = seg("Impact", md.CAL_IMPACTS, "w_calimp", "All")
+        with f4:
+            ccys = cal_currency_picker()
+        rows = md.get_calendar_rows(day, imp, ccys)
+        with f1:
+            H(src_chip(rows[0]["src"] if rows else md._calendar_all()[0]["src"] if md._calendar_all() else "none"))
+        out = ('<div class="cal-row" style="border:0;color:#8D96A5;font-size:11px;letter-spacing:.07em">'
+               '<span style="width:120px">TIME</span><span style="width:70px">CCY</span><span style="width:40px">IMPACT'
+               '</span><span style="flex:1">EVENT</span><span style="width:96px;text-align:right">ACTUAL</span>'
+               '<span style="width:90px;text-align:right">FORECAST</span><span style="width:90px;text-align:right">'
+               'PREVIOUS</span></div>')
+        last_day = None
+        for r in rows:
+            if r["day_label"] != last_day:
+                out += (f'<div style="padding:8px 6px;font-size:12px;font-weight:700;color:{SOFT};border-top:1px solid '
+                        f'{LINE}">{esc(r["day_label"])}</div>')
+                last_day = r["day_label"]
+            ic = DOWN if r["impact"] >= 3 else WARN if r["impact"] == 2 else "#6B7383"
+            dots = "".join(f'<i style="background:{ic if i < r["impact"] else "#2A2F37"}"></i>' for i in range(3))
+            nxt = (f' <span class="badge" style="color:#0A0B0D;background:{ACCENT};font-size:9.5px">NEXT</span>'
+                   if r["next"] else "")
+            stt = r.get("state")
+            if stt == "released":
+                ev_ = r.get("eval")
+                ac = UP if ev_ == 1 else DOWN if ev_ == -1 else TXT
+                bg = UP_BG if ev_ == 1 else DOWN_BG if ev_ == -1 else "transparent"
+                tip = {1: "better than forecast", -1: "worse than forecast", 0: "in line with forecast"}.get(
+                    ev_, "released")
+                act = (f'<span class="cal-act" title="{tip}" style="color:{ac};background:{bg}">'
+                       f'{esc(r["actual"])}</span>')
+            elif stt == "pending":
+                act = '<span class="muted" style="font-style:italic" title="released — waiting for the value">pending…</span>'
+            elif stt == "n/a":
+                act = '<span class="muted" title="no value from the data source">n/a</span>'
+            else:
+                act = '<span class="muted">—</span>'
+            flag = md.CCY_FLAG.get(r["cur"], "")
+            out += (f'<div class="cal-row{" next" if r["next"] else ""}{" done" if stt == "released" else ""}">'
+                    f'<span class="mono" style="width:120px">{r["time"]}{nxt}</span>'
+                    f'<span style="width:70px;font-weight:700;font-size:12px">{flag} {esc(r["cur"])}</span>'
+                    f'<span class="dots">{dots}</span><span style="flex:1">{esc(r["event"])}</span>'
+                    f'<span class="mono" style="width:96px;text-align:right">{act}</span>'
+                    f'<span class="mono muted" style="width:90px;text-align:right">{esc(r["forecast"])}</span>'
+                    f'<span class="mono muted" style="width:90px;text-align:right">{esc(r["previous"])}</span></div>')
+        if not rows:
+            out += (f'<div class="muted" style="padding:18px 6px">No events with this filter'
+                    f'{" — no currency selected" if not ccys else ""}.</div>')
+        live = bool(rows and rows[0].get("tv_ok"))
+        out += (f'<div class="muted small" style="padding-top:10px;display:flex;gap:14px;flex-wrap:wrap">'
+                f'<span><span style="color:{DOWN}">■</span> High &nbsp;<span style="color:{WARN}">■</span> Medium &nbsp;'
+                f'<span style="color:#6B7383">■</span> Low</span>'
+                f'<span>Actual: <span class="cal-act" style="color:{UP};background:{UP_BG}">better</span> / '
+                f'<span class="cal-act" style="color:{DOWN};background:{DOWN_BG}">worse</span> than forecast '
+                f'(for unemployment and jobless claims lower is better)</span>'
+                f'<span>{"Released values load automatically (TradingView feed, checked every 2 minutes)" if live else "Released values: source unreachable right now — retrying every 2 minutes"}</span></div>')
+        H(f'<div style="overflow-x:auto"><div style="min-width:780px">{out}</div></div>')
+    _save_state()       # bölüm kendi kendine yenilendiğinde para birimi seçimi de kaydedilsin
+
+
+_frag = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+if _frag is not None:
+    try:
+        _calendar_live = _frag(run_every=120)(render_calendar)     # açıklanan değerler kendiliğinden gelsin
+    except TypeError:
+        _calendar_live = render_calendar
+else:
+    _calendar_live = render_calendar
+
+
 def render_forex():
     now = pd.Timestamp.now(tz=md.TZ)
     H(f'<div class="page-title">Forex &amp; News</div><div class="muted" style="margin-bottom:8px">'
@@ -3649,41 +3976,7 @@ def render_forex():
 
     # 02 Ekonomik takvim
     H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">02</span><h3>Economic Calendar</h3></div>')
-    with st.container(border=True):
-        f1, f2, f3 = st.columns([1.4, 2, 1.6], vertical_alignment="center")
-        with f2:
-            day = seg("Day", md.CAL_DAYS, "w_calday", "Today")
-        with f3:
-            imp = seg("Impact", md.CAL_IMPACTS, "w_calimp", "All")
-        rows = md.get_calendar_rows(day, imp)
-        with f1:
-            H(src_chip(rows[0]["src"] if rows else md._calendar_all()[0]["src"] if md._calendar_all() else "none"))
-        out = ('<div class="cal-row" style="border:0;color:#8D96A5;font-size:11px;letter-spacing:.07em">'
-               '<span style="width:120px">TIME</span><span style="width:52px">CCY</span><span style="width:40px">IMPACT'
-               '</span><span style="flex:1">EVENT</span><span style="width:90px;text-align:right">ACTUAL</span>'
-               '<span style="width:90px;text-align:right">FORECAST</span><span style="width:90px;text-align:right">'
-               'PREVIOUS</span></div>')
-        last_day = None
-        for r in rows:
-            if r["day_label"] != last_day:
-                out += (f'<div style="padding:8px 6px;font-size:12px;font-weight:700;color:{SOFT};border-top:1px solid '
-                        f'{LINE}">{esc(r["day_label"])}</div>')
-                last_day = r["day_label"]
-            ic = DOWN if r["impact"] >= 3 else WARN if r["impact"] == 2 else "#6B7383"
-            dots = "".join(f'<i style="background:{ic if i < r["impact"] else "#2A2F37"}"></i>' for i in range(3))
-            nxt = (f' <span class="badge" style="color:#0A0B0D;background:{ACCENT};font-size:9.5px">NEXT</span>'
-                   if r["next"] else "")
-            out += (f'<div class="cal-row{" next" if r["next"] else ""}"><span class="mono" style="width:120px">'
-                    f'{r["time"]}{nxt}</span><span style="width:52px;font-weight:700;font-size:12px">{esc(r["cur"])}</span>'
-                    f'<span class="dots">{dots}</span><span style="flex:1">{esc(r["event"])}</span>'
-                    f'<span class="mono" style="width:90px;text-align:right">{esc(r["actual"])}</span>'
-                    f'<span class="mono muted" style="width:90px;text-align:right">{esc(r["forecast"])}</span>'
-                    f'<span class="mono muted" style="width:90px;text-align:right">{esc(r["previous"])}</span></div>')
-        if not rows:
-            out += f'<div class="muted" style="padding:18px 6px">No events with this filter.</div>'
-        out += (f'<div class="muted small" style="padding-top:10px"><span style="color:{DOWN}">■</span> High &nbsp;'
-                f'<span style="color:{WARN}">■</span> Medium &nbsp;<span style="color:#6B7383">■</span> Low</div>')
-        H(f'<div style="overflow-x:auto"><div style="min-width:760px">{out}</div></div>')
+    _calendar_live()
 
     # 03 Piyasa haberleri
     h1, h2 = st.columns([1, 2.2], vertical_alignment="center")
@@ -3784,6 +4077,18 @@ ENTRY_CSS = ("<style>"
              + _ecss(' [data-testid="stFormSubmitButton"] button p', "color:#04150E !important;font-weight:600")
              + _ecss(' [data-testid="stFormSubmitButton"] button:hover', "background:#62E6AE !important")
              + "@media (max-width:640px){" + _ecss("", "padding:32px 22px 24px !important;margin-top:3vh !important") + "}"
+             + ".entry-msg{font-size:13px;border:1px solid;border-radius:10px;padding:9px 12px;margin:2px 0 4px 0;"
+               "background:rgba(255,255,255,.02)}"
+               ".entry-code{font-family:ui-monospace,monospace;font-size:22px;font-weight:700;letter-spacing:.12em;"
+               "text-align:center;color:#E6EAF0;background:#0C131C;border:1px dashed #3DDC97;border-radius:12px;"
+               "padding:16px 10px;margin:4px 0 8px 0}"
+             + _ecss(' [data-testid="stBaseButton-tertiary"]', "color:#3DDC97 !important;font-size:13px;padding:0")
+             + _ecss(' [data-testid="stBaseButton-tertiary"] p', "color:#3DDC97 !important;font-size:13px")
+             + _ecss(' [data-testid="stBaseButton-primary"]', "width:100%;min-height:46px;border-radius:10px;border:0 "
+                     "!important;background:#3DDC97 !important;color:#04150E !important;font-weight:600")
+             + _ecss(' [data-testid="stBaseButton-primary"] p', "color:#04150E !important;font-weight:600")
+             + _ecss(' [data-testid="stExpander"] details', "background:#0C131C !important;border-color:#243042 !important")
+             + _ecss(' [data-testid="stExpander"] summary p', "color:#B9C4D2 !important;font-size:13px")
              + ".entry-foot{text-align:center;font-size:13px;color:#94A3B8;margin-top:4px}"
              ".entry-foot b{color:#3DDC97;font-weight:600}"
              "</style>")
@@ -3800,10 +4105,214 @@ def _entry_bg():
             f'</svg></div>')
 
 
-def render_login():
-    """Pulse giriş ekranı. Şimdilik her girdi kabul edilir; 'Keep me signed in' oturumu bu bağlantıda saklar."""
+# ----------------------------------------------------------------------
+# Kimlik doğrulama (v3.8): ilk açılışta e-posta + şifre belirlenir, sonra her açılışta giriş istenir.
+# Şifre ve kurtarma kodu düz metin saklanmaz (PBKDF2-SHA256, tuzlu). Kayıt yeri:
+#   1) sunucudaki .pulse_auth.json (uygulama içinden kurulur / sıfırlanır)
+#   2) yoksa Streamlit Secrets → [pulse_auth] email, password_hash, recovery_hash (kalıcı)
+# ----------------------------------------------------------------------
+AUTH_FILE = os.environ.get("PULSE_AUTH_FILE") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                             ".pulse_auth.json")
+AUTH_IDLE = 15 * 60          # bu kadar işlem yapılmazsa yeniden giriş (yeni sekme / yeni açılış zaten giriş ister)
+_CODE_ABC = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _pw_hash(pw, it=240_000):
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, it)
+    return f"pbkdf2_sha256${it}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
+
+
+def _pw_check(pw, stored):
+    try:
+        algo, it, salt, h = str(stored).split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", str(pw).encode("utf-8"), base64.b64decode(salt), int(it))
+        return hmac.compare_digest(base64.b64encode(dk).decode(), h)
+    except Exception:
+        return False
+
+
+def _norm_email(e):
+    return str(e or "").strip().lower()
+
+
+def _norm_code(c):
+    return re.sub(r"[^A-Z0-9]", "", str(c or "").upper())
+
+
+def _new_code():
+    raw = "".join(secrets.choice(_CODE_ABC) for _ in range(16))
+    return "-".join(raw[i:i + 4] for i in range(0, 16, 4))
+
+
+def auth_load():
+    """Kayıtlı giriş bilgisi (karma): önce dosya, yoksa Secrets. Hiçbiri yoksa None → ilk kurulum."""
+    try:
+        with open(AUTH_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+        if d.get("email") and d.get("password_hash") and d.get("recovery_hash"):
+            d["where"] = "file"
+            return d
+    except (OSError, ValueError):
+        pass
+    try:
+        sec = st.secrets.get("pulse_auth") if hasattr(st, "secrets") else None
+        if sec and sec.get("email") and sec.get("password_hash"):
+            return {"email": _norm_email(sec["email"]), "password_hash": str(sec["password_hash"]),
+                    "recovery_hash": str(sec.get("recovery_hash") or ""), "where": "secrets"}
+    except Exception:
+        pass
+    return None
+
+
+def auth_save(email, pw):
+    """Yeni giriş bilgisini kaydeder, tek seferlik gösterilecek kurtarma kodunu döndürür."""
+    code = _new_code()
+    rec = {"v": 1, "email": _norm_email(email), "password_hash": _pw_hash(pw),
+           "recovery_hash": _pw_hash(_norm_code(code)), "created": pd.Timestamp.now(tz="UTC").isoformat()}
+    tmp = AUTH_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh)
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, AUTH_FILE)
+    return code, rec
+
+
+def secrets_snippet(rec):
+    return (f'[pulse_auth]\nemail = "{rec["email"]}"\npassword_hash = "{rec["password_hash"]}"\n'
+            f'recovery_hash = "{rec["recovery_hash"]}"')
+
+
+@st.cache_resource(show_spinner=False)
+def _auth_guard():
+    """Tüm oturumlar için ortak deneme sayacı (kaba kuvvet denemelerini yavaşlatır)."""
+    return {"fails": []}
+
+
+def _auth_locked():
+    g = _auth_guard()
+    now = time.time()
+    g["fails"] = [t for t in g["fails"] if now - t < 900]
+    n = len(g["fails"])
+    if n < 5:
+        return 0
+    wait = min(900, 30 * 2 ** (n - 5)) - (now - g["fails"][-1])
+    return int(max(0, wait))
+
+
+def _auth_fail():
+    _auth_guard()["fails"].append(time.time())
+
+
+def _client_tag():
+    """Oturumu tarayıcıya bağlamak için kaba bir iz (User-Agent özeti): bağlantıyı başka cihaza
+    kopyalayan biri girişsiz açamasın."""
+    try:
+        ua = (st.context.headers or {}).get("User-Agent") or ""
+    except Exception:
+        ua = ""
+    return hashlib.sha256(ua.encode("utf-8")).hexdigest()[:16] if ua else ""
+
+
+def auth_valid():
+    a = ss.get("auth")
+    if not isinstance(a, dict) or not a.get("user"):
+        return False
+    if time.time() - float(a.get("last") or 0) > AUTH_IDLE:
+        ss.auth = None
+        return False
+    tag = _client_tag()
+    if a.get("tag") and tag and a["tag"] != tag:
+        ss.auth = None
+        return False
+    return True
+
+
+def _sign_in(email):
+    ss.auth = {"user": _norm_email(email), "at": pd.Timestamp.now(tz=md.TZ).strftime("%Y-%m-%d %H:%M"),
+               "last": time.time(), "tag": _client_tag()}
+    ss["_boot"] = True            # ilk yüklemede açılış ekranı
+    ss["_cred_store"] = True      # tarayıcı şifre yöneticisine kaydetmeyi önersin
+
+
+# Tarayıcının otomatik doldurduğu değerler, kullanıcı "Sign in"e basana kadar sayfaya verilmez (güvenlik).
+# Düğmeye basıldığı anda değerleri Streamlit'e iletir; giriş yine yalnızca düğmeyle olur.
+_AUTOFILL_JS = """<script>
+(function(){
+  var P = window.parent, D = P.document;
+  if (!P.__pulseAuthHooks) {
+    P.__pulseAuthHooks = true;
+    var setter = Object.getOwnPropertyDescriptor(P.HTMLInputElement.prototype, 'value').set;
+    var sync = function(){
+      var user = null, pass = null;
+      D.querySelectorAll('input[autocomplete="username"], input[type="password"]').forEach(function(i){
+        var v = i.value; if (!v) return;
+        setter.call(i, v);
+        i.dispatchEvent(new P.Event('input', {bubbles: true}));
+        if (i.type === 'password') { if (!pass) pass = v; } else { user = v; }
+      });
+      if (user && pass) P.__pulsePending = {id: user, pw: pass, t: Date.now()};
+    };
+    D.addEventListener('pointerdown', function(e){
+      if (e.target && e.target.closest && e.target.closest('[data-testid="stFormSubmitButton"]')) sync();
+    }, true);
+    D.addEventListener('keydown', function(e){
+      if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') sync();
+    }, true);
+  }
+})();
+</script>"""
+# Başarılı girişten sonra: Chrome / Edge'de şifre yöneticisine kaydetmeyi öner (kullanıcı onaylar)
+_CRED_STORE_JS = """<script>
+(function(){
+  var P = window.parent, c = P.__pulsePending;
+  P.__pulsePending = null;
+  if (!c || Date.now() - c.t > 600000) return;
+  try {
+    if (P.PasswordCredential && P.navigator.credentials && P.navigator.credentials.store) {
+      P.navigator.credentials.store(new P.PasswordCredential({id: c.id, password: c.pw, name: 'Pulse'}));
+    }
+  } catch (e) {}
+})();
+</script>"""
+
+
+def _auth_header(title, sub):
+    st.markdown('<div class="entry-mark"></div><div class="entry-head">'
+                + ENTRY_LOGO.format(w=72, c=ENTRY_ACC, cls="") +
+                f'<div style="display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center">'
+                f'<h1>{esc(title)}</h1><p>{esc(sub)}</p></div></div>', unsafe_allow_html=True)
+
+
+def _auth_msg(kind, text):
+    c = {"err": "#F87171", "ok": "#3DDC97", "info": "#94A3B8"}[kind]
+    st.markdown(f'<div class="entry-msg" style="color:{c};border-color:{c}55">{esc(text)}</div>',
+                unsafe_allow_html=True)
+
+
+def _set_mode(m):
+    ss["auth_mode"] = m
+    ss.pop("_auth_err", None)
+
+
+def render_auth():
+    """Giriş kapısı: ilk kurulum · giriş · şifre/e-posta sıfırlama · kurtarma kodu."""
     st.markdown(ENTRY_CSS, unsafe_allow_html=True)
     st.markdown(_entry_bg(), unsafe_allow_html=True)
+    cred = auth_load()
+    mode = ss.get("auth_mode") or ("login" if cred else "setup")
+    if cred and mode == "setup":
+        mode = "login"
+    if not cred and mode in ("login", "reset"):
+        mode = "setup"
+    err = ss.pop("_auth_err", None)
+    ok_ = ss.pop("_auth_ok", None)
     _, mid, _ = st.columns([1, 1.05, 1])
     with mid:
         try:
@@ -3811,21 +4320,158 @@ def render_login():
         except TypeError:          # eski Streamlit: key yok → :has() seçicisi devreye girer
             card = st.container()
         with card:
-            st.markdown('<div class="entry-mark"></div><div class="entry-head">'
-                        + ENTRY_LOGO.format(w=72, c=ENTRY_ACC, cls="") +
-                        '<div style="display:flex;flex-direction:column;align-items:center;gap:8px">'
-                        '<h1>Pulse</h1><p>Sign in to open your dashboard</p></div></div>', unsafe_allow_html=True)
-            with st.form("entry_form", border=False):
-                email = st.text_input("Email", placeholder="you@example.com", key="entry_email")
-                st.text_input("Password", type="password", placeholder="Enter your password", key="entry_pw")
-                keep = st.checkbox("Keep me signed in", value=True, key="entry_keep")
-                go_ = st.form_submit_button("Sign in", type="primary", **_wkw(st.form_submit_button))
-            st.markdown('<div class="entry-foot">Open preview — any email and password let you in for now.<br>'
-                        'Accounts and <b>Request access</b> come later.</div>', unsafe_allow_html=True)
-    if go_:
-        ss.auth = {"user": (email or "").strip()[:80] or "guest", "keep": bool(keep),
-                   "at": pd.Timestamp.now(tz=md.TZ).strftime("%Y-%m-%d %H:%M")}
-        ss["_boot"] = True        # ilk yüklemede açılış (loading) ekranı
+            if mode == "code":
+                _auth_code_screen()
+                return
+            if mode == "setup":
+                _auth_header("Pulse", "First start — choose the email and password you will sign in with")
+                if err:
+                    _auth_msg("err", err)
+                with st.form("entry_setup", border=False):
+                    em = st.text_input("Email", placeholder="you@example.com", key="setup_email",
+                                       autocomplete="username")
+                    p1 = st.text_input("Password", type="password", placeholder="At least 8 characters",
+                                       key="setup_pw", autocomplete="new-password")
+                    p2 = st.text_input("Repeat password", type="password", placeholder="Same password again",
+                                       key="setup_pw2", autocomplete="new-password")
+                    go_ = st.form_submit_button("Create login", type="primary", **_wkw(st.form_submit_button))
+                st.markdown('<div class="entry-foot">This is done once. From then on Pulse asks for exactly this '
+                            'email and password every time it is opened.</div>', unsafe_allow_html=True)
+                if go_:
+                    e = _norm_email(em)
+                    if not _EMAIL_RE.match(e):
+                        ss["_auth_err"] = "Please enter a valid email address."
+                    elif len(p1 or "") < 8:
+                        ss["_auth_err"] = "The password needs at least 8 characters."
+                    elif p1 != p2:
+                        ss["_auth_err"] = "The two passwords do not match."
+                    elif auth_load():
+                        ss["_auth_err"] = "A login was created a moment ago — please sign in."
+                        ss["auth_mode"] = "login"
+                    else:
+                        try:
+                            code, rec = auth_save(e, p1)
+                        except OSError:
+                            ss["_auth_err"] = "The login could not be saved on the server (write access denied)."
+                        else:
+                            ss["_new_code"] = code
+                            ss["_new_rec"] = rec
+                            ss["_code_next"] = "app"
+                            ss["auth_mode"] = "code"
+                            _sign_in(e)
+                            ss["_hold_auth"] = ss.auth      # önce kurtarma kodu gösterilir
+                            ss.auth = None
+                    st.rerun()
+            elif mode == "reset":
+                _auth_header("Reset login", "Forgot your email or password? Use your recovery code")
+                if err:
+                    _auth_msg("err", err)
+                wait = _auth_locked()
+                with st.form("entry_reset", border=False):
+                    rc = st.text_input("Recovery code", placeholder="XXXX-XXXX-XXXX-XXXX", key="reset_code",
+                                       autocomplete="off")
+                    em = st.text_input("New email", placeholder="you@example.com", key="reset_email",
+                                       autocomplete="username")
+                    p1 = st.text_input("New password", type="password", placeholder="At least 8 characters",
+                                       key="reset_pw", autocomplete="new-password")
+                    p2 = st.text_input("Repeat new password", type="password", key="reset_pw2",
+                                       autocomplete="new-password")
+                    go_ = st.form_submit_button("Reset and save", type="primary", **_wkw(st.form_submit_button))
+                st.button("← Back to sign in", key="reset_back", on_click=_set_mode, args=("login",),
+                          type="tertiary" if "tertiary" in str(inspect.signature(st.button)) else "secondary")
+                st.markdown('<div class="entry-foot">The recovery code was shown once when the login was created. '
+                            'Lost it too? The app owner can delete the saved login (see README) and set it up again.'
+                            '</div>', unsafe_allow_html=True)
+                if go_:
+                    e = _norm_email(em)
+                    if wait:
+                        ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
+                    elif not cred or not cred.get("recovery_hash") or not _pw_check(_norm_code(rc), cred["recovery_hash"]):
+                        _auth_fail()
+                        ss["_auth_err"] = "This recovery code is not correct."
+                    elif not _EMAIL_RE.match(e):
+                        ss["_auth_err"] = "Please enter a valid email address."
+                    elif len(p1 or "") < 8:
+                        ss["_auth_err"] = "The new password needs at least 8 characters."
+                    elif p1 != p2:
+                        ss["_auth_err"] = "The two passwords do not match."
+                    else:
+                        try:
+                            code, rec = auth_save(e, p1)
+                        except OSError:
+                            ss["_auth_err"] = "The new login could not be saved on the server."
+                        else:
+                            ss["_new_code"] = code
+                            ss["_new_rec"] = rec
+                            ss["_was_secrets"] = cred.get("where") == "secrets"
+                            ss["_code_next"] = "login"
+                            ss["auth_mode"] = "code"
+                    st.rerun()
+            else:
+                _auth_header("Pulse", "Sign in to open your dashboard")
+                if ok_:
+                    _auth_msg("ok", ok_)
+                if err:
+                    _auth_msg("err", err)
+                wait = _auth_locked()
+                with st.form("entry_login", border=False):
+                    em = st.text_input("Email", placeholder="you@example.com", key="login_email",
+                                       autocomplete="username")
+                    pw = st.text_input("Password", type="password", placeholder="Enter your password",
+                                       key="login_pw", autocomplete="current-password")
+                    go_ = st.form_submit_button("Sign in", type="primary", **_wkw(st.form_submit_button))
+                st.button("Forgot email or password?", key="login_forgot", on_click=_set_mode, args=("reset",),
+                          type="tertiary" if "tertiary" in str(inspect.signature(st.button)) else "secondary")
+                if go_:
+                    if wait:
+                        ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
+                    elif cred and hmac.compare_digest(_norm_email(em), cred["email"]) and _pw_check(pw, cred["password_hash"]):
+                        ss["auth_mode"] = None
+                        _sign_in(em)
+                    else:
+                        _auth_fail()
+                        ss["_auth_err"] = "Email or password is not correct."
+                    st.rerun()
+    components.html(_AUTOFILL_JS, height=0)
+
+
+def _auth_code_screen():
+    code, rec = ss.get("_new_code"), ss.get("_new_rec")
+    nxt = ss.get("_code_next", "login")
+    if not code or not rec:
+        ss["auth_mode"] = None
+        st.rerun()
+        return
+    _auth_header("Recovery code", "Save it now — it is shown only once")
+    st.markdown(f'<div class="entry-code">{esc(code)}</div>'
+                '<div class="entry-foot" style="text-align:left">If you ever forget your email or password, '
+                '<b>Forgot email or password?</b> on the sign-in screen lets you set new ones with this code. '
+                'Keep it somewhere safe (password manager, printout).</div>', unsafe_allow_html=True)
+    st.download_button("Download code (.txt)", data=f"Pulse recovery code: {code}\nLogin email: {rec['email']}\n",
+                       file_name="pulse-recovery-code.txt", key="code_dl", **_wkw(st.download_button))
+    if ss.get("_was_secrets"):
+        st.markdown('<div class="entry-foot" style="text-align:left;color:#F5B544">Your login was stored in the '
+                    'app\'s Secrets. Replace the [pulse_auth] block there with the lines below, otherwise the old '
+                    'login returns after the next app restart.</div>', unsafe_allow_html=True)
+    with st.expander("Keep the login after app restarts (recommended on Streamlit Cloud)"):
+        st.markdown('<div class="entry-foot" style="text-align:left">On Streamlit Community Cloud the saved login '
+                    'file is cleared when the app restarts or is redeployed — Pulse would then show the first-start '
+                    'screen again. Paste these lines into <b>App settings → Secrets</b> to make it permanent. They '
+                    'contain only salted hashes, not your password.</div>', unsafe_allow_html=True)
+        st.code(secrets_snippet(rec), language="toml")
+    saved = st.checkbox("I have saved my recovery code", key="code_saved")
+    if st.button("Continue to Pulse" if nxt == "app" else "Continue to sign in", key="code_go", type="primary",
+                 disabled=not saved, **_wkw(st.button)):
+        for k in ("_new_code", "_new_rec", "_was_secrets", "_code_next"):
+            ss.pop(k, None)
+        if nxt == "app" and ss.get("_hold_auth"):
+            ss.auth = ss.pop("_hold_auth")
+            ss.auth["last"] = time.time()
+            ss["auth_mode"] = None
+        else:
+            ss.pop("_hold_auth", None)
+            ss["auth_mode"] = "login"
+            ss["_auth_ok"] = "Login updated — sign in with your new email and password."
         st.rerun()
 
 
@@ -3857,9 +4503,12 @@ LOADING_HTML = """<div class="p-load-wrap"><style>
 
 
 def main():
-    if not ss.get("auth"):
-        render_login()
+    if not auth_valid():
+        render_auth()
         return
+    ss.auth["last"] = time.time()           # hareketsizlik süresi sıfırlanır
+    if ss.pop("_cred_store", False):
+        components.html(_CRED_STORE_JS, height=0)
     boot = st.empty() if ss.pop("_boot", False) else None
     if boot is not None:
         boot.markdown(LOADING_HTML, unsafe_allow_html=True)     # sayfa hesaplanırken açılış ekranı
@@ -4083,9 +4732,9 @@ def render_value_model(b, sym):
         ms, checks, extra = en.capital_models(f, r, d, b["pm"], b["px"], wacc, price, an)
     ms = [m for m in ms if m]
     if path:
-        r1 = path["rows"][0]
-        pm_ = en._method("path", "Market-implied path (12 mo)", r1["value"]["bear"], r1["value"]["base"],
-                         r1["value"]["bull"], "Analyst EPS × today's forward multiple — reference only, "
+        r1 = path["rows"][1] if len(path["rows"]) > 1 else path["rows"][0]
+        pm_ = en._method("path", f"Market-implied path ({r1['label']})", r1["value"]["bear"], r1["value"]["base"],
+                         r1["value"]["bull"], f"{r1['label']} EPS × today's multiple — reference only, "
                          "not in the blend", 0.0)
         if pm_:
             ms.append(pm_)
@@ -4197,69 +4846,124 @@ def render_value_future(b):
     est = an.get("fy") or []
     path = en.value_path(d["last"], b["eps_last"], est, years=5, **_model_kwargs(cfg))
     if not path:
-        H('<div class="muted">Forward earnings are negative, so a multiple-based value cannot be built.</div>')
+        H('<div class="muted">This fiscal year\'s earnings are negative, so a multiple-based value cannot be '
+          'built.</div>')
         return
     b["path"] = path
+    try:
+        qd = md.get_quarterly(sym)
+    except Exception:
+        qd = {"src": "none", "q": [], "est": {}}
+    qp = en.quarter_path(path, qd, b.get("px"))
+    # çeyrek seçimi (panel aşağıda; grafik bu seçimi şimdiden vurgular)
+    fy_opts = [fy for fy in qp["fy_list"] if fy >= path["fy0"] or any(
+        x["src"] == "reported" for x in qp["by_fy"][fy])]
+    k_fy, k_q = f"vq_fy_{sym}", f"vq_q_{sym}"
+    fy_lab = {fy: (f"FY{fy} · reported" if fy < path["fy0"] else f"FY{fy}") for fy in fy_opts}
+    lab_fy = {v: k for k, v in fy_lab.items()}
+    if ss.get(k_fy) not in lab_fy:
+        ss[k_fy] = fy_lab[path["fy0"]]
+    Q_OPTS = ["Full year", "Q1", "Q2", "Q3", "Q4"]
+    if ss.get(k_q) not in Q_OPTS:
+        ss[k_q] = "Full year"
+    sel_fy = lab_fy[ss[k_fy]]
+    sel_q = None if ss[k_q] == "Full year" else int(ss[k_q][1])
     c1, c2 = st.columns([1.7, 1], gap="medium")
     with c1:
         with st.container(border=True):
             n_an = an.get("n") or max([e.get("n") or 0 for e in est] or [0])
             src = (f'{", ".join(e["label"] for e in est)} analyst estimates'
                    f'{" (" + str(n_an) + " analysts)" if n_an else ""}'
-                   if est else "No analyst estimates — using historical EPS growth")
-            mtxt = (f'multiple calibrated to today\'s price: <b>{tr(path["m_cal"], 1)}x</b> forward earnings'
+                   if est else "No analyst estimates — using the last reported YoY EPS growth")
+            mtxt = (f'multiple calibrated to today\'s price: <b>{tr(path["m_cal"], 1)}x</b> FY{path["fy0"]} earnings'
                     if not path["rerated"] else
-                    f'multiple {tr(path["m_cal"], 1)}x → <b>{tr(path["m_target"], 1)}x</b> over 3 years')
+                    f'multiple {tr(path["m_cal"], 1)}x → <b>{tr(path["m_target"], 1)}x</b> over 3 years'
+                    + (" after the peak" if path["cyclical"] else ""))
             H(f'<div class="panel-title">Value Path</div><div class="muted small">{esc(src)} · {mtxt}'
               f'{" · earnings peak FY" + str(path["peak_fy"]) + ", then a " + tr(path["drop"], 0) + "% drop" if path["cyclical"] else ""}'
               f'</div>')
-            plot(fair_path_chart(path, b["px"], d["last"]), key="v_path")
+            plot(fair_path_chart(path, b["px"], d["last"], qp, sel_fy, sel_q), key="v_path")
             sc = path["scen"]
-            H(f'<div class="muted small">Bear: lowest analyst estimate'
+            H(f'<div class="muted small">Each fiscal year is valued on <i>that year\'s</i> EPS × the multiple; '
+              f'after the analyst years EPS grows year over year (base {tr(sc["base"]["g"], 0)}% YoY). '
+              f'Bear: lowest analyst estimate'
               f'{", " + tr(sc["bear"]["drop"], 0) + "% post-peak drop" if path["cyclical"] else ""}, '
-              f'then {tr(sc["bear"]["g"], 0)}% growth, multiple −15% · Bull: highest estimate'
+              f'then {tr(sc["bear"]["g"], 0)}% YoY, multiple −15% · Bull: highest estimate'
               f'{", " + tr(sc["bull"]["drop"], 0) + "% drop" if path["cyclical"] else ""}, '
-              f'then {tr(sc["bull"]["g"], 0)}% growth, multiple +15%. At every point the price reflects '
-              f'earnings for <i>the next 12 months</i>.</div>')
-            # tek cümlelik okuma
+              f'then {tr(sc["bull"]["g"], 0)}% YoY, multiple +15%. Dotted line: quarter by quarter (TTM EPS × '
+              f'multiple).</div>')
             pk_y, pk_v = path["price_peak_year"], path["price_peak_value"]
-            if path["cyclical"] and pk_y > path["today"]["year"]:
-                up = (pk_v / d["last"] - 1) * 100
-                H(f'<div class="gtext">In the base case the price peaks around <b>{pk_y}</b> '
-                  f'(<b>{tr(pk_v, dec)}</b>, {pct(up)}); earnings peak in FY{path["peak_fy"]}. For cyclicals '
-                  f'the market prices the turn in advance, so the price tops out before earnings do.</div>')
-            elif path["cyclical"]:
-                H('<div class="gtext">In the base case the price is in its peak zone today: forward earnings start to fall '
-                  'as earnings approach their peak. Try changing the peak year or the drop rate.</div>')
+            up = (pk_v / d["last"] - 1) * 100
+            if path["cyclical"]:
+                notes = []
+                if path.get("overridden"):
+                    ov = [y for y in path["overridden"] if y > path["peak_fy"]]
+                    hd = [y for y in path["overridden"] if y <= path["peak_fy"]]
+                    if ov:
+                        notes.append("analyst estimates for " + ", ".join(f"FY{y}" for y in ov) +
+                                     " are replaced by the post-peak path")
+                    if hd:
+                        notes.append(", ".join(f"FY{y}" for y in hd) + " held at least at the prior year")
+                if path.get("capped"):
+                    notes.append("the multiple change would have pushed " +
+                                 ", ".join(f"FY{y}" for y in path["capped"]) + " above the peak, so those values "
+                                 "are capped just below it")
+                H(f'<div class="gtext">In the base case the value peaks in <b>FY{pk_y}</b> — the earnings-peak year '
+                  f'you selected — at <b>{tr(pk_v, dec)}</b> ({pct(up)} vs today), then follows earnings down.'
+                  + (f' <span class="muted">Note: {esc("; ".join(notes))}.</span>' if notes else "") + '</div>')
+            else:
+                H(f'<div class="gtext">The base-case value is highest in <b>FY{pk_y}</b> at <b>{tr(pk_v, dec)}</b> '
+                  f'({pct(up)} vs today).</div>')
     with c2:
         with st.container(border=True):
             H('<div class="panel-title">Year by Year</div>')
             rows = ""
             for row in path["rows"]:
-                up = row.get("upside")
-                rows += (f'<tr><td>{row["year"]}</td>'
-                         f'<td style="color:{SOFT}">{tr(row["value"]["bear"], dec)}</td>'
-                         f'<td style="color:{TXT}">{tr(row["value"]["base"], dec)}</td>'
-                         f'<td style="color:{SOFT}">{tr(row["value"]["bull"], dec)}</td>'
-                         f'<td style="color:{col(up) if up is not None else MUT}">'
-                         f'{pct(up) if up is not None else "—"}</td>'
+                up_ = row.get("upside")
+                yy = row.get("yoy")
+                rows += (f'<tr class="{"qsel" if row["fy"] == sel_fy else ""}"><td>{row["label"]}</td>'
+                         f'<td><b>{tr(row["value"]["base"], dec)}</b><div class="muted" style="font-size:10.5px">'
+                         f'{tr(row["value"]["bear"], dec)} – {tr(row["value"]["bull"], dec)}</div></td>'
+                         f'<td style="color:{col(yy) if yy is not None else MUT}">{pct(yy) if yy is not None else "—"}</td>'
+                         f'<td style="color:{col(up_) if up_ is not None else MUT}">'
+                         f'{pct(up_) if up_ is not None else "—"}</td>'
                          f'<td style="color:{MUT}">{tr(row["mult"]["base"], 1)}x</td></tr>')
-            H(f'<table class="ptab"><thead><tr><th>Year</th><th>Bear</th><th>Base</th><th>Bull</th>'
-              f'<th>Return</th><th>Multiple</th></tr></thead><tbody>{rows}</tbody></table>')
+            H(f'<table class="ptab"><thead><tr><th>FY</th><th>Value <span class="muted" style="font-weight:400">'
+              f'base · bear–bull</span></th><th>YoY</th><th>vs today</th><th>P/E</th></tr></thead>'
+              f'<tbody>{rows}</tbody></table>')
             erows = ""
+            tagmap = {"analyst": ('analyst', "#6EE7B7"), "held": ("held", "#F5B544"),
+                      "post-peak": ("post-peak", "#F5B544")}
             for e in path["eps_rows"]:
                 g_ = e.get("growth")
-                tag = ('<span class="badge" style="color:#6EE7B7;background:#6EE7B71F">analyst</span>'
-                       if e["src"] == "analyst" else '<span class="muted small">model</span>')
-                erows += (f'<tr><td>{e["label"]}</td><td style="color:{SOFT}">{tr(e["eps"]["bear"], 2)}</td>'
-                          f'<td>{tr(e["eps"]["base"], 2)}</td><td style="color:{SOFT}">{tr(e["eps"]["bull"], 2)}</td>'
+                tg = tagmap.get(e["src"])
+                tag = (f'<span class="badge" style="color:{tg[1]};background:{tg[1]}1F">{tg[0]}</span>' if tg
+                       else '<span class="muted small">model</span>')
+                erows += (f'<tr><td>{e["label"]}</td><td><b>{tr(e["eps"]["base"], 2)}</b><div class="muted" '
+                          f'style="font-size:10.5px">{tr(e["eps"]["bear"], 2)} – {tr(e["eps"]["bull"], 2)}</div></td>'
                           f'<td style="color:{col(g_) if g_ is not None else MUT}">'
                           f'{pct(g_) if g_ is not None else "—"}</td><td>{tag}</td></tr>')
             H(f'<div class="panel-title" style="margin-top:12px">EPS (fiscal year)</div>'
-              f'<table class="ptab"><thead><tr><th>Year</th><th>Bear</th><th>Base</th><th>Bull</th>'
-              f'<th>Growth</th><th></th></tr></thead><tbody>{erows}</tbody></table>'
+              f'<table class="ptab"><thead><tr><th>FY</th><th>EPS <span class="muted" style="font-weight:400">'
+              f'base · bear–bull</span></th><th>YoY</th><th></th></tr></thead><tbody>{erows}</tbody></table>'
               f'<div class="muted small" style="margin-top:6px">Start: last fiscal-year EPS '
-              f'{tr(path["eps_last"], 2)}. Return is the base case\'s potential versus today\'s price.</div>')
+              f'{tr(path["eps_last"], 2)}. YoY = change vs the previous fiscal year (first value row: vs today\'s '
+              f'price). FY{path["fy0"]} value = today\'s price, because the multiple is calibrated to it.</div>')
+    # çeyrek çeyrek
+    with st.container(border=True):
+        H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'
+          f'<span class="panel-title">Quarter by Quarter</span><span class="muted small">pick a fiscal year, then '
+          f'a quarter · grey = reported, blue = analyst estimate, light blue = model estimate'
+          f'{" · quarterly data: " + ("Yahoo Finance" if qp.get("src") == "real" else "not available — all quarters are model estimates") }'
+          f'</span></div>')
+        f1, f2 = st.columns([1.6, 1.1], vertical_alignment="center")
+        with f1:
+            seg("Fiscal year", [fy_lab[fy] for fy in fy_opts], k_fy, fy_lab[path["fy0"]])
+        with f2:
+            seg("Quarter", Q_OPTS, k_q, "Full year")
+        sel_fy = lab_fy.get(ss.get(k_fy), path["fy0"])
+        sel_q = None if ss.get(k_q, "Full year") == "Full year" else int(ss[k_q][1])
+        render_quarters(b, path, qp, sym, dec, sel_fy, sel_q)
     sens = None
     try:
         key = "drop" if cfg["cyclical"] else "g_lt"
