@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.8"
+DATA_VERSION = "3.9"
 
 try:
     import yfinance as yf
@@ -2804,5 +2804,214 @@ def get_quarterly(t):
     except Exception:
         pass
     if out["q"] or out["est"]:
+        out["src"] = "real"
+    return out
+
+
+# ======================================================================
+# v3.9 — Analist görüşleri ve beklentiler · çeyrek finansallar (SEC companyfacts + Yahoo)
+# ======================================================================
+@_ttl_cache(21600, fail_ttl=900)
+def get_analyst_detail(t):
+    """Analist dağılımı, hedef fiyatlar, tahminler (0q/+1q/0y/+1y), revizyonlar, son not değişiklikleri."""
+    out = {"src": "none", "dist": None, "dist_3m": None, "targets": {}, "est": [], "trend": {}, "revisions": {},
+           "changes": [], "rec_mean": None, "rec_key": None, "n": 0}
+    if not _HAS_YF:
+        return out
+    tk = yf.Ticker(t)
+    try:
+        info = tk.info or {}
+        out["rec_mean"] = _num(info.get("recommendationMean"))
+        out["rec_key"] = str(info.get("recommendationKey") or "").replace("_", " ").title() or None
+        out["n"] = int(_num(info.get("numberOfAnalystOpinions")) or 0)
+        for k, src in (("mean", "targetMeanPrice"), ("median", "targetMedianPrice"), ("high", "targetHighPrice"),
+                       ("low", "targetLowPrice"), ("current", "currentPrice")):
+            v = _num(info.get(src))
+            if v is not None:
+                out["targets"][k] = float(v)
+    except Exception:
+        pass
+    try:
+        apt = getattr(tk, "analyst_price_targets", None)
+        if isinstance(apt, dict):
+            for k in ("mean", "median", "high", "low", "current"):
+                v = _num(apt.get(k))
+                if v is not None:
+                    out["targets"][k] = float(v)
+    except Exception:
+        pass
+    try:
+        rs = getattr(tk, "recommendations_summary", None)
+        if rs is not None and hasattr(rs, "empty") and not rs.empty:
+            cols = ["strongBuy", "buy", "hold", "sell", "strongSell"]
+
+            def _d(row):
+                return {c: int(_num(row.get(c)) or 0) for c in cols}
+            rows = list(rs.iterrows())
+            by = {str(r.get("period", "")): r for _, r in rows}
+            cur = by["0m"] if "0m" in by else rows[0][1]
+            out["dist"] = _d(cur)
+            old = by["-3m"] if "-3m" in by else (rows[-1][1] if len(rows) > 1 else None)
+            out["dist_3m"] = _d(old) if old is not None else None
+    except Exception:
+        pass
+    try:
+        ee = getattr(tk, "earnings_estimate", None)
+        re_ = getattr(tk, "revenue_estimate", None)
+        names = {"0q": "Current quarter", "+1q": "Next quarter", "0y": "Current fiscal year", "+1y": "Next fiscal year"}
+        for idx in ("0q", "+1q", "0y", "+1y"):
+            row = {"period": idx, "name": names[idx]}
+            if ee is not None and hasattr(ee, "index") and idx in ee.index:
+                e = ee.loc[idx]
+                for k, src in (("eps", "avg"), ("eps_low", "low"), ("eps_high", "high"), ("n", "numberOfAnalysts"),
+                               ("year_ago", "yearAgoEps"), ("growth", "growth")):
+                    v = _num(e.get(src))
+                    row[k] = float(v) if v is not None else None
+                if row.get("growth") is not None and abs(row["growth"]) < 20:
+                    row["growth"] *= 100
+            if re_ is not None and hasattr(re_, "index") and idx in re_.index:
+                r = re_.loc[idx]
+                v, g = _num(r.get("avg")), _num(r.get("growth"))
+                ya = _num(r.get("yearAgoRevenue"))
+                if g is None and v is not None and ya:
+                    g = v / ya - 1
+                row["rev"] = float(v) if v is not None else None
+                row["rev_growth"] = (float(g) * (100 if abs(g) < 20 else 1)) if g is not None else None
+            if row.get("eps") is not None or row.get("rev") is not None:
+                out["est"].append(row)
+    except Exception:
+        pass
+    try:
+        et = getattr(tk, "eps_trend", None)
+        if et is not None and hasattr(et, "index"):
+            for idx in ("0q", "0y", "+1y"):
+                if idx in et.index:
+                    r = et.loc[idx]
+                    out["trend"][idx] = {k: _num(r.get(k)) for k in ("current", "7daysAgo", "30daysAgo",
+                                                                    "60daysAgo", "90daysAgo")}
+        er = getattr(tk, "eps_revisions", None)
+        if er is not None and hasattr(er, "index"):
+            for idx in ("0q", "0y", "+1y"):
+                if idx in er.index:
+                    r = er.loc[idx]
+                    out["revisions"][idx] = {k: int(_num(r.get(k)) or 0) for k in
+                                             ("upLast7days", "upLast30days", "downLast30days", "downLast7Days")}
+    except Exception:
+        pass
+    try:
+        ud = getattr(tk, "upgrades_downgrades", None)
+        if ud is not None and hasattr(ud, "empty") and not ud.empty:
+            for i, r in ud.head(8).iterrows():
+                out["changes"].append({"date": str(pd.Timestamp(i).date()), "firm": str(r.get("Firm") or ""),
+                                       "to": str(r.get("ToGrade") or ""), "from": str(r.get("FromGrade") or ""),
+                                       "action": str(r.get("Action") or ""),
+                                       "pt": _num(r.get("currentPriceTarget")),
+                                       "pt_prev": _num(r.get("priorPriceTarget"))})
+    except Exception:
+        pass
+    if out["dist"] or out["targets"] or out["est"]:
+        out["src"] = "real"
+    return out
+
+
+_SEC_Q_CONCEPTS = {
+    "revenue": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet",
+                "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueGoodsNet"],
+    "gross": ["GrossProfit"],
+    "op_income": ["OperatingIncomeLoss"],
+    "net_income": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"],
+    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted", "EarningsPerShareBasic"],
+    "ocf": ["NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+}
+
+
+def _sec_periods(facts):
+    """Bir kavramın (start, end) → değer haritası (en son dosyalanan kazanır)."""
+    out = {}
+    for x in facts:
+        s_, e_, v = x.get("start"), x.get("end"), x.get("val")
+        if not (s_ and e_) or v is None:
+            continue
+        k = (s_, e_)
+        if k not in out or str(x.get("filed", "")) >= out[k][1]:
+            out[k] = (float(v), str(x.get("filed", "")))
+    return {k: v[0] for k, v in out.items()}
+
+
+@_ttl_cache(86400, fail_ttl=1800)
+def get_sec_quarterly(t):
+    """SEC companyfacts → her kavram için tüm dönemler {metric: {(start, end): value}} — çeyrek tablosu
+    engine.fiscal_quarters ile kurulur. Yalnızca 10-Q / 10-K veren şirketler."""
+    out = {"src": "none", "series": {}}
+    if not _HAS_REQ or not re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$", str(t or "").upper()):
+        return out
+    cik = sec_cik(t)
+    if not cik:
+        return out
+    try:
+        js = _sec_get("https://data.sec.gov/api/xbrl/companyfacts/CIK%010d.json" % int(cik), timeout=40).json()
+    except Exception:
+        return out
+    gaap = (js.get("facts") or {}).get("us-gaap") or {}
+    for metric, names in _SEC_Q_CONCEPTS.items():
+        best, best_end = None, ""
+        for nm in names:
+            node = gaap.get(nm)
+            if not node:
+                continue
+            units = node.get("units") or {}
+            arr = units.get("USD/shares") if metric == "eps" else (units.get("USD") or next(iter(units.values()), []))
+            if not arr:
+                continue
+            per = _sec_periods(arr)
+            last = max((e for _, e in per), default="")
+            if last > best_end:
+                best, best_end = per, last
+        if best:
+            out["series"][metric] = best
+    if out["series"].get("revenue") or out["series"].get("net_income"):
+        out["src"] = "real"
+        out["cik"] = cik
+    return out
+
+
+@_ttl_cache(21600, fail_ttl=900)
+def get_yf_quarterly_fin(t):
+    """Yahoo çeyrek tabloları (son ~5 çeyrek): gelir tablosu + nakit akışı, {metric: {end: value}}."""
+    out = {"src": "none", "series": {}}
+    if not _HAS_YF:
+        return out
+    tk = yf.Ticker(t)
+    maps = {"revenue": ("Total Revenue", "Operating Revenue"), "gross": ("Gross Profit",),
+            "op_income": ("Operating Income", "EBIT"), "net_income": ("Net Income Common Stockholders", "Net Income"),
+            "eps": ("Diluted EPS", "Basic EPS")}
+    cmaps = {"ocf": ("Operating Cash Flow",), "capex": ("Capital Expenditure",)}
+    for attr, mp in (("quarterly_income_stmt", maps), ("quarterly_cashflow", cmaps)):
+        try:
+            df = getattr(tk, attr, None)
+            if df is None or not hasattr(df, "empty") or df.empty:
+                continue
+            idx = {str(i).strip().lower(): i for i in df.index}
+            for m, names in mp.items():
+                row = next((df.loc[idx[n.lower()]] for n in names if n.lower() in idx), None)
+                if row is None:
+                    continue
+                ser = {}
+                for c in df.columns:
+                    v = _num(row.get(c))
+                    if v is not None:
+                        ts = pd.Timestamp(c)
+                        try:
+                            ts = ts.tz_localize(None)
+                        except (TypeError, AttributeError):
+                            pass
+                        ser[ts.normalize()] = float(abs(v) if m == "capex" else v)
+                if ser:
+                    out["series"][m] = ser
+        except Exception:
+            continue
+    if out["series"]:
         out["src"] = "real"
     return out
