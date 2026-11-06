@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.7"
+ENGINE_VERSION = "3.8"
 NAN = float("nan")
 
 
@@ -2264,126 +2264,138 @@ SCEN_KEYS = ("bear", "base", "bull")
 
 def value_path(price, eps_last, est=None, g_lt=8.0, years=5, cyclical=False, peak_idx=None,
                drop=45.0, down_years=2, target_mult=None, rerate_years=3, fy0=None, fy0_left=0.5,
-               window=None, g_near=None):
-    """Yıl yıl değer patikası — çarpan ve kâr aynı zaman dilimine ait olacak şekilde.
+               window=None, g_near=None, fy0_end=None):
+    """Mali yıl bazında değer patikası (v3.8): Değer_FY = EPS_FY × çarpan_FY — kâr ve çarpan aynı yıla ait.
 
-    * EPS mali yıl bazında kurulur: ilk yıllar analist tahmini (taban = ortalama, kötümser =
-      en düşük, iyimser = en yüksek tahmin); sonrası uzun vade büyümesi.
-    * Döngüsel modda kâr `peak_idx` mali yılında zirve yapar, sonraki `down_years` yılda
-      `drop` % geriler, ardından döngü ortasına doğru toparlanır.
-    * Fiyat_k = çarpan_k × ileri kâr_k. İleri kâr, k anından sonraki 12 ayın EPS'idir;
-      `window` > 1 ise piyasanın daha uzağa baktığı varsayılır (birkaç yılın ortalaması).
-      İleri kâr kullanıldığı için döngüsellerde fiyat, kâr zirvesinden önce döner.
-    * Çarpan bugünkü fiyata kalibre edilir (k=0'da taban = bugünkü fiyat). `target_mult`
-      verilirse çarpan `rerate_years` içinde o değere kayar.
+    * EPS yıl yıl, YoY büyümeyle kurulur: önce analist tahminleri (taban = ortalama, kötümser = en düşük,
+      iyimser = en yüksek), sonra her yıl `g_lt` (YoY). Çok yıllık ortalama / pencere yok (`window` yok sayılır).
+    * Döngüsel modda kâr TAM OLARAK seçilen mali yılda (`peak_idx`) zirve yapar: zirveye kadar azalmaz,
+      zirveden sonra `down_years` yılda `drop` % geriler ve ufuk içinde zirvenin altında kalır. Zirveden
+      sonraki yıllarda analist tahmini varsa da düşüş modeli geçerlidir (işaretlenir).
+    * Çarpan bugünkü fiyata, içinde bulunulan mali yılın (FY0) EPS'ine kalibre edilir: FY0 değeri = bugünkü
+      fiyat. `target_mult` verilirse çarpan `rerate_years` içinde o değere kayar (döngüselde zirveden sonra).
+    * Döngüselde her senaryonun en yüksek değeri seçilen zirve yılındadır; çarpan değişimi bunu bozarsa o
+      yılın değeri zirvenin hemen altına çekilir ve `capped` ile bildirilir.
     """
     if not _ok(eps_last):
         return None
     est = [e for e in (est or []) if _ok(e.get("avg"))]
     years = int(years)
-    w = int(min(3, max(1, window or 1)))
-    a = float(min(1.0, max(0.0, fy0_left if _ok(fy0_left) else 0.5)))
-    H = years + w + 3
+    H = years + 1                                  # FY0 … FY0+years
     g_lt = float(g_lt if _ok(g_lt) else 8.0)
     if not _ok(g_near):
         g_near = g_lt
     this_year = int(pd.Timestamp.now().year)
     fy0 = int(fy0 or this_year)
+    try:
+        end0 = pd.Timestamp(fy0_end) if fy0_end else pd.Timestamp(year=fy0, month=12, day=31)
+    except Exception:
+        end0 = pd.Timestamp(year=fy0, month=12, day=31)
+    ends = [end0 + pd.DateOffset(years=k) for k in range(H)]
     if peak_idx is None:
-        if est:
-            avgs = [e["avg"] for e in est]
-            peak_idx = int(np.argmax(avgs))
-        else:
-            peak_idx = 0
-    peak_idx = int(max(0, peak_idx))
+        peak_idx = int(np.argmax([e["avg"] for e in est])) if est else 0
+    peak_idx = int(min(H - 1, max(0, peak_idx)))
     drop = float(min(95.0, max(0.0, drop if _ok(drop) else 45.0)))
     down_years = int(max(1, down_years))
     sp = {"bear": {"est": "low", "g": g_lt * 0.5 - 1.0, "drop": min(95.0, drop * 1.35), "m": 0.85},
           "base": {"est": "avg", "g": g_lt, "drop": drop, "m": 1.0},
           "bull": {"est": "high", "g": g_lt * 1.5 + 1.0, "drop": drop * 0.6, "m": 1.15}}
-    eps = {}
+    eps, srcs = {}, {}
     for key, p in sp.items():
         gl = p["g"] / 100.0
-        e = []
+        e, src = [], []
         for i in range(H):
-            if i < len(est):
+            post = cyclical and i > peak_idx
+            if i < len(est) and not post:
                 v = float(est[i].get(p["est"], est[i]["avg"]))
                 if not _ok(v):
                     v = float(est[i]["avg"])
+                sc = "analyst"
             elif i == 0:
                 v = float(eps_last) * (1 + g_near / 100.0)
+                sc = "model"
+            elif post:
+                pk = e[peak_idx]
+                if i <= peak_idx + down_years:
+                    v = pk * (1 - p["drop"] / 100.0 * (i - peak_idx) / down_years)
+                else:
+                    # dipten toparlanma: YoY büyüme (yılda en fazla %25), ufuk içinde zirvenin altında
+                    v = e[-1] * (1 + min(0.25, max(gl, 0.0)))
+                v = min(v, pk * 0.97) if pk > 0 else v
+                sc = "post-peak" if i < len(est) else "model"
             else:
                 prev = e[-1]
                 if cyclical and i <= peak_idx:
-                    # analist tahmini bitti ama zirve daha ileride: son büyümenin yarısıyla devam
+                    # analist tahmini bitti ama zirve daha ileride: son YoY büyümenin yarısıyla devam
                     last_g = (e[-1] / e[-2] - 1) if (len(e) > 1 and e[-2] > 0) else gl
                     v = prev * (1 + min(0.40, max(gl, last_g * 0.5)))
-                elif cyclical and peak_idx < i <= peak_idx + down_years:
-                    pk = e[peak_idx]
-                    v = pk * (1 - p["drop"] / 100.0 * (i - peak_idx) / down_years)
-                elif cyclical and i > peak_idx + down_years:
-                    # dipten döngü ortasına toparlanma (yılda en fazla %25), sonra uzun vade büyümesi
-                    pk = e[peak_idx]
-                    trough = pk * (1 - p["drop"] / 100.0)
-                    mid = (pk + trough) / 2 * ((1 + gl) ** (i - peak_idx - down_years))
-                    v = min(prev * 1.25, mid) if prev < mid else prev * (1 + gl)
                 else:
                     v = prev * (1 + gl)
+                sc = "model"
+            if cyclical and 0 < i <= peak_idx and e and e[-1] > 0 and v < e[-1] * 1.01:
+                v = e[-1] * 1.01                     # zirve seçilen yılda olsun: öncesi azalmaz
+                sc = "held"
             e.append(float(v))
-        eps[key] = e
+            src.append(sc)
+        eps[key], srcs[key] = e, src
 
-    def fwd(e, k):
-        # k anından itibaren 12 aylık kâr, w yıllık pencerede ortalama
-        vals = [a * e[j] + (1 - a) * e[j + 1] for j in range(k, k + w)]
-        return float(np.mean(vals))
-
-    f0 = fwd(eps["base"], 0)
-    if max(fwd(eps["base"], k) for k in range(years + 1)) <= 0:
+    e0 = eps["base"][0]
+    if max(eps["base"]) <= 0:
         return None
-    if _ok(price) and price > 0 and f0 > 0:
-        m_cal = float(price) / f0
+    if _ok(price) and price > 0 and e0 > 0:
+        m_cal = float(price) / e0
     else:
         m_cal = float(target_mult) if _ok(target_mult) and target_mult > 0 else 15.0
     m_cal = float(min(80.0, max(1.0, m_cal)))
     m_tgt = float(target_mult) if (_ok(target_mult) and target_mult > 0) else m_cal
+    start = peak_idx if cyclical else 0
 
     def mult(k, key):
-        t = min(1.0, k / float(max(1, rerate_years)))
+        t = min(1.0, max(0.0, (k - start) / float(max(1, rerate_years))))
+        ts = min(1.0, k / float(max(1, rerate_years)))
         m = m_cal + (m_tgt - m_cal) * t
-        return m * (1 + (sp[key]["m"] - 1) * t)
+        return m * (1 + (sp[key]["m"] - 1) * ts)
 
+    vals, mults, capped = {}, {}, []
+    for key in SCEN_KEYS:
+        vs = [max(0.0, eps[key][k] * mult(k, key)) for k in range(H)]
+        ms = [mult(k, key) for k in range(H)]
+        if cyclical and vs[peak_idx] > 0:
+            top = vs[peak_idx]
+            for k in range(H):
+                if k != peak_idx and vs[k] >= top:
+                    vs[k] = top * 0.99
+                    ms[k] = vs[k] / eps[key][k] if eps[key][k] > 0 else ms[k]
+                    if key == "base":
+                        capped.append(fy0 + k)
+        vals[key], mults[key] = vs, ms
     rows = []
-    for k in range(0, years + 1):
-        row = {"year": this_year + k, "k": k, "value": {}, "fwd_eps": {}, "mult": {}}
-        for key in SCEN_KEYS:
-            fe = fwd(eps[key], k)
-            m = mult(k, key)
-            row["fwd_eps"][key] = round(fe, 3)
-            row["mult"][key] = round(m, 2)
-            row["value"][key] = round(max(0.0, fe * m), 2)
-        if _ok(price) and price > 0 and k > 0:
-            row["upside"] = round((row["value"]["base"] / price - 1) * 100, 1)
-            row["cagr"] = round(((max(row["value"]["base"], 0.01) / price) ** (1.0 / k) - 1) * 100, 1)
+    for k in range(H):
+        prev_v = vals["base"][k - 1] if k else (float(price) if _ok(price) and price > 0 else None)
+        prev_e = eps["base"][k - 1] if k else float(eps_last)
+        row = {"year": fy0 + k, "fy": fy0 + k, "label": f"FY{fy0 + k}", "k": k, "end": ends[k],
+               "value": {key: round(vals[key][k], 2) for key in SCEN_KEYS},
+               "eps": {key: round(eps[key][k], 3) for key in SCEN_KEYS},
+               "mult": {key: round(mults[key][k], 2) for key in SCEN_KEYS},
+               "src": srcs["base"][k],
+               "eps_yoy": round((eps["base"][k] / prev_e - 1) * 100, 1) if prev_e and prev_e > 0 else None,
+               "yoy": round((vals["base"][k] / prev_v - 1) * 100, 1) if prev_v and prev_v > 0 else None}
+        if _ok(price) and price > 0:
+            row["upside"] = round((vals["base"][k] / price - 1) * 100, 1)
         rows.append(row)
-    eps_rows = []
-    for i in range(years + 1):
-        eps_rows.append({"fy": fy0 + i, "label": f"FY{fy0 + i}",
-                         "src": "analyst" if i < len(est) else "model",
-                         "eps": {key: round(eps[key][i], 3) for key in SCEN_KEYS},
-                         "growth": round((eps["base"][i] / (eps["base"][i - 1] if i else eps_last) - 1) * 100, 1)
-                         if (eps["base"][i - 1] if i else eps_last) > 0 else None})
-    base_vals = [r["value"]["base"] for r in rows]
-    # döngünün fiyat tepesi: bugünden sonraki ilk yerel zirve (toparlanma yıllarındaki yeni tepe değil)
-    pk_k = 0
-    while pk_k + 1 < len(base_vals) and base_vals[pk_k + 1] >= base_vals[pk_k]:
-        pk_k += 1
-    if not cyclical:
-        pk_k = int(np.argmax(base_vals))
-    return {"rows": rows[1:], "today": rows[0], "eps_rows": eps_rows, "eps_last": float(eps_last),
-            "m_cal": round(m_cal, 2), "m_target": round(m_tgt, 2), "window": w, "cyclical": bool(cyclical),
+    eps_rows = [{"fy": r["fy"], "label": r["label"], "src": r["src"], "eps": r["eps"], "growth": r["eps_yoy"]}
+                for r in rows]
+    base_vals = vals["base"]
+    pk_k = peak_idx if cyclical else int(np.argmax(base_vals))
+    today = {"year": this_year, "k": -1, "value": {key: float(price) if _ok(price) else base_vals[0]
+                                                   for key in SCEN_KEYS}}
+    return {"rows": rows, "today": today, "eps_rows": eps_rows, "eps_last": float(eps_last),
+            "m_cal": round(m_cal, 2), "m_target": round(m_tgt, 2), "window": 1, "cyclical": bool(cyclical),
             "peak_fy": fy0 + peak_idx, "peak_idx": peak_idx, "drop": drop, "down_years": down_years,
-            "g_lt": g_lt, "fy0": fy0, "n_est": len(est), "price_peak_year": rows[pk_k]["year"],
-            "price_peak_value": base_vals[pk_k], "rerated": m_tgt != m_cal,
+            "g_lt": g_lt, "fy0": fy0, "n_est": len(est), "price_peak_year": fy0 + pk_k,
+            "price_peak_value": base_vals[pk_k], "rerated": m_tgt != m_cal, "capped": capped,
+            "ends": ends, "fy0_end": end0, "eps_series": eps, "mult_series": mults,
+            "overridden": [fy0 + k for k in range(H) if srcs["base"][k] in ("post-peak", "held")],
             "scen": {k: {"g": round(v["g"], 1), "drop": round(v["drop"], 0), "m": v["m"], "est": v["est"]}
                      for k, v in sp.items()}}
 
@@ -4218,3 +4230,171 @@ def indicator_board(df, cfg=None, tf="1d", defaults=None):
              "Sell" if ratio <= -0.15 else "Neutral")
     return {"rows": rows, "buy": buy, "sell": sell, "neutral": len(rows) - buy - sell, "score": score,
             "label": label, "auto": auto, "kind": kind, "added": added}
+
+
+# ======================================================================
+# v3.8 — Çeyrek çeyrek patika: raporlanan / analist / model (yıllık tahminden dağıtılan)
+# ======================================================================
+Q_SRC_NAME = {"reported": "Reported", "analyst": "Analyst estimate", "model": "Model estimate"}
+
+
+def _q_ends(fy_end):
+    fy_end = pd.Timestamp(fy_end).normalize()
+    return [fy_end - pd.DateOffset(months=3 * (4 - q)) for q in (1, 2, 3, 4)]
+
+
+def _spread(rem, m, last):
+    """Kalan yıllık EPS'i m çeyreğe dağıt: son bilinen çeyrekten geometrik bir eğimle (toplam tam tutar)."""
+    if m <= 0:
+        return [], None
+    if not (_ok(last) and last > 0 and _ok(rem) and rem > 0):
+        return [rem / m] * m, None
+
+    def tot(r):
+        return sum(last * r ** j for j in range(1, m + 1))
+    lo, hi = 0.05, 20.0
+    if tot(lo) > rem or tot(hi) < rem:
+        return [rem / m] * m, None
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if tot(mid) < rem:
+            lo = mid
+        else:
+            hi = mid
+    r = (lo + hi) / 2
+    return [last * r ** j for j in range(1, m + 1)], (r - 1) * 100
+
+
+def quarter_path(path, q=None, px=None):
+    """Değer patikasının çeyrek kırılımı. Her mali yılın 4 çeyreği:
+    * reported — şirketin açıkladığı EPS (Yahoo earnings_history; yoksa GAAP),
+    * analyst  — sıradaki iki çeyrek için analist ortalaması (en düşük / en yüksek = kötümser / iyimser),
+    * model    — kalan çeyrekler: o yılın EPS'inden (analist ya da model) bilinen çeyrekler çıkarılır,
+                 kalan son bilinen çeyrekten başlayan düzgün bir QoQ eğimiyle dağıtılır (toplam = yıllık EPS).
+    Değer = TTM EPS (son 4 çeyrek) × o tarihteki çarpan; 4. çeyrekte yıllık değerle aynıdır."""
+    if not path:
+        return None
+    q = q or {}
+    ends_fy = list(path["ends"])
+    fy0 = path["fy0"]
+    fy_list = [fy0 - 1] + [fy0 + k for k in range(len(ends_fy))]
+    fy_end = {fy0 - 1: ends_fy[0] - pd.DateOffset(years=1)}
+    fy_end.update({fy0 + k: e for k, e in enumerate(ends_fy)})
+    totals = {key: {fy0 - 1: path["eps_last"]} for key in SCEN_KEYS}
+    for key in SCEN_KEYS:
+        for k, v in enumerate(path["eps_series"][key]):
+            totals[key][fy0 + k] = v
+    actual = [r for r in (q.get("q") or []) if _ok(r.get("eps"))]
+    est = q.get("est") or {}
+    slots = []
+    for fy in fy_list:
+        for qi, qe in enumerate(_q_ends(fy_end[fy]), start=1):
+            slots.append({"fy": fy, "q": qi, "label": f"FY{fy} Q{qi}", "end": qe})
+    # raporlanan çeyrekleri eşleştir
+    for s in slots:
+        m = next((r for r in actual if abs((pd.Timestamp(r["end"]) - s["end"]).days) <= 25), None)
+        if m:
+            s["src"] = "reported"
+            s["eps"] = {key: float(m["eps"]) for key in SCEN_KEYS}
+            s["rev"] = m.get("rev") if _ok(m.get("rev")) else None
+            s["est_then"] = m.get("est") if _ok(m.get("est")) else None
+            s["surprise"] = m.get("surprise") if _ok(m.get("surprise")) else None
+            s["gaap"] = bool(m.get("gaap"))
+    # analist çeyrekleri: son raporlanandan sonraki iki çeyrek
+    last_rep = max([i for i, s in enumerate(slots) if s.get("src") == "reported"], default=None)
+    if last_rep is None:
+        today = pd.Timestamp.now().normalize()
+        last_rep = max([i for i, s in enumerate(slots) if s["end"] < today - pd.Timedelta(days=40)], default=-1)
+    for off, key_ in ((1, "0q"), (2, "+1q")):
+        i = last_rep + off
+        e = est.get(key_)
+        if e and 0 <= i < len(slots) and not slots[i].get("src"):
+            slots[i]["src"] = "analyst"
+            slots[i]["eps"] = {"bear": e["low"], "base": e["avg"], "bull": e["high"]}
+            slots[i]["n"] = e.get("n")
+            slots[i]["rev"] = e.get("rev")
+    # model çeyrekleri: yıl yıl, kronolojik
+    for fy in fy_list:
+        idx = [i for i, s in enumerate(slots) if s["fy"] == fy]
+        unk = [i for i in idx if not slots[i].get("src")]
+        if not unk:
+            continue
+        for i in unk:
+            slots[i]["src"] = "model"
+            slots[i].setdefault("eps", {})
+        for key in SCEN_KEYS:
+            known = sum(slots[i]["eps"][key] for i in idx if i not in unk)
+            rem = totals[key].get(fy, float("nan")) - known
+            # YoY: bilinmeyen çeyrek = geçen yılın aynı çeyreği × (kalan / geçen yılın o çeyreklerinin toplamı)
+            ly = [slots[i - 4]["eps"].get(key) if i >= 4 else None for i in unk]
+            ok_ly = all(_ok(v) and v > 0 for v in ly)
+            if not _ok(rem):
+                vals_, g_ = [float("nan")] * len(unk), None
+            elif ok_ly and rem > 0:
+                g = rem / sum(ly)
+                vals_, g_ = [v * g for v in ly], (g - 1) * 100
+            else:
+                prev = [slots[j]["eps"][key] for j in range(min(unk)) if key in slots[j].get("eps", {})]
+                vals_, _r = _spread(rem, len(unk), prev[-1] if prev else None)
+                g_ = None
+            for i, v in zip(unk, vals_):
+                slots[i]["eps"][key] = float(v)
+                if key == "base":
+                    slots[i]["scale"] = g_
+    # çarpan (yıl sonları arasında doğrusal), TTM, QoQ, YoY, değer
+    m_ser = path["mult_series"]
+
+    def mult_at(t, key):
+        xs = [ends_fy[0] - pd.DateOffset(years=1)] + ends_fy
+        ys = [m_ser[key][0]] + list(m_ser[key])
+        if t <= xs[0]:
+            return ys[0]
+        for a in range(1, len(xs)):
+            if t <= xs[a]:
+                f_ = (t - xs[a - 1]).days / max(1, (xs[a] - xs[a - 1]).days)
+                return ys[a - 1] + (ys[a] - ys[a - 1]) * f_
+        return ys[-1]
+    close = None
+    if px is not None and len(px):
+        close = px["Close"].astype(float).copy()
+        try:
+            close.index = close.index.tz_localize(None)
+        except (TypeError, AttributeError):
+            pass
+    today = pd.Timestamp.now().normalize()
+    for i, s in enumerate(slots):
+        e = s["eps"]["base"]
+        p_ = slots[i - 1]["eps"]["base"] if i else None
+        y_ = slots[i - 4]["eps"]["base"] if i >= 4 else None
+        s["qoq"] = (e / p_ - 1) * 100 if (_ok(e) and _ok(p_) and p_ > 0) else None
+        s["yoy"] = (e / y_ - 1) * 100 if (_ok(e) and _ok(y_) and y_ > 0) else None
+        if i >= 3:
+            s["ttm"] = {key: sum(slots[j]["eps"][key] for j in range(i - 3, i + 1)) for key in SCEN_KEYS}
+            s["value"] = {key: max(0.0, s["ttm"][key] * mult_at(s["end"], key)) for key in SCEN_KEYS}
+            s["mult"] = mult_at(s["end"], "base")
+        else:
+            s["ttm"], s["value"], s["mult"] = None, None, None
+        s["past"] = s["end"] < today
+        if close is not None and s["past"]:
+            c_ = close[close.index <= s["end"]]
+            s["price"] = float(c_.iloc[-1]) if len(c_) else None
+    # yıllık değerle tutarlılık: 4. çeyrek = yıllık değer (yıllık tavan uygulandıysa)
+    for s in slots:
+        if s["q"] == 4 and s["fy"] >= fy0 and s.get("value"):
+            row = next((r for r in path["rows"] if r["fy"] == s["fy"]), None)
+            if row and s["src"] != "reported":
+                s["value"] = dict(row["value"])
+    # döngüselde zirve: hiçbir gelecek çeyrek, zirve yılının 4. çeyreğini geçmez
+    if path.get("cyclical"):
+        pk = next((s for s in slots if s["fy"] == path["peak_fy"] and s["q"] == 4), None)
+        if pk and pk.get("value"):
+            for s in slots:
+                if s is pk or not s.get("value") or s["src"] == "reported":
+                    continue
+                for key in SCEN_KEYS:
+                    if s["value"][key] >= pk["value"][key]:
+                        s["value"][key] = pk["value"][key] * 0.99
+    by_fy = {fy: [s for s in slots if s["fy"] == fy] for fy in fy_list}
+    return {"slots": slots, "by_fy": by_fy, "fy_list": fy_list, "fy_end": fy_end,
+            "has_reported": any(s["src"] == "reported" for s in slots),
+            "est": est, "next_date": q.get("next_date"), "src": q.get("src", "none")}
