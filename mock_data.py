@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.7"
+DATA_VERSION = "3.8"
 
 try:
     import yfinance as yf
@@ -999,8 +999,173 @@ def _calendar_all():
     return rows
 
 
-def get_calendar_rows(day="Today", impact="All"):
-    rows = _calendar_all()
+# --- v3.8: para birimi filtresi + açıklanan değer (Actual) ---------------------------------------
+CAL_CCYS = [("USD", "🇺🇸", "US Dollar"), ("EUR", "🇪🇺", "Euro"), ("GBP", "🇬🇧", "British Pound"),
+            ("JPY", "🇯🇵", "Japanese Yen"), ("CHF", "🇨🇭", "Swiss Franc"), ("CAD", "🇨🇦", "Canadian Dollar"),
+            ("AUD", "🇦🇺", "Australian Dollar"), ("NZD", "🇳🇿", "New Zealand Dollar"), ("CNY", "🇨🇳", "Chinese Yuan"),
+            ("TRY", "🇹🇷", "Turkish Lira")]
+CAL_MAJORS = ["USD", "EUR", "GBP", "JPY"]
+CCY_FLAG = {c: f for c, f, _ in CAL_CCYS}
+_TV_CCY = {"US": "USD", "EU": "EUR", "DE": "EUR", "FR": "EUR", "IT": "EUR", "ES": "EUR", "GB": "GBP", "UK": "GBP",
+           "JP": "JPY", "CH": "CHF", "CA": "CAD", "AU": "AUD", "NZ": "NZD", "CN": "CNY", "TR": "TRY"}
+_TV_URL = "https://economic-calendar.tradingview.com/events"
+# FF ile TradingView başlıkları farklı yazılıyor — eşleştirme için ortak sözcüklere çevrilir
+_CAL_SYN = [(r"non[\s-]*farm (employment change|payrolls)", "nfp"), (r"\bcpi\b|consumer price index|inflation rate",
+            "cpi"), (r"\bppi\b|producer price index", "ppi"), (r"\bgdp\b|gross domestic product", "gdp"),
+            (r"\bpmi\b|purchasing managers", "pmi"), (r"\bm/m\b|\bmom\b|month over month", "mom"),
+            (r"\by/y\b|\byoy\b|year over year", "yoy"), (r"\bq/q\b|\bqoq\b|quarter over quarter", "qoq"),
+            (r"(initial |continuing )?(jobless|unemployment) claims|initial claims", "claims"),
+            (r"interest rate decision|rate decision|"
+            r"official bank rate|cash rate|federal funds rate|refinancing rate|policy rate", "ratedec"),
+            (r"unemployment rate|jobless rate", "unemp"), (r"retail sales", "retail"),
+            (r"average hourly earnings", "ahe"), (r"crude oil (inventories|stocks)", "crude")]
+_CAL_STOP = {"the", "of", "and", "s", "a", "final", "prelim", "preliminary", "flash", "sa", "nsa", "change", "index",
+             "rate", "us", "uk", "eu", "german", "germany", "french", "france", "italian", "euro", "area", "zone",
+             "eurozone", "japan", "japanese", "canada", "canadian", "australia", "australian", "chinese", "china",
+             "swiss", "new", "zealand", "initial"}
+_CAL_INVERSE = re.compile(r"unemploy|jobless|claims|claimant|inventor", re.I)
+
+
+def _cal_tokens(title):
+    t = str(title or "").lower()
+    for pat, rep_ in _CAL_SYN:
+        t = re.sub(pat, " " + rep_ + " ", t)
+    return {w for w in re.findall(r"[a-z0-9]+", t) if w not in _CAL_STOP}
+
+
+def cal_num(v):
+    """'0.3%', '-45.3B', '232K', '<0.10%' → sayı (K/M/B/T çarpanlarıyla). Okunamazsa None."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v) if v == v else None
+    t = str(v).strip().replace(",", "").replace("−", "-").lstrip("<>~≈ ")
+    m = re.match(r"^([+-]?\d*\.?\d+)\s*([KMBT]?)\s*%?$", t, re.I)
+    if not m:
+        return None
+    return float(m.group(1)) * {"": 1, "K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}[m.group(2).upper()]
+
+
+def cal_eval(event, actual, forecast):
+    """Açıklanan değer beklentiden iyi mi (+1), kötü mü (-1), aynı mı (0)? İşsizlik / başvuru gibi
+    göstergelerde düşük değer iyidir. Karşılaştırılamazsa None."""
+    a, f = cal_num(actual), cal_num(forecast)
+    if a is None or f is None:
+        return None
+    if abs(a - f) <= 1e-12 * max(1.0, abs(f)):
+        return 0
+    better = a > f
+    if _CAL_INVERSE.search(str(event or "")):
+        better = not better
+    return 1 if better else -1
+
+
+def _tv_fmt(v, unit, scale):
+    if v is None or v == "" or (isinstance(v, float) and v != v):
+        return None
+    try:
+        x = float(v)
+        txt = (f"{x:.2f}".rstrip("0").rstrip(".") if abs(x) < 1000 else f"{x:,.0f}")
+    except (TypeError, ValueError):
+        txt = str(v)
+    sc = str(scale or "").strip().upper()
+    sc = sc if sc in ("K", "M", "B", "T") else ""
+    un = "%" if str(unit or "").strip() == "%" else ""
+    return f"{txt}{sc}{un}"
+
+
+@_ttl_cache(120, fail_ttl=90)
+def _tv_calendar():
+    """TradingView ekonomik takvimi (açıklanan değerler dahil) — bu hafta ± 1 gün. Resmi olmayan uç."""
+    if not _HAS_REQ:
+        return []
+    now = pd.Timestamp.now(tz="UTC")
+    d1 = (now.normalize() - pd.Timedelta(days=now.weekday() + 1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    d2 = (now.normalize() + pd.Timedelta(days=8 - now.weekday())).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    try:
+        r = requests.get(_TV_URL, params={"from": d1, "to": d2, "countries": ",".join(_TV_CCY)},
+                         headers={**_HEADERS, "Origin": "https://www.tradingview.com",
+                                  "Referer": "https://www.tradingview.com/"}, timeout=12)
+        js = r.json()
+    except Exception:
+        return []
+    items = js.get("result") if isinstance(js, dict) else js
+    out = []
+    for ev in items or []:
+        try:
+            cur = str(ev.get("currency") or _TV_CCY.get(str(ev.get("country", "")).upper(), "")).upper()
+            if not cur:
+                continue
+            dt = pd.Timestamp(ev.get("date"))
+            dt = (dt.tz_localize("UTC") if dt.tzinfo is None else dt).tz_convert(TZ)
+            unit, scale = ev.get("unit"), ev.get("scale")
+            out.append({"dt": dt, "cur": cur, "event": str(ev.get("title") or ev.get("indicator") or ""),
+                        "actual": _tv_fmt(ev.get("actual"), unit, scale),
+                        "forecast": _tv_fmt(ev.get("forecast"), unit, scale),
+                        "previous": _tv_fmt(ev.get("previous"), unit, scale),
+                        "impact": {1: 3, 0: 2, -1: 1}.get(int(ev.get("importance") or 0), 2) if
+                        str(ev.get("importance", "")).lstrip("-").isdigit() else 2})
+        except Exception:
+            continue
+    return out
+
+
+def _attach_actuals(rows):
+    """ForexFactory satırlarına açıklanan değeri ekler: aynı para birimi, ±75 dk, başlık benzerliği
+    (ve varsa aynı beklenti). Eşleşme yoksa satır olduğu gibi kalır."""
+    tv = _tv_calendar()
+    if not tv:
+        return rows, False
+    used = set()
+    for r in rows:
+        if r.get("src") != "real":
+            continue
+        if cal_num(r.get("actual")) is not None:
+            continue
+        rt = _cal_tokens(r["event"])
+        best, bs = None, 0.0
+        for j, t in enumerate(tv):
+            if j in used or t["cur"] != r["cur"] or abs((t["dt"] - r["dt"]).total_seconds()) > 75 * 60:
+                continue
+            tt = _cal_tokens(t["event"])
+            sc = len(rt & tt) / max(1, len(rt | tt))
+            # dönem eki (mom / yoy / qoq) farklıysa eşleşme değil
+            per_r, per_t = rt & {"mom", "yoy", "qoq"}, tt & {"mom", "yoy", "qoq"}
+            if per_r and per_t and per_r != per_t:
+                continue
+            fr, ft = cal_num(r.get("forecast")), cal_num(t.get("forecast"))
+            if fr is not None and ft is not None and abs(fr - ft) <= max(abs(fr) * 0.02, 1e-9):
+                sc += 0.35
+            if sc > bs:
+                best, bs = j, sc
+        if best is not None and bs >= 0.34:
+            used.add(best)
+            t = tv[best]
+            if t.get("actual") is not None:
+                r["actual"] = t["actual"]
+                r["actual_src"] = "TradingView"
+            if r.get("forecast") in ("—", "", None) and t.get("forecast"):
+                r["forecast"] = t["forecast"]
+    return rows, True
+
+
+def get_calendar_rows(day="Today", impact="All", ccys=None):
+    base = _calendar_all()
+    tv_ok = False
+    if base and base[0].get("src") == "real":
+        rows = [dict(r) for r in base]
+        rows, tv_ok = _attach_actuals(rows)
+    elif not base or base[0].get("src") == "mock":
+        tv = _tv_calendar()
+        if tv:                                   # ForexFactory yoksa takvimin kendisi TradingView'den
+            rows = [{**t, "time": t["dt"].strftime("%H:%M"), "actual": t["actual"] or "—",
+                     "forecast": t["forecast"] or "—", "previous": t["previous"] or "—", "src": "real",
+                     "actual_src": "TradingView"} for t in sorted(tv, key=lambda x: x["dt"])]
+            tv_ok = True
+        else:
+            rows = [dict(r) for r in base]
+    else:
+        rows = [dict(r) for r in base]
     now = pd.Timestamp.now(tz=TZ)
     today = now.normalize()
     target = {"Yesterday": today - pd.Timedelta(days=1), "Today": today, "Tomorrow": today + pd.Timedelta(days=1)}.get(day)
@@ -1010,12 +1175,24 @@ def get_calendar_rows(day="Today", impact="All"):
         rows = [r for r in rows if r["impact"] >= 3]
     elif impact == "Medium +":
         rows = [r for r in rows if r["impact"] >= 2]
+    if ccys is not None:
+        cs = set(ccys)
+        rows = [r for r in rows if r["cur"] in cs or (r["cur"] in ("ALL", "") and cs)]
     nxt = next((r for r in rows if r["dt"] >= now), None)
     out = []
     for r in rows:
         rr = dict(r)
         rr["next"] = r is nxt
         rr["day_label"] = tr_date_label(r["dt"])
+        has_a = cal_num(rr.get("actual")) is not None or (rr.get("actual") not in (None, "", "—"))
+        if has_a:
+            rr["state"] = "released"
+            rr["eval"] = cal_eval(rr["event"], rr.get("actual"), rr.get("forecast"))
+        elif rr["dt"] <= now:
+            rr["state"] = "pending" if (now - rr["dt"]) < pd.Timedelta(hours=3) else "n/a"
+        else:
+            rr["state"] = "upcoming"
+        rr["tv_ok"] = tv_ok
         out.append(rr)
     return out
 
@@ -2525,4 +2702,107 @@ def get_revenue_breakdown(t):
         except Exception:
             pass
     out["kpis"] = kp
+    return out
+
+
+# ======================================================================
+# v3.8 — Çeyrek verileri: raporlanan çeyrekler + analistlerin çeyrek tahminleri (0q, +1q)
+# ======================================================================
+@_ttl_cache(21600, fail_ttl=900)
+def get_quarterly(t):
+    """Çeyreklik EPS/ciro. Raporlananlar: earnings_history (analist tahminiyle aynı baz, düzeltilmiş EPS) +
+    quarterly_income_stmt (ciro, GAAP EPS). Tahminler: earnings_estimate / revenue_estimate '0q', '+1q'.
+    Döner: {src, q: [{end, eps, eps_gaap, rev, est, surprise}], est: {'0q': {...}, '+1q': {...}}, next_date}"""
+    out = {"src": "none", "q": [], "est": {}, "next_date": None}
+    if not _HAS_YF:
+        return out
+    tk = yf.Ticker(t)
+    rows = {}
+
+    def _slot(ts):
+        ts = pd.Timestamp(ts)
+        try:
+            ts = ts.tz_localize(None)
+        except (TypeError, AttributeError):
+            pass
+        ts = ts.normalize()
+        for k in rows:                       # aynı çeyrek (±25 gün) tek satır
+            if abs((k - ts).days) <= 25:
+                return k
+        rows[ts] = {"end": ts, "eps": float("nan"), "eps_gaap": float("nan"), "rev": float("nan"),
+                    "est": float("nan"), "surprise": float("nan")}
+        return ts
+
+    try:
+        qi = getattr(tk, "quarterly_income_stmt", None)
+        if qi is not None and hasattr(qi, "empty") and not qi.empty:
+            idx = {str(i).strip().lower(): i for i in qi.index}
+
+            def _row(*names):
+                for n in names:
+                    if n.lower() in idx:
+                        return qi.loc[idx[n.lower()]]
+                return None
+            eps_r = _row("Diluted EPS", "Basic EPS")
+            rev_r = _row("Total Revenue", "Operating Revenue")
+            for c in qi.columns:
+                k = _slot(c)
+                if eps_r is not None and _num(eps_r.get(c)) is not None:
+                    rows[k]["eps_gaap"] = float(_num(eps_r.get(c)))
+                if rev_r is not None and _num(rev_r.get(c)) is not None:
+                    rows[k]["rev"] = float(_num(rev_r.get(c)))
+    except Exception:
+        pass
+    try:
+        eh = getattr(tk, "earnings_history", None)
+        if eh is not None and hasattr(eh, "empty") and not eh.empty:
+            for i, r in eh.iterrows():
+                a = _num(r.get("epsActual"))
+                if a is None:
+                    continue
+                k = _slot(i)
+                rows[k]["eps"] = float(a)
+                e = _num(r.get("epsEstimate"))
+                if e is not None:
+                    rows[k]["est"] = float(e)
+                sp_ = _num(r.get("surprisePercent"))
+                if sp_ is not None:
+                    rows[k]["surprise"] = float(sp_) * (100 if abs(sp_) < 5 else 1)
+    except Exception:
+        pass
+    for r in rows.values():                  # düzeltilmiş EPS yoksa GAAP EPS
+        if r["eps"] != r["eps"] and r["eps_gaap"] == r["eps_gaap"]:
+            r["eps"] = r["eps_gaap"]
+            r["gaap"] = True
+    out["q"] = sorted([r for r in rows.values() if r["eps"] == r["eps"] or r["rev"] == r["rev"]],
+                      key=lambda r: r["end"])
+    try:
+        ee = getattr(tk, "earnings_estimate", None)
+        re_ = getattr(tk, "revenue_estimate", None)
+        for idx in ("0q", "+1q"):
+            if ee is None or not hasattr(ee, "index") or idx not in ee.index:
+                continue
+            row = ee.loc[idx]
+            avg = _num(row.get("avg"))
+            if avg is None:
+                continue
+            lo, hi = _num(row.get("low")), _num(row.get("high"))
+            d = {"avg": float(avg), "low": float(lo if lo is not None else avg),
+                 "high": float(hi if hi is not None else avg), "n": int(_num(row.get("numberOfAnalysts")) or 0),
+                 "year_ago": _num(row.get("yearAgoEps")), "rev": None}
+            if re_ is not None and hasattr(re_, "index") and idx in re_.index:
+                rv = _num(re_.loc[idx].get("avg"))
+                d["rev"] = float(rv) if rv else None
+            out["est"][idx] = d
+    except Exception:
+        pass
+    try:
+        cal = getattr(tk, "calendar", None)
+        ed = (cal or {}).get("Earnings Date") if isinstance(cal, dict) else None
+        if ed:
+            out["next_date"] = str(pd.Timestamp(ed[0] if isinstance(ed, (list, tuple)) else ed).date())
+    except Exception:
+        pass
+    if out["q"] or out["est"]:
+        out["src"] = "real"
     return out
