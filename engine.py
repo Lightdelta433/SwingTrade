@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.8"
+ENGINE_VERSION = "3.9"
 NAN = float("nan")
 
 
@@ -4398,3 +4398,446 @@ def quarter_path(path, q=None, px=None):
     return {"slots": slots, "by_fy": by_fy, "fy_list": fy_list, "fy_end": fy_end,
             "has_reported": any(s["src"] == "reported" for s in slots),
             "est": est, "next_date": q.get("next_date"), "src": q.get("src", "none")}
+
+
+# ======================================================================
+# v3.9 — Mali yıl → çeyrek finansallar (SEC dönemlerinden ya da Yahoo çeyreklerinden)
+# ======================================================================
+Q_METRICS = ["revenue", "gross", "op_income", "net_income", "eps", "ocf", "capex"]
+
+
+def _ts(x):
+    t = pd.Timestamp(x)
+    try:
+        t = t.tz_localize(None)
+    except (TypeError, AttributeError):
+        pass
+    return t.normalize()
+
+
+def fiscal_quarters(fy_ends, sec=None, yq=None, qest=None, cur_fy_end=None):
+    """Her mali yıl için 4 çeyrek. Kaynak sırası: SEC (3 aylık dönem; yoksa yıl başından birikimli farkı;
+    Q4 = yıllık − ilk 9 ay), Yahoo (son ~5 çeyrek). İçinde bulunulan mali yılda raporlanmamış çeyrekler
+    analist beklentisiyle (EPS, ciro) 'expected' olarak işaretlenir.
+    Döner: {fy: {"start", "end", "status", "quarters": [...], "src"}}"""
+    sec = (sec or {}).get("series") or {}
+    yq = (yq or {}).get("series") or {}
+    ends = sorted({_ts(e) for e in fy_ends if e is not None})
+    if cur_fy_end is not None:
+        ce = _ts(cur_fy_end)
+        if not ends or ce > ends[-1] + pd.Timedelta(days=200):
+            ends.append(ce)
+    secp = {m: [(_ts(a), _ts(b), v) for (a, b), v in ser.items()] for m, ser in sec.items()}
+    out = {}
+    prev_end = None
+    for fe in ends:
+        fs = (prev_end + pd.Timedelta(days=1)) if prev_end is not None else (fe - pd.DateOffset(years=1) +
+                                                                            pd.Timedelta(days=1))
+        prev_end = fe
+        qends = [fe - pd.DateOffset(months=3 * (4 - k)) for k in (1, 2, 3, 4)]
+        qs = [{"q": k, "end": qends[k - 1], "src": None, "derived": set()} for k in (1, 2, 3, 4)]
+        used_sec = used_yf = False
+        for m in Q_METRICS:
+            per = secp.get(m) or []
+            direct, ytd, annual = {}, {}, None
+            for a, b, v in per:
+                d = (b - a).days
+                if abs((b - fe).days) <= 12 and abs((a - fs).days) <= 12 and 340 <= d <= 380:
+                    annual = v
+                for k in (1, 2, 3, 4):
+                    if abs((b - qends[k - 1]).days) <= 12:
+                        if 75 <= d <= 105:
+                            direct[k] = (v, b)
+                        if k < 4 and abs((a - fs).days) <= 12 and d > 105:
+                            ytd[k] = v
+            vals = {}
+            if m != "eps":
+                cum = {0: 0.0}
+                for k in (1, 2, 3):
+                    if k in ytd:
+                        cum[k] = ytd[k]
+                    elif k in direct and (k - 1) in cum:
+                        cum[k] = cum[k - 1] + direct[k][0]
+                if annual is not None:
+                    cum[4] = annual
+                for k in (1, 2, 3, 4):
+                    if k in direct and k < 4:
+                        vals[k] = direct[k][0]
+                    elif k in cum and (k - 1) in cum:
+                        vals[k] = cum[k] - cum[k - 1]
+                        if k == 4 or k not in direct:
+                            qs[k - 1]["derived"].add(m)
+                    elif k in direct:
+                        vals[k] = direct[k][0]
+            else:
+                for k in (1, 2, 3):
+                    if k in direct:
+                        vals[k] = direct[k][0]
+                if 4 in direct:
+                    vals[4] = direct[4][0]
+                elif annual is not None and all(k in vals for k in (1, 2, 3)):
+                    vals[4] = annual - sum(vals[k] for k in (1, 2, 3))
+                    qs[3]["derived"].add("eps")
+            for k in (1, 2, 3, 4):
+                if k in direct:
+                    qs[k - 1]["end"] = direct[k][1]
+            if vals:
+                used_sec = True
+            # Yahoo (3 aylık) — SEC'te olmayanlar için
+            for k in (1, 2, 3, 4):
+                if k in vals:
+                    continue
+                for e_, v in (yq.get(m) or {}).items():
+                    if abs((_ts(e_) - qends[k - 1]).days) <= 20:
+                        vals[k] = v
+                        used_yf = True
+                        break
+            for k, v in vals.items():
+                qs[k - 1][m] = float(abs(v) if m == "capex" else v)
+        for q in qs:
+            if any(m in q for m in Q_METRICS):
+                q["src"] = "reported"
+            r_ = q.get("revenue")
+            if _ok(r_) and r_:
+                for m, nm in (("gross", "gross_m"), ("op_income", "op_m"), ("net_income", "net_m")):
+                    if _ok(q.get(m)):
+                        q[nm] = q[m] / r_ * 100
+            if _ok(q.get("ocf")):
+                q["fcf"] = q["ocf"] - (q.get("capex") or 0.0)
+            q["derived"] = sorted(q["derived"])
+        status = "in progress" if fe > pd.Timestamp.now().normalize() else "reported"
+        out[int(fe.year)] = {"start": fs, "end": fe, "status": status, "quarters": qs,
+                             "src": "SEC 10-Q / 10-K" if used_sec else ("Yahoo Finance" if used_yf else None)}
+    # içinde bulunulan yılda raporlanmamış çeyrekler: analist beklentisi
+    est = qest or {}
+    if out:
+        cur = out[max(out)]
+        if cur["status"] == "in progress":
+            last = max([q["q"] for q in cur["quarters"] if q["src"] == "reported"], default=0)
+            for off, key in ((1, "0q"), (2, "+1q")):
+                k = last + off
+                e = est.get(key)
+                if e and k <= 4:
+                    q = cur["quarters"][k - 1]
+                    q["src"] = "expected"
+                    q["eps"] = e.get("avg")
+                    q["eps_range"] = (e.get("low"), e.get("high"))
+                    q["n"] = e.get("n")
+                    if e.get("rev"):
+                        q["revenue"] = e["rev"]
+            for q in cur["quarters"]:
+                if q["src"] is None:
+                    q["src"] = "no estimate"
+    # QoQ / YoY
+    flat = [(fy, q) for fy in sorted(out) for q in out[fy]["quarters"]]
+    for i, (fy, q) in enumerate(flat):
+        for m in ("revenue", "eps", "net_income"):
+            v = q.get(m)
+            pv = flat[i - 1][1].get(m) if i else None
+            yv = flat[i - 4][1].get(m) if i >= 4 else None
+            q[m + "_qoq"] = (v / pv - 1) * 100 if (_ok(v) and _ok(pv) and pv > 0) else None
+            q[m + "_yoy"] = (v / yv - 1) * 100 if (_ok(v) and _ok(yv) and yv > 0) else None
+    return out
+
+
+# ======================================================================
+# v3.9 — Sürücü modeli: ciro büyümesi (yıl yıl) → marj → faiz / net borç → hisse sayısı → EPS, capex → FCF
+#        Değer: F/K merceği (EPS × çarpan) ve FD/FAVÖK merceği ((EBIT × çarpan − net borç) / hisse)
+# ======================================================================
+LENSES = ["Blend", "P/E", "EV/EBIT"]
+
+
+def _med_d(xs, default):
+    v = [float(x) for x in xs if _ok(x)]
+    return float(np.median(v)) if v else default
+
+
+def driver_hist(f, an, b_wacc=None, rf=4.3):
+    """Geçmişten sürücü varsayılanları: son ciro, hisse, net borç, marjlar, vergi, capex/D&A oranı, dağıtım."""
+    if not f:
+        return None
+    n = f["n"]
+    last = lambda k: next((f[k][i] for i in range(n - 1, -1, -1) if _ok(f[k][i])), float("nan"))  # noqa: E731
+    rev = last("revenue")
+    sh = last("shares")
+    if not (_ok(rev) and rev > 0 and _ok(sh) and sh > 0):
+        return None
+    caps = [abs(c) / r for c, r in zip(f["capex"][-3:], f["revenue"][-3:]) if _ok(c) and _ok(r) and r > 0]
+    das = [d / r for d, r in zip(f["da"][-3:], f["revenue"][-3:]) if _ok(d) and _ok(r) and r > 0]
+    tax = _med_d([t for t in f.get("tax_rate", []) if _ok(t) and 0 <= t <= 0.5], 0.18)
+    pay = []
+    for i in range(max(0, n - 3), n):
+        fc = f["fcf"][i]
+        ret = abs(f["buyback"][i] if _ok(f["buyback"][i]) else 0) + abs(
+            f["dividends_paid"][i] if _ok(f["dividends_paid"][i]) else 0)
+        if _ok(fc) and fc > 0:
+            pay.append(min(1.5, ret / fc))
+    shs = [s_ for s_ in f["shares"] if _ok(s_) and s_ > 0]
+    chg = (shs[-1] / shs[-2] - 1) * 100 if len(shs) >= 2 else 0.0
+    revs = [r for r in f["revenue"] if _ok(r) and r > 0]
+    g_rev = (revs[-1] / revs[-2] - 1) * 100 if len(revs) >= 2 else 5.0
+    nd = last("net_debt")
+    kd = (b_wacc or {}).get("kd") if b_wacc else None
+    return {"rev_last": float(rev), "shares0": float(sh), "net_debt0": float(nd) if _ok(nd) else 0.0,
+            "op_m_hist": [m for m in f["op_m"] if _ok(m)], "op_m_last": last("op_m"),
+            "capex_pct": float(min(60.0, _med_d(caps, 0.05) * 100)), "da_pct": float(min(40.0, _med_d(das, 0.04) * 100)),
+            "tax": float(tax * 100), "payout": float(min(100.0, max(0.0, _med_d(pay, 0.5) * 100))),
+            "share_chg": float(max(-6.0, min(6.0, chg))), "g_rev_last": float(max(-50.0, min(150.0, g_rev))),
+            "kd": float(kd if _ok(kd) else rf + 1.5), "rf": float(rf), "eps_last": last("eps")}
+
+
+def driver_trough(opm_hist, m_peak):
+    """Varsayılan dip marjı: geçmiş medyanın %40'ı (en kötü yıldan aşağı değil, zirveden en az 5 puan aşağıda)."""
+    med = _med_d(opm_hist, 10.0)
+    t = med * 0.4 if med > 0 else med
+    t = max(min(opm_hist) if opm_hist else -20.0, t)
+    return float(max(-30.0, min(t, m_peak - 5.0)))
+
+
+def driver_margin_defaults(hist, an, fy0=None):
+    """Varsayılan marjlar: son analist yılının ima ettiği faaliyet marjı ('last'), zirve ('peak' — bununla
+    geçmiş zirvenin büyüğü) ve dip ('trough')."""
+    n_an = len([e for e in (an or {}).get("fy") or [] if _ok(e.get("avg"))])
+    p = driver_path(1.0e9, hist, an, years=max(1, n_an), fy0=fy0) if hist else None
+    ms = p["drivers"]["base"]["op_m"][:max(1, n_an)] if p else []
+    last = ms[-1] if ms else (hist["op_m_last"] if hist and _ok(hist.get("op_m_last")) else 15.0)
+    hs = max(hist["op_m_hist"]) if hist and hist["op_m_hist"] else last
+    peak = float(max(last, hs, max(ms) if ms else last))
+    return {"last": float(last), "peak": peak, "trough": driver_trough((hist or {}).get("op_m_hist") or [last], peak)}
+
+
+def driver_defaults(hist, an, cyclical=False, peak_idx=0, years=5, g_lt=8.0, g_up=None, drop=30.0, fy0=None):
+    """Her yıl için varsayılan ciro büyümesi (YoY %) ve kaynağı — analist / model / döngü."""
+    fy0 = int(fy0 or pd.Timestamp.now().year)
+    H_ = int(years) + 1
+    est_rev = [e for e in (an or {}).get("rev_fy") or [] if _ok(e.get("avg"))]
+    out = []
+    prev = hist["rev_last"]
+    an_g = [(e["avg"] / (est_rev[i - 1]["avg"] if i else prev) - 1) * 100 for i, e in enumerate(est_rev)]
+    last_an_g = an_g[-1] if an_g else hist["g_rev_last"]
+    g_up = g_up if _ok(g_up) else max(g_lt, last_an_g * 0.5 if _ok(last_an_g) else g_lt)
+    down_years = 2
+    per_down = ((1 - min(90.0, max(0.0, drop)) / 100.0) ** (1.0 / down_years) - 1) * 100
+    for i in range(H_):
+        if i < len(est_rev) and not (cyclical and i > peak_idx):
+            out.append((round(an_g[i], 1), "analyst"))
+        elif cyclical and i <= peak_idx:
+            out.append((round(g_up, 1), "upswing"))
+        elif cyclical and i <= peak_idx + down_years:
+            out.append((round(per_down, 1), "downturn"))
+        elif cyclical:
+            out.append((round(g_lt, 1), "recovery"))
+        else:
+            out.append((round(g_lt, 1), "model"))
+    return [{"fy": fy0 + i, "g": g, "src": src_} for i, (g, src_) in enumerate(out)]
+
+
+def driver_path(price, hist, an, years=5, cyclical=False, peak_idx=0, drop=30.0, g_lt=8.0, g_up=None,
+                g_over=None, m_target=None, m_peak=None, m_trough=None, margin_years=3, share_chg=None,
+                capex_pct=None, tax=None, lens="Blend", target_mult=None, rerate_years=3, fy0=None, fy0_end=None,
+                **_ignore):
+    """Sürücü tabanlı değer patikası (mali yıl). Analist yıllarında EPS analist ortalamasına eşitlenir
+    (marj buna göre çıkarılır); sonraki yıllar ciro büyümesi × marj × faiz × vergi × hisse sayısıyla kurulur.
+    Döngüselde kâr ve değer tam olarak `peak_idx` yılında zirve yapar. Çıktı value_path ile uyumludur."""
+    if not hist or not _ok(price) or price <= 0:
+        return None
+    fy0 = int(fy0 or pd.Timestamp.now().year)
+    H_ = int(years) + 1
+    peak_idx = int(min(H_ - 1, max(0, peak_idx or 0)))
+    g_over = {int(k): float(v) for k, v in (g_over or {}).items() if _ok(v)}
+    try:
+        end0 = pd.Timestamp(fy0_end) if fy0_end else pd.Timestamp(year=fy0, month=12, day=31)
+    except Exception:
+        end0 = pd.Timestamp(year=fy0, month=12, day=31)
+    ends = [end0 + pd.DateOffset(years=k) for k in range(H_)]
+    est_eps = [e for e in (an or {}).get("fy") or [] if _ok(e.get("avg"))]
+    est_rev = [e for e in (an or {}).get("rev_fy") or [] if _ok(e.get("avg"))]
+    tax = float(hist["tax"] if tax is None or not _ok(tax) else tax) / 100.0
+    tax = min(0.4, max(0.0, tax))
+    chg = float(hist["share_chg"] if share_chg is None or not _ok(share_chg) else share_chg) / 100.0
+    capx = float(hist["capex_pct"] if capex_pct is None or not _ok(capex_pct) else capex_pct) / 100.0
+    da_p = hist["da_pct"] / 100.0
+    pay = hist["payout"] / 100.0
+    kd, rf = hist["kd"] / 100.0, hist["rf"] / 100.0
+    defs = driver_defaults(hist, an, cyclical, peak_idx, years, g_lt, g_up, drop, fy0)
+    opm_hist = hist["op_m_hist"] or [10.0]
+    drivers, eps, srcs = {}, {}, {}
+    for key, sgn in (("bear", -1), ("base", 0), ("bull", 1)):
+        est_k = {"bear": "low", "base": "avg", "bull": "high"}[key]
+        rev, gr, opm, ebit, intr, ni, shs, e_, da, cap, fcf, nd, src = ([] for _ in range(13))
+        nd_prev, r_prev = hist["net_debt0"], hist["rev_last"]
+        m_last = hist["op_m_last"] if _ok(hist["op_m_last"]) else opm_hist[-1]
+        i_last = -1
+        for i in range(H_):
+            fy = fy0 + i
+            d = defs[i]
+            sh = hist["shares0"] * (1 + chg) ** (i + 1)
+            interest = nd_prev * (kd if nd_prev > 0 else rf)
+            post = cyclical and i > peak_idx
+            # --- ciro
+            if fy in g_over:
+                g = g_over[fy] + sgn * max(3.0, abs(g_over[fy]) * 0.3)
+                r = r_prev * (1 + g / 100.0)
+                sc = "override"
+            elif i < len(est_rev) and not post:
+                r = float(est_rev[i].get(est_k) or est_rev[i]["avg"])
+                g = (r / r_prev - 1) * 100
+                sc = "analyst"
+            else:
+                g0 = d["g"]
+                if d["src"] == "downturn":
+                    g = g0 * (1.25 if sgn < 0 else 0.75 if sgn > 0 else 1.0)
+                else:
+                    g = g0 + sgn * max(3.0, abs(g0) * 0.3)
+                r = r_prev * (1 + g / 100.0)
+                sc = d["src"] if d["src"] != "model" else "model"
+            # --- marj
+            anchored = i < len(est_eps) and not post and fy not in g_over
+            if anchored:
+                ev_ = float(est_eps[i].get(est_k) or est_eps[i]["avg"])
+                ni_t = ev_ * sh
+                ebt = ni_t / (1 - tax) if ni_t > 0 else ni_t
+                m = (ebt + interest) / r * 100 if r > 0 else m_last
+                if not (-50 <= m <= 80):
+                    m = max(-50.0, min(80.0, m))
+                    anchored = False
+                m_last, i_last = m, i
+            else:
+                if cyclical:
+                    mp = m_peak if _ok(m_peak) else max(m_last, max(opm_hist))
+                    mt = m_trough if _ok(m_trough) else driver_trough(opm_hist, mp)
+                    if i <= peak_idx:
+                        span = max(1, peak_idx - i_last)
+                        m = m_last + (mp - m_last) * min(1.0, (i - i_last) / span)
+                    else:
+                        rp = rev[peak_idx] if peak_idx < len(rev) else r
+                        rt = rp * (1 - min(90.0, max(1.0, drop)) / 100.0)
+                        pos = (r - rt) / (rp - rt) if rp > rt else 0.0
+                        m = mt + (mp - mt) * min(1.0, max(0.0, pos))
+                else:
+                    tgt = m_target if _ok(m_target) else m_last
+                    m = m_last + (tgt - m_last) * min(1.0, (i - i_last) / float(max(1, margin_years)))
+                if sgn and not anchored:
+                    m = m * (0.9 if sgn < 0 else 1.07) if m > 0 else m * (1.1 if sgn < 0 else 0.93)
+            eb = r * m / 100.0
+            ebt = eb - interest
+            n_i = ebt * (1 - tax) if ebt > 0 else ebt
+            if anchored:
+                n_i = float(est_eps[i].get(est_k) or est_eps[i]["avg"]) * sh
+            dep = r * da_p
+            cx = r * capx
+            fc = n_i + dep - cx - 0.05 * (r - r_prev)
+            nd_new = nd_prev - fc * (1 - pay)
+            for lst, v in ((rev, r), (gr, g), (opm, m), (ebit, eb), (intr, interest), (ni, n_i), (shs, sh),
+                           (e_, n_i / sh), (da, dep), (cap, cx), (fcf, fc), (nd, nd_new)):
+                lst.append(float(v))
+            src.append("analyst" if anchored else sc)
+            nd_prev, r_prev = nd_new, r
+        # döngüsel zirve: EPS seçilen yılda en yüksek
+        if cyclical:
+            for i in range(1, H_):
+                pk = e_[peak_idx]
+                adj = None
+                if i <= peak_idx and e_[i - 1] > 0 and e_[i] < e_[i - 1] * 1.01:
+                    adj, tag = e_[i - 1] * 1.01, "held"
+                elif i > peak_idx and pk > 0 and e_[i] > pk * 0.97:
+                    adj, tag = pk * 0.97, "capped"
+                if adj is not None:
+                    e_[i] = adj
+                    ni[i] = adj * shs[i]
+                    ebt = ni[i] / (1 - tax) if ni[i] > 0 else ni[i]
+                    ebit[i] = ebt + intr[i]
+                    opm[i] = ebit[i] / rev[i] * 100 if rev[i] else opm[i]
+                    src[i] = tag
+        drivers[key] = {"rev": rev, "growth": gr, "op_m": opm, "ebit": ebit, "interest": intr, "ni": ni,
+                        "shares": shs, "eps": e_, "da": da, "capex": cap, "fcf": fcf, "net_debt": nd,
+                        "ebitda": [a + b_ for a, b_ in zip(ebit, da)],
+                        "nd_ebitda": [n_ / (a + b_) if (a + b_) > 0 else float("nan") for n_, a, b_ in zip(nd, ebit, da)],
+                        "src": src}
+        eps[key], srcs[key] = e_, src
+    base = drivers["base"]
+    e0 = base["eps"][0]
+    eb0 = base["ebit"][0]
+    pe_cal = min(80.0, max(1.0, price / e0)) if e0 > 0 else None
+    ev_now = price * hist["shares0"] + hist["net_debt0"]
+    ev_cal = min(80.0, max(2.0, ev_now / eb0)) if eb0 > 0 else None
+    if pe_cal is None and ev_cal is None:
+        return None
+    m_ref = pe_cal or 15.0
+    m_tgt = float(target_mult) if (_ok(target_mult) and target_mult > 0) else m_ref
+    start = peak_idx if cyclical else 0
+    lens = lens if lens in LENSES else "Blend"
+    vals, mults, capped = {}, {}, []
+    for key, mm in (("bear", 0.85), ("base", 1.0), ("bull", 1.15)):
+        dv = drivers[key]
+        vs, pe_l, ev_l = [], [], []
+        for k in range(H_):
+            t = min(1.0, max(0.0, (k - start) / float(max(1, rerate_years))))
+            ts = min(1.0, k / float(max(1, rerate_years)))
+            rel = (m_ref + (m_tgt - m_ref) * t) / m_ref * (1 + (mm - 1) * ts)
+            v_pe = dv["eps"][k] * pe_cal * rel if pe_cal else None
+            v_ev = ((dv["ebit"][k] * ev_cal * rel - dv["net_debt"][k]) / dv["shares"][k]) if ev_cal else None
+            pick = [x for x in ((v_pe,) if lens == "P/E" else (v_ev,) if lens == "EV/EBIT" else (v_pe, v_ev))
+                    if x is not None]
+            if not pick:
+                pick = [x for x in (v_pe, v_ev) if x is not None]
+            vs.append(max(0.0, float(np.mean(pick))))
+            pe_l.append(v_pe)
+            ev_l.append(v_ev)
+        if cyclical and vs[peak_idx] > 0:
+            top = vs[peak_idx]
+            for k in range(H_):
+                if k != peak_idx and vs[k] >= top:
+                    vs[k] = top * 0.99
+                    if key == "base":
+                        capped.append(fy0 + k)
+        dv["value_pe"], dv["value_ev"], dv["value"] = pe_l, ev_l, vs
+        vals[key] = vs
+        mults[key] = [v / e if e > 0 else (pe_cal or 15.0) for v, e in zip(vs, dv["eps"])]
+    rows = []
+    for k in range(H_):
+        prev_v = vals["base"][k - 1] if k else price
+        prev_e = base["eps"][k - 1] if k else hist.get("eps_last")
+        row = {"year": fy0 + k, "fy": fy0 + k, "label": f"FY{fy0 + k}", "k": k, "end": ends[k],
+               "value": {key: round(vals[key][k], 2) for key in SCEN_KEYS},
+               "eps": {key: round(eps[key][k], 3) for key in SCEN_KEYS},
+               "mult": {key: round(mults[key][k], 2) for key in SCEN_KEYS},
+               "src": srcs["base"][k],
+               "eps_yoy": round((base["eps"][k] / prev_e - 1) * 100, 1) if (_ok(prev_e) and prev_e > 0) else None,
+               "yoy": round((vals["base"][k] / prev_v - 1) * 100, 1) if prev_v > 0 else None,
+               "upside": round((vals["base"][k] / price - 1) * 100, 1)}
+        rows.append(row)
+    pk_k = peak_idx if cyclical else int(np.argmax(vals["base"]))
+    eps_last = hist.get("eps_last") if _ok(hist.get("eps_last")) else base["eps"][0]
+    return {"rows": rows, "today": {"year": int(pd.Timestamp.now().year), "k": -1,
+                                    "value": {key: float(price) for key in SCEN_KEYS}},
+            "eps_rows": [{"fy": r["fy"], "label": r["label"], "src": r["src"], "eps": r["eps"], "growth": r["eps_yoy"]}
+                         for r in rows],
+            "eps_last": float(eps_last), "m_cal": round(pe_cal or 0.0, 2), "ev_cal": round(ev_cal or 0.0, 2),
+            "m_target": round(m_tgt, 2), "rerated": m_tgt != m_ref, "cyclical": bool(cyclical),
+            "peak_fy": fy0 + peak_idx, "peak_idx": peak_idx, "drop": float(drop), "g_lt": float(g_lt),
+            "fy0": fy0, "n_est": len(est_eps), "price_peak_year": fy0 + pk_k, "price_peak_value": vals["base"][pk_k],
+            "capped": capped, "ends": ends, "fy0_end": end0, "eps_series": eps, "mult_series": mults,
+            "overridden": [fy0 + k for k in range(H_) if srcs["base"][k] in ("held", "capped")],
+            "drivers": drivers, "defaults": defs, "lens": lens, "window": 1,
+            "assump": {"tax": tax * 100, "share_chg": chg * 100, "capex_pct": capx * 100, "da_pct": da_p * 100,
+                       "payout": pay * 100, "kd": kd * 100, "rf": rf * 100},
+            "scen": {"bear": {"g": -1, "drop": drop * 1.25, "m": 0.85, "est": "low"},
+                     "base": {"g": 0, "drop": drop, "m": 1.0, "est": "avg"},
+                     "bull": {"g": 1, "drop": drop * 0.75, "m": 1.15, "est": "high"}}}
+
+
+def driver_sensitivity(price, hist, an, cfg, rows_vals, mults, years=5):
+    """Duyarlılık: satır = döngüselde ciro düşüşü, değilse uzun vade büyümesi (YoY); sütun = hedef F/K."""
+    key = "drop" if cfg.get("cyclical") else "g_lt"
+    grid = []
+    for rv in rows_vals:
+        line = []
+        for m in mults:
+            c = dict(cfg)
+            c[key] = rv
+            c["target_mult"] = m
+            p = driver_path(price, hist, an, years=years, **c)
+            line.append(p["rows"][-1]["value"]["base"] if p else float("nan"))
+        grid.append(line)
+    return {"key": key, "rows": list(rows_vals), "multiples": list(mults), "grid": grid, "years": years}
