@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "4.0"
+DATA_VERSION = "4.1"
 
 try:
     import yfinance as yf
@@ -3554,6 +3554,8 @@ def _reddit_posts(t, name):
     """(gönderiler | None, hata). Gönderi: {title, text, score, comments, ts, url, sub}."""
     if not _HAS_REQ:
         return None, "offline"
+    if not _gate_ok("reddit"):
+        return None, _gate_msg("reddit", "Reddit not available")
     q = f'"${t}" OR "{t}"' if len(t) >= 3 else f'"${t}"'
     params = {"q": q, "restrict_sr": 1, "sort": "new", "t": "week", "limit": 100, "raw_json": 1}
     tok = _reddit_token()
@@ -3565,8 +3567,9 @@ def _reddit_posts(t, name):
             r = requests.get(f"https://www.reddit.com/r/{SENT_SUBS}/search.json", params=params, timeout=10,
                              headers={"User-Agent": "pulse-dashboard/4.0 (market dashboard)"})
         if r.status_code != 200:
-            return None, f"Reddit answered HTTP {r.status_code}" + (
-                "" if tok else " — Reddit often blocks cloud servers without an app key")
+            _gate_fail("reddit")
+            return None, _gate_msg("reddit", f"Reddit answered HTTP {r.status_code}" + (
+                "" if tok else " — Reddit often blocks cloud servers without an app key"))
         out = []
         for ch_ in ((r.json() or {}).get("data") or {}).get("children") or []:
             x = ch_.get("data") or {}
@@ -3577,9 +3580,11 @@ def _reddit_posts(t, name):
                         "comments": float(x.get("num_comments") or 0), "ts": float(x.get("created_utc") or 0),
                         "url": "https://www.reddit.com" + str(x.get("permalink") or ""),
                         "sub": str(x.get("subreddit") or "")})
+        _gate_ok_reset("reddit")
         return out, ""
     except Exception as ex:
-        return None, f"Reddit not reachable ({type(ex).__name__})"
+        _gate_fail("reddit")
+        return None, _gate_msg("reddit", f"Reddit not reachable ({type(ex).__name__})")
 
 
 @_ttl_cache(600, fail_ttl=180)
@@ -3610,11 +3615,14 @@ def get_reddit_trending():
 def _stocktwits(t):
     if not _HAS_REQ:
         return None, "offline", None
+    if not _gate_ok("stocktwits"):
+        return None, _gate_msg("stocktwits", "StockTwits not available"), None
     try:
         r = requests.get(f"https://api.stocktwits.com/api/2/streams/symbol/{t}.json", timeout=8,
                          headers={"User-Agent": _HEADERS.get("User-Agent", "Mozilla/5.0"), "Accept": "application/json"})
         if r.status_code != 200:
-            return None, f"StockTwits answered HTTP {r.status_code}", None
+            _gate_fail("stocktwits")
+            return None, _gate_msg("stocktwits", f"StockTwits answered HTTP {r.status_code}"), None
         j = r.json() or {}
         out = []
         for m in j.get("messages") or []:
@@ -3626,26 +3634,63 @@ def _stocktwits(t):
             out.append({"title": str(m.get("body") or "")[:400], "text": "", "label": lab,
                         "score": float(((m.get("likes") or {}).get("total")) or 0), "comments": 0.0, "ts": ts,
                         "url": f"https://stocktwits.com/message/{m.get('id')}" if m.get("id") else "", "sub": ""})
+        _gate_ok_reset("stocktwits")
         return out, "", _num((j.get("symbol") or {}).get("watchlist_count"))
     except Exception as ex:
-        return None, f"StockTwits not reachable ({type(ex).__name__})", None
+        _gate_fail("stocktwits")
+        return None, _gate_msg("stocktwits", f"StockTwits not reachable ({type(ex).__name__})"), None
 
 
 def x_token():
     return os.environ.get("X_BEARER_TOKEN") or os.environ.get("TWITTER_BEARER_TOKEN") or ""
 
 
+# --- kaynak erişimi: bir kaynak hata verirse artan aralıklarla yeniden denenir (hiç vazgeçilmez) ---
+_GATE = {}
+GATE_MIN, GATE_MAX = 300, 3600
+
+
+def _gate_ok(key):
+    g = _GATE.get(key)
+    return not g or time.time() >= g["next"]
+
+
+def _gate_fail(key):
+    g = _GATE.setdefault(key, {"wait": GATE_MIN, "next": 0.0, "fails": 0})
+    g["fails"] += 1
+    g["next"] = time.time() + g["wait"]
+    g["wait"] = min(GATE_MAX, g["wait"] * 2)
+
+
+def _gate_ok_reset(key):
+    _GATE.pop(key, None)
+
+
+def _gate_msg(key, err):
+    g = _GATE.get(key)
+    if not g:
+        return err
+    mins = max(1, int((g["next"] - time.time()) / 60 + 0.5))
+    return f"{err} — retrying in {mins} min" if g["next"] > time.time() else f"{err} — retrying now"
+
+
 def _x_posts(t):
+    """X (Twitter) resmî API'si. Anahtar yoksa (None, 'not connected'); hata varsa geri çekilme uygulanır."""
     tok = x_token()
     if not tok or not _HAS_REQ:
         return None, "not connected"
+    if not _gate_ok("x"):
+        return None, _gate_msg("x", "X not available")
     try:
         r = requests.get("https://api.twitter.com/2/tweets/search/recent", timeout=10,
                          headers={"Authorization": "Bearer " + tok},
                          params={"query": f'("${t}" OR #{t}) lang:en -is:retweet', "max_results": 100,
                                  "tweet.fields": "created_at,public_metrics"})
         if r.status_code != 200:
-            return None, f"X answered HTTP {r.status_code}"
+            _gate_fail("x")
+            why = {401: "the X token was rejected", 403: "this X plan has no search access",
+                   429: "X rate limit reached"}.get(r.status_code, f"X answered HTTP {r.status_code}")
+            return None, _gate_msg("x", why)
         out = []
         for x in (r.json() or {}).get("data") or []:
             pm = x.get("public_metrics") or {}
@@ -3657,9 +3702,67 @@ def _x_posts(t):
                         "score": float(pm.get("like_count") or 0) + 2 * float(pm.get("retweet_count") or 0),
                         "comments": float(pm.get("reply_count") or 0),
                         "url": f"https://x.com/i/web/status/{x.get('id')}"})
+        _gate_ok_reset("x")
         return out, ""
     except Exception as ex:
-        return None, f"X not reachable ({type(ex).__name__})"
+        _gate_fail("x")
+        return None, _gate_msg("x", f"X not reachable ({type(ex).__name__})")
+
+
+def finnhub_key():
+    return os.environ.get("FINNHUB_API_KEY") or os.environ.get("FINNHUB_KEY") or ""
+
+
+def _finnhub_social(t, days=7):
+    """Finnhub Social Sentiment: X (Twitter) ve Reddit için anılma ve olumlu / olumsuz sayıları.
+    X'in kendi API'si kapalıyken X duyarlılığına ulaşmanın ikinci yolu.
+    Döner: ({'twitter': {...}, 'reddit': {...}} | None, hata)."""
+    key = finnhub_key()
+    if not key or not _HAS_REQ:
+        return None, "not connected"
+    if not _gate_ok("finnhub"):
+        return None, _gate_msg("finnhub", "Finnhub not available")
+    now_utc = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    t0 = (now_utc - pd.Timedelta(days=int(days))).strftime("%Y-%m-%d")
+    t1 = now_utc.strftime("%Y-%m-%d")
+    try:
+        r = requests.get("https://finnhub.io/api/v1/stock/social-sentiment", timeout=10,
+                         params={"symbol": t, "from": t0, "to": t1, "token": key})
+        if r.status_code != 200:
+            _gate_fail("finnhub")
+            why = {401: "the Finnhub key was rejected", 403: "social sentiment needs a paid Finnhub plan",
+                   429: "Finnhub rate limit reached"}.get(r.status_code, f"Finnhub answered HTTP {r.status_code}")
+            return None, _gate_msg("finnhub", why)
+        j = r.json() or {}
+        out = {}
+        for plat in ("twitter", "reddit"):
+            rows = j.get(plat) or []
+            pos = neg = men = 0.0
+            last24 = 0.0
+            cut = now_utc - pd.Timedelta(hours=24)
+            for x in rows:
+                p_, n_ = _num(x.get("positiveMention")), _num(x.get("negativeMention"))
+                m_ = _num(x.get("mention"))
+                if p_ is None and n_ is None and m_ is None:
+                    continue
+                pos += p_ or 0.0
+                neg += n_ or 0.0
+                men += m_ or ((p_ or 0.0) + (n_ or 0.0))
+                try:
+                    at = pd.Timestamp(x.get("atTime"))
+                    at = at.tz_convert("UTC").tz_localize(None) if at.tzinfo is not None else at
+                    if at >= cut:
+                        last24 += m_ or 0.0
+                except Exception:
+                    pass
+            if men > 0:
+                out[plat] = {"mentions": men, "pos": pos, "neg": neg, "last24h": last24,
+                             "score": ((pos - neg) / (pos + neg) * 100) if (pos + neg) > 0 else 0.0}
+        _gate_ok_reset("finnhub")
+        return out, ("" if out else "no social data for this symbol")
+    except Exception as ex:
+        _gate_fail("finnhub")
+        return None, _gate_msg("finnhub", f"Finnhub not reachable ({type(ex).__name__})")
 
 
 def _score_posts(posts):
@@ -3706,10 +3809,14 @@ _SENT, _SENT_HIST = {}, {}
 
 
 def _social_sentiment(t):
+    """Topluluk duyarlılığı: Reddit · StockTwits · X (resmî API) · Finnhub Social Sentiment (X ve Reddit
+    sayıları — X'in kendi API'si kapalıyken ikinci yol). Erişilemeyen kaynak bırakılmaz, artan aralıklarla
+    yeniden denenir ve kalan kaynaklarla devam edilir."""
     name = company_name(t)
     red, red_err = _reddit_posts(t, name)
     stw, stw_err, watchers = _stocktwits(t)
     xp, x_err = _x_posts(t)
+    fh, fh_err = _finnhub_social(t)
     tr_ = get_reddit_trending()
     ape = (tr_.get("map") or {}).get(t)
     now = time.time()
@@ -3720,11 +3827,11 @@ def _social_sentiment(t):
     for key, label, posts, err in (("reddit", "Reddit", red, red_err), ("stocktwits", "StockTwits", stw, stw_err),
                                    ("x", "X (Twitter)", xp, x_err)):
         if posts is None:
-            src[key] = {"name": label, "ok": False, "err": err, "n": 0}
+            src[key] = {"name": label, "ok": False, "err": err, "n": 0, "kind": "posts"}
             continue
         sc = _score_posts(posts)
         d24 = sum(1 for p_ in posts if now - p_["ts"] <= 86400)
-        src[key] = {"name": label, "ok": True, "err": "", **sc, "last24h": d24}
+        src[key] = {"name": label, "ok": True, "err": "", **sc, "last24h": d24, "kind": "posts"}
         w = min(sc["n"], 60)
         total_w += w
         total += w * sc["score"]
@@ -3735,11 +3842,43 @@ def _social_sentiment(t):
         for p_ in posts:
             top.append({"src": label, "title": p_["title"][:160], "url": p_["url"], "sent": p_["sent"],
                         "eng": p_.get("score", 0) + p_.get("comments", 0), "ts": p_["ts"], "sub": p_.get("sub", "")})
+    # ---- Finnhub: hazır sayımlar (gönderi metni yok). X doğrudan gelmiyorsa X boşluğunu bu doldurur.
+    fh_used = []
+    for plat, label in (("twitter", "X via Finnhub"), ("reddit", "Reddit via Finnhub")):
+        key = "fh_" + plat
+        if fh is None:
+            if plat == "twitter":          # ikinci yol olarak her zaman göster, Reddit'i yalnızca gerekirse
+                src[key] = {"name": label, "ok": False, "err": fh_err, "n": 0, "kind": "counts"}
+            continue
+        agg = fh.get(plat)
+        same = src.get({"twitter": "x", "reddit": "reddit"}[plat], {})
+        if not agg:
+            if plat == "twitter" and not same.get("ok"):
+                src[key] = {"name": label, "ok": False, "err": fh_err or "no posts counted", "n": 0,
+                            "kind": "counts"}
+            continue
+        if same.get("ok") and same.get("n", 0) >= 5:
+            continue                        # aynı platform zaten gönderilerle ölçüldü
+        n_ = int(agg["mentions"])
+        src[key] = {"name": label, "ok": True, "err": "", "n": n_, "score": round(agg["score"], 1),
+                    "bull": int(agg["pos"]), "bear": int(agg["neg"]),
+                    "neutral": max(0, n_ - int(agg["pos"]) - int(agg["neg"])),
+                    "last24h": int(agg["last24h"]), "kind": "counts"}
+        w = min(n_, 60) * 0.6              # hazır sayımlar gönderilerden biraz daha az ağırlıklı
+        total_w += w
+        total += w * agg["score"]
+        n_all += n_
+        bull += int(agg["pos"])
+        bear += int(agg["neg"])
+        fh_used.append(plat)
     score = total / total_w if total_w else 0.0
     hype = {"mentions": (ape or {}).get("mentions"), "mentions_prev": (ape or {}).get("mentions_prev"),
             "rank": (ape or {}).get("rank"), "rank_prev": (ape or {}).get("rank_prev"),
             "upvotes": (ape or {}).get("upvotes"), "watchers": watchers,
             "tracked": tr_.get("src") == "real"}
+    if (fh or {}).get("twitter"):
+        hype["x_mentions"] = fh["twitter"]["mentions"]
+        hype["x_last24h"] = fh["twitter"]["last24h"]
     if hype["mentions"] is None and hype["tracked"]:
         hype["mentions"] = 0.0            # liste alındı ama hisse ilk 300'de değil → az anılıyor
     if hype["mentions"] is not None and hype["mentions_prev"]:
@@ -3749,7 +3888,7 @@ def _social_sentiment(t):
     ok_any = any(v.get("ok") for v in src.values()) or hype["tracked"]
     out = {"sym": t, "src": "real" if ok_any else "none", "score": round(score, 1), "n": n_all,
            "label": sentiment_label(score, n_all), "bull": bull, "bear": bear, "neutral": neu,
-           "sources": src, "hype": hype, "top": top[:5],
+           "sources": src, "hype": hype, "top": top[:5], "fh": fh_used,
            "checked": pd.Timestamp.now(tz=TZ).strftime("%H:%M")}
     if ok_any and n_all >= 5:
         hist = _SENT_HIST.setdefault(t, [])
@@ -3778,7 +3917,13 @@ def get_sentiment(t):
     return val
 
 
-get_sentiment.clear = _SENT.clear
+def sentiment_reset():
+    """Önbelleği ve yeniden deneme sayaçlarını sıfırlar (testler ve elle yenileme)."""
+    _SENT.clear()
+    _GATE.clear()
+
+
+get_sentiment.clear = sentiment_reset
 
 
 
