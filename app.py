@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "4.0"
+APP_VERSION = "4.1"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -294,7 +294,8 @@ PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
            "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending",
-           "vp_cfg", "peer_ovr", "vtype_ovr", "auth", "cal_ccy", "notify", "notes_last", "st_ov"] + WIDGET_KEYS
+           "vp_cfg", "peer_ovr", "vtype_ovr", "auth", "cal_ccy", "notify", "notes_last", "st_ov",
+           "_prof_sig", "_prof_loaded"] + WIDGET_KEYS
 # Hesaba bağlı, kalıcı saklanan ayarlar (giriş yapılan her cihazda aynı; arka plan bildirimleri de bunları okur)
 PROFILE_KEYS = ["watchlist", "alerts", "draws", "saved_filters", "theme", "vp_cfg", "peer_ovr", "vtype_ovr",
                 "cal_ccy", "ch_cfg", "ch_type", "acct", "notify", "bt_saved", "st_ov"]
@@ -349,6 +350,9 @@ def _profile_load(email):
         ss.pop("w_theme", None)
     for k in [k for k in ss.keys() if str(k).startswith("calccy_")]:
         del ss[k]
+    for k in [k for k in ss.keys() if str(k).startswith("ntf_")]:
+        del ss[k]                       # bildirim kutucukları kayıtlı ayarlardan yeniden kurulur
+    ss["_prof_loaded"] = True
     ss["_prof_sig"] = _profile_of_session()[1] if prof else None
 
 
@@ -935,27 +939,29 @@ a.opp-row *{text-decoration:none!important}
 [data-testid="stBaseButton-segmented_controlActive"]{background:#5B8CFF!important;color:#0A0B0D!important;
  border-color:#5B8CFF!important}
 [data-testid="stBaseButton-segmented_control"]{background:#0C0D10;color:#A3ABB8;border-color:#22262D}
-/* v4.0 — earnings card */
-.earn-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px;margin:8px 0 2px 0}
-.earn-box{background:#0C0D10;border:1px solid #22262D;border-radius:12px;padding:10px 12px;font-size:12.5px;
- line-height:1.45;min-width:0}
+/* v4.1 — compact earnings strip (sits directly under the chart) */
+.earn-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:6px;margin:6px 0 0 0}
+.earn-box{background:#0C0D10;border:1px solid #22262D;border-radius:9px;padding:6px 9px;font-size:11.5px;
+ line-height:1.35;min-width:0;display:flex;flex-direction:column;gap:1px}
 .earn-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.earn-k{font-size:10.5px;font-weight:800;letter-spacing:.09em;color:#8D96A5}
-.earn-cd{font-size:12px;font-weight:800;color:#C4CAD4}
-.earn-date{font-size:17px;font-weight:800;letter-spacing:-.01em;margin-top:2px}
-.earn-sub{font-size:11.5px;color:#8D96A5;margin-bottom:4px}
-.earn-r{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-top:1px solid #1C1F25}
-.earn-r>span:first-child{color:#A3ABB8;flex:none}
-.earn-r>span:last-child{text-align:right;font-family:ui-monospace,monospace;font-size:12px}
-.earn-v{font-size:13px;font-weight:900;letter-spacing:.08em;border:1px solid;border-radius:8px;padding:2px 12px}
-.earn-hot{border:2px solid #F87171;background:rgba(248,113,113,.10);box-shadow:0 0 0 3px rgba(248,113,113,.10)}
+.earn-k{font-size:9.5px;font-weight:800;letter-spacing:.09em;color:#8D96A5}
+.earn-cd{font-size:11px;font-weight:800;color:#C4CAD4}
+.earn-date{font-size:13px;font-weight:800;letter-spacing:-.01em}
+.earn-date-sm{font-size:11.5px;font-weight:600;color:#A3ABB8}
+.earn-sub{font-size:10.5px;color:#8D96A5;font-weight:500}
+.earn-none{font-size:11px;color:#8D96A5}
+.earn-f{display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:2px;padding-top:3px;border-top:1px solid #1C1F25}
+.earn-i{font-size:11.5px;font-family:ui-monospace,monospace;white-space:nowrap;cursor:help}
+.earn-i i{font-style:normal;font-family:inherit;color:#8D96A5;margin-right:4px;font-size:10.5px}
+.earn-v{font-size:11px;font-weight:900;letter-spacing:.07em;border:1px solid;border-radius:6px;padding:0 8px}
+.earn-src{font-size:10px;margin:2px 0 0 2px}
+.earn-hot{border:1.5px solid #F87171;background:rgba(248,113,113,.09)}
 .earn-hot,.earn-hot *{color:#F87171 !important}
-.earn-hot .earn-date{font-size:19px}
-.earn-hot .earn-cd{font-size:13px;background:#F87171;color:#0A0B0D !important;border-radius:6px;padding:1px 8px}
-.earn-hot .earn-r{border-top-color:rgba(248,113,113,.3)}
+.earn-hot .earn-cd{background:#F87171;color:#0A0B0D !important;border-radius:5px;padding:0 7px;font-size:11px}
+.earn-hot .earn-f{border-top-color:rgba(248,113,113,.28)}
 /* v4.0 — weekly earnings calendar */
 .ecal-wrap{overflow-x:auto;margin-top:8px}
-.ecal{display:grid;grid-template-columns:repeat(5,minmax(186px,1fr));gap:8px;min-width:980px}
+.ecal{display:grid;grid-template-columns:repeat(5,minmax(186px,1fr));gap:8px;min-width:900px}
 .eday{background:#0C0D10;border:1px solid #1C1F25;border-radius:12px;overflow:hidden;min-width:0}
 .eday.etoday{border-color:#5B8CFF;box-shadow:inset 0 2px 0 #5B8CFF}
 .eday.epast{opacity:.82}
@@ -969,21 +975,26 @@ a.opp-row *{text-decoration:none!important}
 .eslot-h{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#8D96A5;
  padding:2px 2px 6px 2px;white-space:nowrap}
 .esun{color:#F5B544}.emoon{color:#C4B5FD}
-a.eco{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:8px;text-decoration:none;color:#ECEEF1;
- border:1px solid transparent;min-width:0}
-a.eco:hover{background:#171A1F}
-a.eco.ewl{border-color:#5B8CFF;background:rgba(91,140,255,.10)}
+a.eco{display:flex;flex-direction:column;gap:0;padding:3px 4px;border-radius:8px;text-decoration:none;
+ color:#ECEEF1;border:1px solid transparent;min-width:0;line-height:1.3}
+a.eco+a.eco{margin-top:2px}
+a.eco:hover{background:#171A1F;border-color:#2A2F38}
+a.eco .ecotop{display:flex;align-items:center;gap:6px;min-width:0}
 a.eco .et{font-family:ui-monospace,monospace;font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
-a.eco .eres{margin-left:auto;font-size:10px}
+a.eco .esub{font-size:10px;color:#8D96A5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+a.eco .eres{margin-left:auto;font-size:11px;flex:none}
 .enone{color:#3A404A;font-size:12px;padding:4px}
 .emore summary{cursor:pointer;font-size:11px;color:#5B8CFF;font-weight:700;padding:4px;list-style:none}
 .emore summary::-webkit-details-marker{display:none}
 .etbd{border-top:1px solid #1C1F25;padding:6px 8px;font-size:11px;display:flex;flex-wrap:wrap;gap:2px 4px;align-items:center}
-.etbd a.eco{padding:1px 3px}
-.etbd .av{display:none}
+.etbd a.eco{padding:1px 3px;flex-direction:row;align-items:center;gap:4px}
+.etbd a.eco+a.eco{margin-top:0}
+.etbd .av,.etbd .esub{display:none}
 /* v4.0 — Short Term flow + sentiment */
 .flow-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;border-top:1px solid #1C1F25;font-size:12.5px}
 .flow-r .aist{flex:none}
+.ovsw{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 1px -1px 0;vertical-align:baseline}
+.ovkey{font-weight:800}
 .sent-bar{position:relative;height:8px;border-radius:6px;margin:12px 0 4px 0;
  background:linear-gradient(90deg,#F87171 0%,#3A404A 50%,#3DDC97 100%)}
 .sent-mid{position:absolute;left:50%;top:-3px;width:1px;height:14px;background:#8D96A5}
@@ -1419,7 +1430,23 @@ def notes_body():
 
 
 NTF_KEYS = {"on": "ntf_on", "price": "ntf_price", "earn_up": "ntf_eup", "earn_res": "ntf_eres", "macro": "ntf_macro",
-            "macro_impact": "ntf_imp", "push": "ntf_push", "email": "ntf_email", "browser": "ntf_browser"}
+            "macro_impact": "ntf_imp", "ai": "ntf_ai", "push": "ntf_push", "email": "ntf_email",
+            "browser": "ntf_browser"}
+
+
+def _notify_save(new):
+    """Bildirim ayarlarını hesabın kalıcı profiline hemen yazar (yeniden başlatmayı ve cihaz değişimini aşar)."""
+    user = (ss.get("auth") or {}).get("user")
+    if not user:
+        return
+    try:
+        prof = bk.profile_get(user) or {}
+        prof["notify"] = dict(new)
+        bk.profile_put(user, prof, sync=True)
+        ss["_prof_sig"] = None          # sonraki _save_state tam profili de yazsın
+        ss["_ntf_saved"] = pd.Timestamp.now(tz=md.TZ).strftime("%H:%M:%S")
+    except Exception as ex:
+        ss["_ntf_err"] = f"{type(ex).__name__}"
 
 
 def notify_settings():
@@ -1436,6 +1463,7 @@ def notify_settings():
         st.checkbox("Earnings results — Beat / Miss with a short summary", key="ntf_eres")
         st.checkbox("Economic data when it is released (currencies chosen in the calendar)", key="ntf_macro")
         st.selectbox("Economic data importance", ["High", "Medium +"], key="ntf_imp")
+        st.checkbox("Impulse levels — fresh breakouts found by the AI scan", key="ntf_ai")
         H('<div style="font-size:12px;font-weight:700;margin:6px 0 2px 0">Where</div>')
         push = st.checkbox("Push to phone / computer (also when Pulse is closed)", key="ntf_push")
         topic = n.get("topic") or ""
@@ -1466,14 +1494,22 @@ def notify_settings():
             H(f'<div class="gtext small">{esc(ss.pop("_ntf_msg"))}</div>')
         ms = bk.monitor_status()
         last = pd.Timestamp(ms["last"], unit="s", tz="UTC").tz_convert(md.TZ).strftime("%H:%M") if ms["last"] else "—"
-        H(f'<div class="muted small" style="margin-top:6px">Pulse checks every {bk.TICK_SEC // 60} minutes on the '
-          f'server ({"running" if ms["running"] else "starts with the next page load"}, last check {last}). '
+        stt = bk.store_status()
+        keep = ("saved to your account — they come back on every device and after a restart"
+                if stt["mode"] == "github" and stt["ok"] else
+                "saved to your account on this server — set up permanent storage (Account → Storage & email) so "
+                "they also survive a restart")
+        H(f'<div class="muted small" style="margin-top:6px">These settings are {keep}'
+          f'{" · last saved " + ss["_ntf_saved"] if ss.get("_ntf_saved") else ""}.<br>Pulse checks every '
+          f'{bk.TICK_SEC // 60} minutes on the server '
+          f'({"running" if ms["running"] else "starts with the next page load"}, last check {last}). '
           f'Streamlit puts the app to sleep after about 12 hours without a visit; nothing is checked while it '
           f'sleeps.</div>')
     new = {k: ss.get(wk) for k, wk in NTF_KEYS.items()}
     new["topic"] = topic if new.get("push") else (n.get("topic") or "")
     if new != ss.get("notify"):
         ss.notify = new
+        _notify_save(new)       # anında kaydet: arka plan izleyicisi ve sonraki açılış bunu okur
 
 
 _NTF_JS = """<script>
@@ -1681,65 +1717,59 @@ def _est_snapshot(sym, date=None):
 
 
 def earnings_card(sym, d=None, cur="USD"):
-    """Şirket özeti: sıradaki bilanço tarihi + beklentiler (≤ 5 gün: kırmızı) ve son bilançonun
-    beklentiyle karşılaştırması (Beat / Miss). Yalnızca kaynakların verdiği rakamlar gösterilir."""
+    """Grafiğin hemen altındaki kompakt bilanço şeridi: sıradaki tarih + beklentiler (≤ 5 gün: kırmızı) ve
+    son bilançonun beklentiyle karşılaştırması (Beat / Miss). Yalnızca kaynakların verdiği rakamlar."""
     qt = str((d or {}).get("quote_type") or "").upper()
     if any(c in sym for c in "=^") or sym.endswith("-USD") or qt in E_NOSTOCK:
         return
     if (d or {}).get("src") == "mock":
-        H('<div class="earn-wrap"><div class="earn-box"><span class="earn-k">EARNINGS</span><div class="muted small">'
-          'Live company data is not reachable right now, so no earnings date is shown (sample data is never used '
-          'here).</div></div></div>')
+        H('<div class="earn-wrap"><div class="earn-box"><span class="earn-k">EARNINGS</span>'
+          '<span class="earn-none">Live company data is not reachable right now, so no earnings date is shown '
+          '(sample data is never used here).</span></div></div>')
         return
     info = md.get_earnings_info(sym)
     if info.get("src") != "real":
-        H('<div class="earn-wrap"><div class="earn-box"><span class="earn-k">EARNINGS</span><div class="muted small">'
-          'No earnings date available from Nasdaq or Yahoo Finance for this symbol right now.</div></div></div>')
+        H('<div class="earn-wrap"><div class="earn-box"><span class="earn-k">EARNINGS</span>'
+          '<span class="earn-none">No earnings date available from Nasdaq or Yahoo Finance for this symbol '
+          'right now.</span></div></div>')
         return
     nx, ls = info.get("next"), info.get("last")
     m = lambda x: big(x, cur)
+    item = lambda k, v, tip="": (f'<span class="earn-i"{f" title={chr(34)}{esc(tip)}{chr(34)}" if tip else ""}>'
+                                 f'<i>{k}</i>{v}</span>')
     box_n = ""
     if nx:
         days = nx.get("days")
         hot = days is not None and 0 <= days <= 5
-        when = E_WHEN.get(nx.get("when") or "", "")
-        if days is None:
-            cd = ""
-        elif days < 0:
-            cd = "results due — waiting for the numbers"
-        elif days == 0:
-            cd = "TODAY"
-        elif days == 1:
-            cd = "TOMORROW"
-        else:
-            cd = f"in {days} days"
+        when = {"bmo": "before open", "amc": "after close", "": "time TBA"}.get(nx.get("when") or "", "")
+        cd = ("" if days is None else "results due" if days < 0 else "TODAY" if days == 0
+              else "TOMORROW" if days == 1 else f"in {days} days")
         est = []
         if en._ok(nx.get("eps_est")):
-            rng = (f' <span class="muted">({tr(nx["eps_low"], 2)} – {tr(nx["eps_high"], 2)}'
-                   f'{", " + str(nx["n"]) + " analysts" if nx.get("n") else ""})</span>'
-                   if en._ok(nx.get("eps_low")) and en._ok(nx.get("eps_high")) and nx["eps_low"] != nx["eps_high"]
-                   else (f' <span class="muted">({nx["n"]} analysts)</span>' if nx.get("n") else ""))
+            tip = "Analyst consensus"
+            if en._ok(nx.get("eps_low")) and en._ok(nx.get("eps_high")) and nx["eps_low"] != nx["eps_high"]:
+                tip += f' · range {tr(nx["eps_low"], 2)} – {tr(nx["eps_high"], 2)}'
+            if nx.get("n"):
+                tip += f' · {nx["n"]} analysts'
             ya = nx.get("year_ago_eps")
-            yy = (f' <span class="muted">· a year ago {tr(ya, 2)} ({pct((nx["eps_est"] / ya - 1) * 100, 0)})</span>'
-                  if en._ok(ya) and ya > 0 else "")
-            est.append(("Expected EPS", f'<b>{tr(nx["eps_est"], 2)}</b>{rng}{yy}'))
+            if en._ok(ya) and ya > 0:
+                tip += f' · a year ago {tr(ya, 2)} ({pct((nx["eps_est"] / ya - 1) * 100, 0)})'
+            est.append(item("EPS est", f'<b>{tr(nx["eps_est"], 2)}</b>', tip))
         if en._ok(nx.get("ni_est")):
-            est.append(("Expected net income", f'<b>{m(nx["ni_est"])}</b> <span class="muted">(EPS estimate × '
-                                               f'diluted shares)</span>'))
+            est.append(item("Net income est", f'<b>{m(nx["ni_est"])}</b>', "EPS estimate × diluted shares"))
         if en._ok(nx.get("rev_est")):
-            est.append(("Expected revenue", f'<b>{m(nx["rev_est"])}</b>'))
-        rows = "".join(f'<div class="earn-r"><span>{k}</span><span>{v}</span></div>' for k, v in est) or \
-            '<div class="muted small">No analyst estimates published for this quarter.</div>'
-        conf = (f'date confirmed · {esc(nx.get("source") or "")}' if nx.get("confirmed")
-                else f'expected date, not confirmed by the company yet · {esc(nx.get("source") or "")}')
-        box_n = (f'<div class="earn-box{" earn-hot" if hot else ""}"><div class="earn-top">'
+            est.append(item("Revenue est", f'<b>{m(nx["rev_est"])}</b>', "Analyst consensus"))
+        row = "".join(est) or '<span class="earn-i"><i>no analyst estimates for this quarter</i></span>'
+        conf = ("date confirmed" if nx.get("confirmed") else "date not confirmed yet")
+        box_n = (f'<div class="earn-box{" earn-hot" if hot else ""}" title="{esc(conf)} · '
+                 f'{esc(nx.get("source") or "")}"><div class="earn-top">'
                  f'<span class="earn-k">{"⚠ EARNINGS SOON" if hot else "NEXT EARNINGS"}</span>'
                  f'<span class="earn-cd">{esc(cd)}</span></div>'
-                 f'<div class="earn-date">{esc(_eday(nx["date"]))}</div>'
-                 f'<div class="earn-sub">{esc(when)} (US market time) · {conf}</div>{rows}</div>')
+                 f'<div class="earn-date">{esc(_eday(nx["date"]))} <span class="earn-sub">· {esc(when)} · '
+                 f'{esc(conf)}</span></div><div class="earn-f">{row}</div></div>')
     else:
-        box_n = ('<div class="earn-box"><span class="earn-k">NEXT EARNINGS</span><div class="muted small">'
-                 'The company has not announced the next date yet.</div></div>')
+        box_n = ('<div class="earn-box"><span class="earn-k">NEXT EARNINGS</span>'
+                 '<span class="earn-none">The company has not announced the next date yet.</span></div>')
     box_l = ""
     if ls:
         v = ls.get("verdict")
@@ -1749,69 +1779,79 @@ def earnings_card(sym, d=None, cur="USD"):
         rows = []
         if en._ok(ls.get("eps")):
             s_ = f'<b>{tr(ls["eps"], 2)}</b>'
+            tip = "Reported EPS"
             if en._ok(ls.get("eps_est")):
-                s_ += f' <span class="muted">vs {tr(ls["eps_est"], 2)} expected</span>'
+                s_ += f' <span class="muted">vs {tr(ls["eps_est"], 2)}</span>'
+                tip += f' vs {tr(ls["eps_est"], 2)} expected'
                 if en._ok(ls.get("surprise_pct")):
                     s_ += f' <b style="color:{vc}">{pct(ls["surprise_pct"], 1)}</b>'
             if en._ok(ls.get("eps_yoy")):
-                s_ += f' <span class="muted">· {pct(ls["eps_yoy"], 0)} YoY</span>'
-            rows.append(("EPS" + (" (GAAP)" if ls.get("gaap") else ""), s_))
+                tip += f' · {pct(ls["eps_yoy"], 0)} year over year'
+            rows.append(item("EPS" + (" (GAAP)" if ls.get("gaap") else ""), s_, tip))
         if en._ok(ls.get("ni_adj")) and en._ok(ls.get("ni_est")):
-            rows.append(("Net income", f'<b>{m(ls["ni_adj"])}</b> <span class="muted">vs {m(ls["ni_est"])} expected '
-                                       f'(EPS × diluted shares)</span>'))
-        if en._ok(ls.get("ni")):
-            rows.append(("Net income reported (GAAP)", f'<b>{m(ls["ni"])}</b>'))
+            rows.append(item("Net income", f'<b>{m(ls["ni_adj"])}</b> <span class="muted">vs {m(ls["ni_est"])}</span>',
+                             "EPS × diluted shares, against the same calculation on the estimate"))
+        elif en._ok(ls.get("ni")):
+            rows.append(item("Net income", f'<b>{m(ls["ni"])}</b>', "Reported (GAAP)"))
         if en._ok(ls.get("rev")):
             s_ = f'<b>{m(ls["rev"])}</b>'
+            tip = "Reported revenue"
             if en._ok(rev_est) and rev_est:
-                s_ += (f' <span class="muted">vs {m(rev_est)} expected</span> '
-                       f'<b style="color:{col(ls["rev"] - rev_est)}">{pct((ls["rev"] / rev_est - 1) * 100, 1)}</b>')
+                s_ += (f' <span class="muted">vs {m(rev_est)}</span> <b style="color:{col(ls["rev"] - rev_est)}">'
+                       f'{pct((ls["rev"] / rev_est - 1) * 100, 1)}</b>')
+                tip += f' vs {m(rev_est)} expected'
             if en._ok(ls.get("rev_yoy")):
-                s_ += f' <span class="muted">· {pct(ls["rev_yoy"], 0)} YoY</span>'
-            rows.append(("Revenue", s_))
+                tip += f' · {pct(ls["rev_yoy"], 0)} year over year'
+            rows.append(item("Revenue", s_, tip))
         if en._ok(ls.get("reaction_pct")):
-            rows.append(("Stock since the report", f'<b style="color:{col(ls["reaction_pct"])}">'
-                                                   f'{pct(ls["reaction_pct"], 1)}</b>'))
-        rep = (f'reported {esc(_eday(ls["date"]))}' + (f', {E_WHEN[ls["when"]]}' if ls.get("when") else "")
-               if ls.get("date") else "")
-        per = f'quarter ending {pd.Timestamp(ls["period_end"]).strftime("%b %d, %Y")}' if not ls.get("fresh") else ""
+            rows.append(item("Stock since", f'<b style="color:{col(ls["reaction_pct"])}">'
+                                            f'{pct(ls["reaction_pct"], 1)}</b>', "Price change since the report"))
+        rep = (f'reported {esc(_eday(ls["date"]))}' if ls.get("date") else "")
+        per = f'quarter to {pd.Timestamp(ls["period_end"]).strftime("%b %Y")}' if not ls.get("fresh") else ""
         badge = (f'<span class="earn-v" style="color:{vc};background:{vc}22;border-color:{vc}66">{esc(v.upper())}</span>'
-                 if v else '<span class="muted small">no estimate to compare with</span>')
+                 if v else '<span class="earn-sub">no estimate to compare</span>')
         box_l = (f'<div class="earn-box"><div class="earn-top"><span class="earn-k">LAST REPORT</span>{badge}</div>'
-                 f'<div class="earn-sub" style="margin-top:2px">{esc(" · ".join(x for x in (per, rep) if x))}</div>'
-                 + "".join(f'<div class="earn-r"><span>{k}</span><span>{s_}</span></div>' for k, s_ in rows)
-                 + '</div>')
+                 f'<div class="earn-date earn-date-sm">{esc(" · ".join(x for x in (per, rep) if x))}</div>'
+                 f'<div class="earn-f">{"".join(rows)}</div></div>')
     H(f'<div class="earn-wrap">{box_n}{box_l}</div>'
-      f'<div class="muted" style="font-size:10.5px;margin:3px 0 0 2px">Sources: {esc(", ".join(info.get("sources") or []))} '
-      f'· checked {esc(info.get("checked") or "")} · “Beat” = reported EPS above the analyst consensus, “Miss” = '
-      f'below.</div>')
+      f'<div class="muted earn-src">Sources: {esc(", ".join(info.get("sources") or []))} · checked '
+      f'{esc(info.get("checked") or "")} · “Beat” = reported EPS above the analyst consensus, “Miss” = below · '
+      f'hover a figure for details.</div>')
 
 
-ECAL_TOP = 8
+ECAL_TOP = 12
 
 
 def _ecal_item(x, wl, past):
+    """Takvim satırı: logo, sembol, şirket adı ve beklenen EPS (açıklandıysa sonuç ve Beat / Miss)."""
     name = x.get("name") or md.company_name(x["sym"])
     tip = [name]
+    sub, mark = "", ""
     if x.get("eps_est") is not None:
-        tip.append(f"EPS expected {tr(x['eps_est'], 2)}")
+        sub = f'EPS est {tr(x["eps_est"], 2)}'
+        tip.append(f'EPS expected {tr(x["eps_est"], 2)}' + (f' ({x["n"]} analysts)' if x.get("n") else ""))
     if x.get("cap"):
-        tip.append(f"market cap {big(x['cap'], 'USD')}")
-    mark = ""
-    if past and x.get("eps") is not None and x.get("eps_est") is not None:
+        tip.append(f'market cap {big(x["cap"], "USD")}')
+    if past and x.get("eps") is not None and x.get("eps_est"):
         v = md.earnings_verdict(x["eps"], x["eps_est"])
-        tip.append(f"reported {tr(x['eps'], 2)} — {v}")
-        mark = (f'<span class="eres" style="color:{UP if v == "Beat" else DOWN if v == "Miss" else MUT}">'
-                f'{"▲" if v == "Beat" else "▼" if v == "Miss" else "•"}</span>')
-    return (f'<a class="eco{" ewl" if x["sym"] in wl else ""}" target="_self" title="{esc(" · ".join(tip))}" '
-            f'href="{link(sec="Markets", sym=x["sym"], f="chart")}">{avatar(x["sym"], 24, name)}'
-            f'<span class="et">{esc(x["sym"])}</span>{mark}</a>')
+        c_ = UP if v == "Beat" else DOWN if v == "Miss" else MUT
+        sp = x.get("surprise")
+        if not en._ok(sp):
+            sp = (x["eps"] / x["eps_est"] - 1) * 100 if x["eps_est"] else None
+        tip.append(f'reported {tr(x["eps"], 2)} vs {tr(x["eps_est"], 2)} expected — {v}')
+        sub = (f'<span style="color:{c_}">{tr(x["eps"], 2)}'
+               + (f' ({pct(sp, 1)})' if en._ok(sp) else "") + '</span>')
+        mark = f'<span class="eres" style="color:{c_}">{"▲" if v == "Beat" else "▼" if v == "Miss" else "•"}</span>'
+    return (f'<a class="eco" target="_self" title="{esc(" · ".join(tip))}" '
+            f'href="{link(sec="Markets", sym=x["sym"], f="chart")}">'
+            f'<span class="ecotop">{avatar(x["sym"], 20, name)}<span class="et">{esc(x["sym"])}</span>{mark}</span>'
+            f'<span class="esub">{sub or esc(name[:26])}</span></a>')
 
 
 def _ecal_slot(rows, wl, past):
     if not rows:
         return '<div class="enone">—</div>'
-    rows = sorted(rows, key=lambda x: (x["sym"] not in wl, -(x.get("cap") or 0)))
+    rows = sorted(rows, key=lambda x: -(x.get("cap") or 0))
     top, rest = rows[:ECAL_TOP], rows[ECAL_TOP:ECAL_TOP + 40]
     h = "".join(_ecal_item(x, wl, past) for x in top)
     if rest:
@@ -1837,8 +1877,8 @@ def render_earnings_week():
     with st.container(border=True):
         c1, c2 = st.columns([3, 1.25], vertical_alignment="center")
         with c1:
-            H('<div class="sec-head" style="margin:0"><h3>Earnings Calendar</h3><span class="muted small">'
-              'largest companies first · your watchlist is outlined · click a company for its chart</span></div>')
+            H(f'<div class="sec-head" style="margin:0"><h3>Earnings Calendar</h3><span class="muted small">'
+              f'only the {len(ss.watchlist)} companies on your watchlist · click one for its chart</span></div>')
         with c2:
             off = st.selectbox("Earnings week", offs, key="w_earnwk", format_func=_lab,
                                label_visibility="collapsed")
@@ -1850,17 +1890,23 @@ def render_earnings_week():
             return
         today = md.us_today()
         wl = set(ss.watchlist)
+        if not wl:
+            H('<div class="muted" style="padding:14px 2px">Your watchlist is empty, so there is nothing to show. '
+              'Add companies with the ★ next to a symbol and their reporting dates appear here.</div>')
+            return
+        wk = {"src": wk["src"], "days": [                     # v4.1: yalnızca izleme listesindeki şirketler
+            {**day, **{slot: [x for x in day[slot] if x["sym"] in wl] for slot in ("bmo", "amc", "tbd")}}
+            for day in wk["days"]]}
+        n_all = sum(len(d[s_]) for d in wk["days"] for s_ in ("bmo", "amc", "tbd"))
         cols = ""
         for day in wk["days"]:
             dts = pd.Timestamp(day["date"])
             past = dts < today
             is_today = dts == today
             n = len(day["bmo"]) + len(day["amc"]) + len(day["tbd"])
-            tbd = sorted(day["tbd"], key=lambda x: (x["sym"] not in wl, -(x.get("cap") or 0)))[:6]
+            tbd = sorted(day["tbd"], key=lambda x: -(x.get("cap") or 0))
             tb = (f'<div class="etbd"><span class="muted">Time not announced:</span> '
-                  + "".join(_ecal_item(x, wl, past) for x in tbd)
-                  + (f'<span class="muted"> +{len(day["tbd"]) - 6}</span>' if len(day["tbd"]) > 6 else "")
-                  + '</div>') if tbd else ""
+                  + "".join(_ecal_item(x, wl, past) for x in tbd) + '</div>') if tbd else ""
             body = (f'<div class="eslots"><div class="eslot"><div class="eslot-h"><span class="esun">☀</span> Before '
                     f'Open</div>{_ecal_slot(day["bmo"], wl, past)}</div>'
                     f'<div class="eslot"><div class="eslot-h"><span class="emoon">☾</span> After Close</div>'
@@ -1869,11 +1915,16 @@ def render_earnings_week():
             cols += (f'<div class="eday{" etoday" if is_today else ""}{" epast" if past else ""}">'
                      f'<div class="eday-h"><b>{dts.strftime("%a")}</b><span>{dts.strftime("%b %d")}</span>'
                      f'{"<span class=etag>today</span>" if is_today else ""}'
-                     f'<span class="ecount" title="companies reporting">{n} reports</span></div>{body}</div>')
+                     f'<span class="ecount" title="watchlist companies reporting">'
+                     f'{n if n else "—"}</span></div>{body}</div>')
+        if not n_all:
+            H(f'<div class="muted" style="padding:14px 2px">None of your {len(wl)} watchlist companies report in '
+              f'this week. Use the week selector above to look ahead.</div>')
+            return
         H(f'<div class="ecal-wrap"><div class="ecal">{cols}</div></div>'
           f'<div class="muted" style="font-size:10.5px;margin-top:6px">Source: Nasdaq earnings calendar · US trading '
-          f'days · ▲ beat / ▼ miss of the EPS consensus on days already reported · the current week stays in view '
-          f'until Friday evening and switches on Saturday.</div>')
+          f'days · only watchlist companies · ▲ beat / ▼ miss of the EPS consensus on days already reported · the '
+          f'current week stays in view until Friday evening and switches on Saturday.</div>')
 
 
 def _next_earn_txt(sym, d):
@@ -1935,7 +1986,6 @@ def render_chart_panel(sym):
     if en_sum and (d.get("desc") or len(en_sum) > 260):
         with st.expander("About the company — details (Yahoo Finance)"):
             H(f'<div class="desc" style="margin:0">{esc(en_sum)}</div>')
-    earnings_card(sym, d, cur)
     anchor("chart")
     if SECTOR and md.sector_by_etf(SECTOR):
         H(f'<div class="small" style="margin:6px 0 -4px 0"><a class="lnk" target="_self" '
@@ -1947,6 +1997,7 @@ def render_chart_panel(sym):
     if note:
         H(f'<div class="muted small" style="color:{WARN};margin:4px 0">{esc(note)}</div>')
     render_big_chart(sym, tf, height=CHART_H, tf_key="w_tf", lb=lb)
+    earnings_card(sym, d, cur)        # v4.1: grafiğin hemen altında, kompakt
     with st.expander("Chart controls · period statistics"):
         H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:2px 0 6px 0">'
           f'{period_stats(df, dec)}'
@@ -3263,108 +3314,197 @@ def _qv(v, kind, dec=2):
     return tr(v, dec)
 
 
-def quarter_fin_fig(fq, sel_fy, height=230):
-    """Seçili yıl + önceki yıl: çeyrek ciro ve net kâr (beklenen çeyrekler açık renk)."""
-    xs = [(fy, q) for fy in (sel_fy - 1, sel_fy) if fy in fq for q in fq[fy]["quarters"]]
-    cats = [f"{fy % 100:02d} Q{q['q']}" for fy, q in xs]
+# ---------------------------------------------------------------- v4.1 çeyrek sonuçları (çok yıllı grafik)
+QM = {"revenue": ("Revenue", ACCENT), "gross": ("Gross profit", "#6EE7B7"),
+      "op_income": ("Operating income", WARN), "net_income": ("Net income", VIOLET),
+      "ocf": ("Operating cash flow", "#38BDF8"), "fcf": ("Free cash flow", "#F472B6")}
+QR = {"None": None, "EPS (diluted)": ("eps", 2, "", "EPS"), "Net margin": ("net_m", 1, "%", "Net margin"),
+      "Operating margin": ("op_m", 1, "%", "Operating margin"),
+      "Gross margin": ("gross_m", 1, "%", "Gross margin"),
+      "Revenue YoY": ("revenue_yoy", 1, "%", "Revenue YoY")}
+QSPAN = {"4 years": 4, "6 years": 6, "8 years": 8, "All": 99}
+
+
+def quarter_rows(fq, n_years=99):
+    """Tüm mali yılların çeyrekleri, eskiden yeniye: [(fy, q)] — grafiğin ekseni budur."""
+    yrs = sorted(fq)[-int(n_years):]
+    return [(fy, q) for fy in yrs for q in fq[fy]["quarters"]]
+
+
+def quarters_fig(fq, metrics, right, sel_fy=None, n_years=99, height=430):
+    """Birden çok mali yılın çeyrekleri yan yana: seçilen kalemler sütun, isteğe bağlı bir seri çizgi olarak.
+    Henüz açıklanmamış çeyrekler soluk renkte (beklenti)."""
+    xs = quarter_rows(fq, n_years)
+    cats = [f"FY{fy % 100:02d} Q{q['q']}" for fy, q in xs]
+    exp = [q["src"] != "reported" for _, q in xs]
     fig = go.Figure()
-    rev = [q.get("revenue") / 1e9 if en._ok(q.get("revenue")) else None for _, q in xs]
-    ni = [q.get("net_income") / 1e9 if en._ok(q.get("net_income")) else None for _, q in xs]
-    fig.add_trace(go.Bar(x=cats, y=rev, name="Revenue",
-                         marker=dict(color=[ACCENT if q["src"] == "reported" else rgba(ACCENT, 0.35) for _, q in xs]),
-                         hovertemplate="FY%{x}: %{y:.2f} bn<extra>Revenue</extra>"))
-    fig.add_trace(go.Bar(x=cats, y=ni, name="Net income", marker_color=VIOLET,
-                         hovertemplate="FY%{x}: %{y:.2f} bn<extra>Net income</extra>"))
-    fig.update_layout(barmode="group", legend=dict(orientation="h", y=1.2, x=0))
-    fig.update_xaxes(categoryorder="array", categoryarray=cats)
-    fig.update_yaxes(ticksuffix=" bn")
-    if any(fy == sel_fy for fy, _ in xs):
-        i0 = [i for i, (fy, _) in enumerate(xs) if fy == sel_fy][0]
-        fig.add_vrect(x0=i0 - 0.5, x1=len(xs) - 0.5, fillcolor=rgba(ACCENT, 0.07), line_width=0)
-    return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=30, b=4))
+    src_txt = ["reported" if q["src"] == "reported" else "expected (analyst consensus)" if q["src"] == "expected"
+               else "not reported yet" for _, q in xs]
+    for key in metrics:
+        name, c_ = QM[key]
+        ys, cd = [], []
+        for (fy, q), e in zip(xs, exp):
+            v = q.get(key)
+            v = abs(v) if (key == "capex" and en._ok(v)) else v
+            ys.append(v / 1e9 if en._ok(v) else None)
+            cd.append([f"FY{fy} Q{q['q']}", q["end"].strftime("%b %d, %Y"), src_txt[len(cd)],
+                       pct(q.get(f"{key}_yoy"), 1) if en._ok(q.get(f"{key}_yoy")) else "—"])
+        fig.add_trace(go.Bar(x=cats, y=ys, name=name, customdata=cd,
+                             marker=dict(color=[c_ if not e else rgba(c_, 0.33) for e in exp]),
+                             hovertemplate="<b>%{customdata[0]}</b> · %{customdata[1]}<br>" + name +
+                                           ": %{y:.2f} bn<br>YoY %{customdata[3]} · %{customdata[2]}<extra></extra>"))
+    rk = QR.get(right)
+    if rk:
+        k, dec, suf, nm = rk
+        ys = [q.get(k) if en._ok(q.get(k)) else None for _, q in xs]
+        if any(v is not None for v in ys):
+            fig.add_trace(go.Scatter(x=cats, y=ys, name=nm, yaxis="y2", mode="lines+markers",
+                                     line=dict(color=SOFT, width=2, dash="dot"), marker=dict(size=5, color=SOFT),
+                                     hovertemplate=nm + ": %{y:." + str(dec) + "f}" + suf + "<extra></extra>"))
+            fig.update_layout(yaxis2=dict(overlaying="y", side="right", showgrid=False, ticksuffix=suf,
+                                          tickfont=dict(color=MUT, size=10), zeroline=False))
+    fig.update_layout(barmode="group", bargap=0.22, bargroupgap=0.06,
+                      legend=dict(orientation="h", y=1.1, x=0))
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=cats, tickangle=-45)
+    fig.update_yaxes(ticksuffix=" bn", zeroline=True, zerolinecolor=LINE)
+    start, prev = 0, None
+    for i, (fy, _) in enumerate(xs):                    # mali yıl sınırları + yıl etiketi
+        if prev is not None and fy != prev:
+            fig.add_vline(x=i - 0.5, line=dict(color=LINE, width=1))
+            _fy_tag(fig, prev, start, i - 1, sel_fy)
+            start = i
+        prev = fy
+    if prev is not None:
+        _fy_tag(fig, prev, start, len(xs) - 1, sel_fy)
+    if sel_fy is not None and any(fy == sel_fy for fy, _ in xs):
+        idx = [i for i, (fy, _) in enumerate(xs) if fy == sel_fy]
+        fig.add_vrect(x0=idx[0] - 0.5, x1=idx[-1] + 0.5, fillcolor=rgba(ACCENT, 0.07), line_width=0, layer="below")
+    if any(exp):
+        i0 = exp.index(True)
+        fig.add_vline(x=i0 - 0.5, line=dict(color=MUT, width=1, dash="dot"))
+    return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=34, b=4))
+
+
+def _fy_tag(fig, fy, i0, i1, sel_fy):
+    fig.add_annotation(x=(i0 + i1) / 2, y=1.0, yref="paper", showarrow=False, text=f"FY{fy}",
+                       font=dict(size=10, color=ACCENT if fy == sel_fy else MUT), yanchor="bottom")
 
 
 def render_fund_quarters(b, fq, fy_labels, k_y):
-    """Fundamentals: seçili mali yılın çeyrek sonuçları (raporlanan; içinde bulunulan yılda beklenti)."""
+    """Fundamentals: tüm mali yılların çeyrek sonuçları tek bir büyük grafikte (tablo altta, açılır)."""
     with st.container(border=True):
         H('<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'
-          '<span class="panel-title">Quarterly Results</span><span class="muted small">click a year in any chart '
-          'above, or pick it here</span></div>')
+          '<span class="panel-title">Quarterly Results</span><span class="muted small">every fiscal year side by '
+          'side · click a bar to open that year\'s table · faded bars are not reported yet</span></div>')
         if not fq:
             H('<div class="muted">No quarterly statements available for this symbol.</div>')
             return
-        labs = list(fy_labels.values())
-        seg("Fiscal year", labs, k_y, ss.get(k_y) or labs[-1])
-        sel = {v: k for k, v in fy_labels.items()}.get(ss.get(k_y), max(fq))
-        y = fq[sel]
-        qs = y["quarters"]
-        if not any(q["src"] in ("reported", "expected") for q in qs):
-            H(f'<div class="muted" style="margin:8px 0">No quarterly figures for FY{sel}. Yahoo Finance only keeps '
-              f'the last ~5 quarters; older years come from SEC filings, which this company does not provide in '
-              f'machine-readable form.</div>')
+        if not any(q["src"] in ("reported", "expected") for y in fq.values() for q in y["quarters"]):
+            H('<div class="muted" style="margin:8px 0">No quarterly figures for this company. Yahoo Finance only '
+              'keeps the last ~5 quarters; older years come from SEC filings, which this company does not provide '
+              'in machine-readable form.</div>')
             return
-        fa = b["f"]
-        fyi = fa["years"].index(sel) if sel in fa["years"] else None
-
-        def annual(k):
-            return fa[k][fyi] if fyi is not None and k in fa else None
-        head = "".join(
-            f'<th>Q{q["q"]}<div class="muted" style="font-size:10.5px;font-weight:400">{q["end"].strftime("%b %Y")}'
-            f'{" · expected" if q["src"] == "expected" else " · no estimate" if q["src"] == "no estimate" else ""}'
-            f'</div></th>' for q in qs) + f'<th>FY{sel}</th>'
-        rows_def = [("Revenue", "revenue", "bn", "revenue"), ("  QoQ", "revenue_qoq", "chg", None),
-                    ("  YoY", "revenue_yoy", "chg", None), ("Gross profit", "gross", "bn", "gross"),
-                    ("  Gross margin", "gross_m", "pct", "gross_m"), ("Operating income", "op_income", "bn", "op_income"),
-                    ("  Operating margin", "op_m", "pct", "op_m"), ("Net income", "net_income", "bn", "net_income"),
-                    ("  Net margin", "net_m", "pct", "net_m"), ("EPS (diluted)", "eps", "eps", "eps"),
-                    ("  EPS YoY", "eps_yoy", "chg", None), ("Operating cash flow", "ocf", "bn", "ocf"),
-                    ("Capex", "capex", "bn", "capex"), ("Free cash flow", "fcf", "bn", "fcf")]
-        body = ""
-        for lab, k, kind, ak in rows_def:
-            if not any(en._ok(q.get(k)) for q in qs) and not (ak and en._ok(annual(ak))):
-                continue
-            sub = lab.startswith("  ")
-            cells = ""
-            for q in qs:
-                v = q.get(k)
-                if k == "capex" and en._ok(v):
-                    v = abs(v)
-                txt = _qv(v, kind)
-                if q["src"] == "expected" and k == "eps" and q.get("eps_range") and en._ok(v):
-                    lo, hi = q["eps_range"]
-                    txt += (f'<div class="muted" style="font-size:10px">{tr(lo, 2)} – {tr(hi, 2)}'
-                            f'{" · " + str(q["n"]) + " analysts" if q.get("n") else ""}</div>')
-                der = " title=\"derived: full year minus the first three quarters (or year-to-date difference)\"" \
-                    if k in q.get("derived", []) else ""
-                cls = "qexp" if q["src"] == "expected" else ""
-                cells += f'<td class="{cls}"{der}>{txt}{"<sup class=muted>Δ</sup>" if der else ""}</td>'
-            av = annual(ak) if ak else None
-            if ak == "capex" and en._ok(av):
-                av = abs(av)
-            cells += f'<td class="fytot">{_qv(av, kind) if ak else ""}</td>'
-            body += (f'<tr class="{"qsub" if sub else ""}"><td>{esc(lab.strip())}</td>{cells}</tr>')
-        c1, c2 = st.columns([1.6, 1], gap="large")
+        sym = b["d"].get("ticker") or ACTIVE
+        k_m, k_r, k_s = f"qm_{sym}", f"qr_{sym}", f"qs_{sym}"
+        avail = [k for k in QM if any(en._ok(q.get(k)) for y in fq.values() for q in y["quarters"])]
+        if k_m not in ss or not set(ss[k_m]) & set(avail):
+            ss[k_m] = [k for k in ("revenue", "net_income") if k in avail] or avail[:1]
+        c1, c2, c3 = st.columns([2.3, 1.1, 1], gap="small")
         with c1:
-            H(f'<div style="overflow-x:auto"><table class="ptab qfin"><thead><tr><th></th>{head}</tr></thead>'
-              f'<tbody>{body}</tbody></table></div>')
-            notes = []
-            if y.get("src"):
-                notes.append(f'source: {y["src"]}')
-            if any(q.get("derived") for q in qs):
-                notes.append("Δ = derived (Q4 = full year minus Q1–Q3; cash flows from year-to-date figures)")
-            if y["status"] == "in progress":
-                notes.append("expected = analyst consensus (EPS and revenue) for quarters not reported yet")
-            notes.append("QoQ vs the previous quarter, YoY vs the same quarter a year earlier")
-            H(f'<div class="muted small" style="margin-top:6px">{esc(" · ".join(notes))}</div>')
+            mets = st.multiselect("Columns", avail, key=k_m, format_func=lambda k: QM[k][0],
+                                  label_visibility="collapsed", placeholder="Pick what the bars show")
         with c2:
-            plot(quarter_fin_fig(fq, sel), key="v_fq")
-            rq = [q for q in qs if q["src"] == "reported" and en._ok(q.get("revenue"))]
-            if len(rq) >= 2:
-                best = max(rq, key=lambda q: q["revenue"])
-                g = rq[-1].get("revenue_yoy")
-                H(f'<div class="gtext">FY{sel}: strongest quarter by revenue was <b>Q{best["q"]}</b> '
-                  f'({big(best["revenue"])})' + (f'; the latest reported quarter grew <b>{pct(g, 1)}</b> year over '
-                                                  f'year' if en._ok(g) else "") + '.</div>')
+            right = st.selectbox("Line (right axis)", list(QR), key=k_r, label_visibility="collapsed")
+        with c3:
+            span = st.selectbox("Years", list(QSPAN), key=k_s, index=1, label_visibility="collapsed")
+        sel = {v: k for k, v in fy_labels.items()}.get(ss.get(k_y), max(fq))
+        ck = f"v_fqall_{sym}"
+        x = picked_x(ss.get(ck), ck) if _HAS_SELECT else None
+        if x and x.startswith("FY"):
+            yy = 2000 + int(x[2:4])
+            if yy in fy_labels:
+                ss[k_y] = fy_labels[yy]
+                sel = yy
+        nq = len(quarter_rows(fq, QSPAN[span]))
+        plot(quarters_fig(fq, mets or avail[:1], right, sel, QSPAN[span],
+                          height=max(380, min(560, 300 + nq * 6))), key=ck, select=True)
+        y = fq.get(sel) or fq[max(fq)]
+        notes = [f'{nq} quarters shown']
+        if y.get("src"):
+            notes.append(f'source: {y["src"]}')
+        if any(q.get("derived") for yv in fq.values() for q in yv["quarters"]):
+            notes.append("Δ = derived (Q4 = full year minus Q1–Q3; cash flows from year-to-date figures)")
+        notes.append("faded = analyst consensus for quarters not reported yet")
+        H(f'<div class="muted small" style="margin-top:2px">{esc(" · ".join(notes))}</div>')
+        rq = [q for yv in fq.values() for q in yv["quarters"] if q["src"] == "reported" and en._ok(q.get("revenue"))]
+        if len(rq) >= 2:
+            best = max(rq, key=lambda q: q["revenue"])
+            last = max(rq, key=lambda q: q["end"])
+            g = last.get("revenue_yoy")
+            H(f'<div class="gtext">Strongest quarter by revenue so far: <b>Q{best["q"]} '
+              f'{best["end"].strftime("%Y")}</b> ({big(best["revenue"])})'
+              + (f'; the latest reported quarter grew <b>{pct(g, 1)}</b> year over year' if en._ok(g) else "")
+              + '.</div>')
+        with st.expander(f"Table — FY{sel} quarter by quarter"):
+            _quarter_table(b, fq, fy_labels, k_y, sel)
+
+
+def _quarter_table(b, fq, fy_labels, k_y, sel):
+    """Seçili mali yılın ayrıntı tablosu (grafikte bir yıla tıklayınca ya da buradan seçilince)."""
+    labs = list(fy_labels.values())
+    seg("Fiscal year", labs, k_y, ss.get(k_y) or labs[-1])
+    sel = {v: k for k, v in fy_labels.items()}.get(ss.get(k_y), sel)
+    y = fq.get(sel)
+    if not y:
+        return
+    qs = y["quarters"]
+    if not any(q["src"] in ("reported", "expected") for q in qs):
+        H(f'<div class="muted" style="margin:8px 0">No quarterly figures for FY{sel}.</div>')
+        return
+    fa = b["f"]
+    fyi = fa["years"].index(sel) if sel in fa["years"] else None
+
+    def annual(k):
+        return fa[k][fyi] if fyi is not None and k in fa else None
+    head = "".join(
+        f'<th>Q{q["q"]}<div class="muted" style="font-size:10.5px;font-weight:400">{q["end"].strftime("%b %Y")}'
+        f'{" · expected" if q["src"] == "expected" else " · no estimate" if q["src"] == "no estimate" else ""}'
+        f'</div></th>' for q in qs) + f'<th>FY{sel}</th>'
+    rows_def = [("Revenue", "revenue", "bn", "revenue"), ("  QoQ", "revenue_qoq", "chg", None),
+                ("  YoY", "revenue_yoy", "chg", None), ("Gross profit", "gross", "bn", "gross"),
+                ("  Gross margin", "gross_m", "pct", "gross_m"), ("Operating income", "op_income", "bn", "op_income"),
+                ("  Operating margin", "op_m", "pct", "op_m"), ("Net income", "net_income", "bn", "net_income"),
+                ("  Net margin", "net_m", "pct", "net_m"), ("EPS (diluted)", "eps", "eps", "eps"),
+                ("  EPS YoY", "eps_yoy", "chg", None), ("Operating cash flow", "ocf", "bn", "ocf"),
+                ("Capex", "capex", "bn", "capex"), ("Free cash flow", "fcf", "bn", "fcf")]
+    body = ""
+    for lab, k, kind, ak in rows_def:
+        if not any(en._ok(q.get(k)) for q in qs) and not (ak and en._ok(annual(ak))):
+            continue
+        sub = lab.startswith("  ")
+        cells = ""
+        for q in qs:
+            v = q.get(k)
+            if k == "capex" and en._ok(v):
+                v = abs(v)
+            txt = _qv(v, kind)
+            if q["src"] == "expected" and k == "eps" and q.get("eps_range") and en._ok(v):
+                lo, hi = q["eps_range"]
+                txt += (f'<div class="muted" style="font-size:10px">{tr(lo, 2)} – {tr(hi, 2)}'
+                        f'{" · " + str(q["n"]) + " analysts" if q.get("n") else ""}</div>')
+            der = " title=\"derived: full year minus the first three quarters (or year-to-date difference)\"" \
+                if k in q.get("derived", []) else ""
+            cls = "qexp" if q["src"] == "expected" else ""
+            cells += f'<td class="{cls}"{der}>{txt}{"<sup class=muted>Δ</sup>" if der else ""}</td>'
+        av = annual(ak) if ak else None
+        if ak == "capex" and en._ok(av):
+            av = abs(av)
+        cells += f'<td class="fytot">{_qv(av, kind) if ak else ""}</td>'
+        body += (f'<tr class="{"qsub" if sub else ""}"><td>{esc(lab.strip())}</td>{cells}</tr>')
+    H(f'<div style="overflow-x:auto"><table class="ptab qfin"><thead><tr><th></th>{head}</tr></thead>'
+      f'<tbody>{body}</tbody></table></div>'
+      f'<div class="muted small" style="margin-top:6px">QoQ vs the previous quarter, YoY vs the same quarter a '
+      f'year earlier · expected = analyst consensus for quarters not reported yet</div>')
 
 
 def render_analyst_panel(sym, b):
@@ -3935,6 +4075,10 @@ def opp_chart(df, o):
 ST_OV_DEF = {"patterns": True, "obs": True, "marks": True, "prints": True}
 ST_CHART_H = 700
 PAT_COL = "#F5B544"
+# v4.1: her katman kendi rengini kullanır — dikdörtgen formasyonu, order block'lar ve destek-direnç
+# bantları kutu olarak çizildiği için birbirinden ayırt edilebilir olmalı.
+PAT_COLS = {"rectangle": "#22D3EE"}        # diğer formasyonlar (üçgen, merdiven, kırılım): PAT_COL
+OB_COL = {"bull": "#A78BFA", "bear": "#F472B6"}
 
 
 def _pl(pts):
@@ -3956,7 +4100,8 @@ def st_overlay(payload, sym, best=None, levels=None):
     geo = en.setup_geometry(df, (best or {}).get("key")) if (best and daily) else None
     if geo:
         info["geo"] = geo
-        ov["patterns"].append({"label": geo["label"], "color": PAT_COL, "at": _pl([geo["at"]])[0],
+        info["pat_col"] = PAT_COLS.get(geo["key"], PAT_COL)
+        ov["patterns"].append({"label": geo["label"], "color": info["pat_col"], "at": _pl([geo["at"]])[0],
                                "lines": [{"pts": _pl(ln["pts"]), "dash": bool(ln.get("dash")), "w": ln.get("w", 2)}
                                          for ln in geo["lines"]],
                                "dots": _pl(geo["dots"]), "fill": _pl(geo["fill"]) if geo.get("fill") else None})
@@ -4003,7 +4148,7 @@ def render_flow_box(sym, info):
         if obs:
             rows = ""
             for o in obs:
-                c_ = UP if o["kind"] == "bull" else DOWN
+                c_ = OB_COL[o["kind"]]
                 rows += (f'<div class="flow-r"><span class="aist" style="color:{c_};background:{c_}22">'
                          f'{"BULLISH OB" if o["kind"] == "bull" else "BEARISH OB"}</span>'
                          f'<span class="mono" style="font-weight:700">{tr(o["lo"])} – {tr(o["hi"])}</span>'
@@ -4095,6 +4240,9 @@ def render_sentiment_box(sym):
             rp = hy.get("rank_prev")
             tiles.append(("Reddit rank", f'#{int(hy["rank"])}',
                           (f'was #{int(rp)}' if en._ok(rp) else "") or ""))
+        if hy.get("x_mentions") is not None:
+            tiles.append(("X posts · 7d", tr(hy["x_mentions"], 0),
+                          f'{tr(hy.get("x_last24h"), 0)} in 24h' if en._ok(hy.get("x_last24h")) else ""))
         if hy.get("watchers") is not None:
             tiles.append(("StockTwits watchers", big(hy["watchers"], ""), ""))
         H('<div class="sent-tiles">' + "".join(
@@ -4102,22 +4250,26 @@ def render_sentiment_box(sym):
             f'<span class="muted" style="font-size:10.5px">{esc(sub)}</span></div>' for k, v, sub in tiles) + '</div>')
         # ---- kaynaklar
         rows = ""
-        for key in ("reddit", "stocktwits", "x"):
-            v = (s.get("sources") or {}).get(key)
+        srcs = s.get("sources") or {}
+        for key in ("reddit", "stocktwits", "x", "fh_twitter", "fh_reddit"):
+            v = srcs.get(key)
             if not v:
                 continue
             if v.get("ok"):
                 lc = SENT_COL.get(md.sentiment_label(v["score"], v["n"]), MUT)
-                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:92px">{esc(v["name"])}</span>'
+                unit = "posts" if v.get("kind") == "posts" else "mentions"
+                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:104px">{esc(v["name"])}</span>'
                          f'<span class="mono" style="color:{lc};font-weight:700">{v["score"]:+.0f}</span>'
-                         f'<span class="muted small">{v["n"]} posts ({v.get("last24h", 0)} in 24h) · {v["bull"]} bullish '
-                         f'/ {v["bear"]} bearish</span></div>')
+                         f'<span class="muted small">{v["n"]} {unit} ({v.get("last24h", 0)} in 24h) · {v["bull"]} '
+                         f'bullish / {v["bear"]} bearish</span></div>')
             else:
                 msg = v.get("err") or "no answer"
-                if key == "x" and msg == "not connected":
-                    msg = ('not connected — X has no free read access; with a paid X API key add '
-                           'X_BEARER_TOKEN to Secrets')
-                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:92px">{esc(v["name"])}</span>'
+                if msg == "not connected":
+                    msg = {"x": "not connected — X has no free read access; with a paid X API key add "
+                                "X_BEARER_TOKEN to Secrets",
+                           "fh_twitter": "not connected — a Finnhub key (FINNHUB_API_KEY in Secrets) also "
+                                         "delivers X and Reddit sentiment without the X API"}.get(key, msg)
+                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:104px">{esc(v["name"])}</span>'
                          f'<span class="muted small">{esc(msg)}</span></div>')
         H(f'<div style="margin-top:8px">{rows}</div>')
         top = [p for p in (s.get("top") or []) if p.get("url")][:3]
@@ -4129,8 +4281,10 @@ def render_sentiment_box(sym):
                 f'<span class="sp-t">{esc(p["title"])}</span><span class="muted" style="flex:none;font-size:10.5px">'
                 f'{esc(p["src"])}{" · r/" + esc(p["sub"]) if p.get("sub") else ""}</span></a>' for p in top))
         H('<div class="muted" style="font-size:10.5px;margin-top:6px">Score: share of bullish minus bearish posts, '
-          'weighted by likes and comments (StockTwits: the authors\' own Bullish / Bearish tag; other posts: finance '
-          'word list). ≥ +20 Bullish, ≤ −20 Bearish. Hype: Reddit mentions and rank from ApeWisdom. A mood '
+          'weighted by likes and comments (StockTwits: the authors\' own Bullish / Bearish tag; Finnhub: its own '
+          'counts of positive and negative mentions, weighted a little lower; other posts: finance word list). '
+          '≥ +20 Bullish, ≤ −20 Bearish. Hype: Reddit mentions and rank from ApeWisdom. A source that is '
+          'unreachable is retried automatically — the others keep the reading alive in the meantime. A mood '
           'reading, not a trade signal.</div>')
 
 
@@ -4175,12 +4329,18 @@ def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
         render_big_chart(sym, tf, height=ST_CHART_H, tf_key="w_sttf", lb=lb, ov_fn=_ov, comp_key="pulse_chart_st")
         g = info.get("geo")
         H(f'<div class="muted small" style="margin-top:4px">'
-          + (f'<b style="color:{PAT_COL}">{esc(g["label"])}</b> is drawn with its pivot points. ' if g else
+          + (f'<b style="color:{info.get("pat_col", PAT_COL)}">{esc(g["label"])}</b> is drawn with its pivot '
+             f'points. ' if g else
              ('The pattern is drawn on daily candles — switch the candle interval back to Daily to see it. '
               if best and tf != "1d" else ""))
-          + f'<span style="color:{UP}">▲</span> / <span style="color:{DOWN}">▼</span> = bought / sold on at least '
-            f'2× the average volume · shaded boxes = order blocks · dotted lines = dark-pool levels (Unusual '
-            f'Whales).</div>')
+          + f'<span class="ovkey" style="color:{UP}">▲</span>/<span class="ovkey" style="color:{DOWN}">▼</span> '
+            f'bought / sold on ≥ 2× average volume · '
+            f'<span class="ovsw" style="background:{OB_COL["bull"]}"></span>'
+            f'<span class="ovsw" style="background:{OB_COL["bear"]}"></span> hatched boxes = order blocks · '
+            f'<span class="ovsw" style="background:{PAT_COLS["rectangle"]}"></span> rectangle pattern · '
+            f'<span class="ovsw" style="background:{PAT_COL}"></span> other patterns · '
+            f'<span class="ovsw" style="background:{UP}"></span><span class="ovsw" style="background:{DOWN}"></span> '
+            f'support / resistance zones · dotted lines = dark-pool levels (Unusual Whales).</div>')
     c1, c2 = st.columns(2, gap="medium")
     with c1:
         render_flow_box(sym, info)
@@ -4267,10 +4427,14 @@ def ai_chart(df, r, height=250):
 
 
 def push_notes(rows):
-    """Taze ve teyitli kırılımları bildirim kutusuna düşürür (aynı gün bir kez)."""
+    """Taze ve teyitli kırılımları ("impulse levels") bildirim kutusuna düşürür (aynı gün bir kez);
+    ayarlarda açıksa aynı bildirim telefona / e-postaya da gider."""
     day = pd.Timestamp.now(tz=md.TZ).strftime("%Y-%m-%d")
     have = {f'{n["ticker"]}|{n["day"]}' for n in ss.notes}
     gone = set(ss.get("notes_gone") or [])
+    prefs = bk.notify_prefs({"notify": ss.get("notify")})
+    send = prefs.get("on") and prefs.get("ai", True) and (prefs.get("push") or prefs.get("email"))
+    user = (ss.get("auth") or {}).get("user")
     added = 0
     for r in rows:
         if not en.ai_fresh_breakout(r):
@@ -4279,12 +4443,19 @@ def push_notes(rows):
         if k in have or k in gone:     # aynı gün tekrar düşmesin, silinenler geri gelmesin
             continue
         b, c = r["best"], r.get("c15") or {}
+        title = f'{r["ticker"]} · {b["name"]}'
+        body = f'{tr(r["price"])} — {b["note"]} · 15m {c.get("state", "—")}'
         ss.notes.insert(0, {"ticker": r["ticker"], "day": day,
                             "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M"),
-                            "title": f'{r["ticker"]} · {b["name"]}',
-                            "body": f'{tr(r["price"])} — {b["note"]} · 15m {c.get("state", "—")}',
-                            "level": b["level"], "score": r["score"]})
+                            "title": title, "body": body, "level": b["level"], "score": r["score"]})
         added += 1
+        if send and added <= 5:        # tek taramada bildirim yağmuru olmasın
+            try:
+                ch_ = {k2: v for k2, v in prefs.items() if k2 != "browser"}
+                bk.deliver(user, {**ch_, "_inbox": False}, "ai", f"Impulse level · {title}", body,
+                           sym=r["ticker"], tags=["zap"])
+            except Exception:
+                pass
     del ss.notes[40:]
     return added
 
@@ -6279,6 +6450,8 @@ def main():
     if not auth_valid():
         render_auth()
         return
+    if not ss.get("_prof_loaded"):      # yeni oturum: hesabın kayıtlı ayarları (her cihazda aynı)
+        _profile_load(ss.auth["user"])
     ss.auth["last"] = time.time()           # hareketsizlik süresi sıfırlanır
     if ss.pop("_cred_store", False):
         components.html(_CRED_STORE_JS, height=0)
