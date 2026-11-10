@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="pulse-ui" content="3.7">
+<meta name="pulse-ui" content="4.0">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Pulse Chart</title>
 <style id="baseCss">
@@ -295,6 +295,7 @@ function applyArgs(a){
   S.intraday=!!a.intraday; S.interval=a.interval||"1G";
   S.bars=(a.bars||[]).map(function(b){return {t:b[0],o:b[1],h:b[2],l:b[3],c:b[4],v:b[5]};});
   S.ind=a.ind||{}; S.zones=a.zones||[]; S.gaps=a.gaps||[]; S.divs=a.divs||[]; S.cfg=a.cfg||{};
+  S.ov=a.ov||null;   // v4.0: formasyon çizgileri, order block'lar, yüksek hacimli alım/satım işaretleri, dark pool
   S.height=a.height||620;
   if(a.intervals&&a.intervals.length) S.ivList=a.intervals;
   S.ivName=a.intervalName||S.interval;
@@ -501,7 +502,8 @@ function draw(){
   drawGrid();
   for(const p of S.panes){
     ctx.save(); ctx.beginPath(); ctx.rect(0,p.top,S.plotW,p.h); ctx.clip();
-    if(p.id==="price"){ drawZones(p); drawGaps(p); drawPrice(p); drawOverlays(p); drawDivPrice(p); }
+    if(p.id==="price"){ drawZones(p); drawGaps(p); drawOB(p); drawPrice(p); drawOverlays(p); drawDivPrice(p);
+      drawPrints(p); drawPatterns(p); drawMarks(p); }
     else if(p.id==="vol") drawVol(p);
     else if(p.id==="rsi") drawRSI(p);
     else if(p.id==="stoch") drawStoch(p);
@@ -861,7 +863,7 @@ function drawZones(p){
     ctx.fillStyle=hexa(base,.42);
     ctx.fillRect(x0,top,bwid,Math.min(h,13));
     ctx.fillStyle="#FFFFFF"; ctx.textAlign="left";
-    if(bwid>28) ctx.fillText("%"+z.pct,x0+5,top+Math.min(h,13)/2);
+    if(bwid>28) ctx.fillText(z.pct+"%",x0+5,top+Math.min(h,13)/2);
     const ly=top+h/2;
     if(!usedY.some(function(y){return Math.abs(y-ly)<13;})){
       usedY.push(ly);
@@ -870,6 +872,104 @@ function drawZones(p){
     }
     ctx.font="10px sans-serif";
   }
+}
+/* ---------------------------------------------------------------- v4.0 overlays (Short Term) */
+function ovOn(k){ return S.ov && (!S.ov.show || S.ov.show[k]!==false); }
+function drawOB(p){
+  if(!ovOn("obs")||!(S.ov.obs||[]).length) return;
+  ctx.save(); ctx.font="bold 10px sans-serif"; ctx.textBaseline="middle";
+  for(const o of S.ov.obs){
+    const y1=Y(p,o.hi), y2=Y(p,o.lo);
+    if(Math.max(y1,y2)<p.top||Math.min(y1,y2)>p.top+p.h) continue;
+    const x0=X(o.start), x1=(o.end==null)?S.plotW:Math.min(S.plotW,X(o.end+1));
+    if(x1<=0||x0>=S.plotW) continue;
+    const xa=Math.max(0,x0), top=Math.min(y1,y2), h=Math.max(3,Math.abs(y2-y1));
+    const base=o.kind==="bull"?UP:DOWN, dead=o.end!=null;
+    ctx.fillStyle=hexa(base,dead?.07:.20); ctx.fillRect(xa,top,x1-xa,h);
+    ctx.strokeStyle=hexa(base,dead?.35:.95); ctx.lineWidth=dead?1:1.5;
+    ctx.strokeRect(Math.round(xa)+0.5,Math.round(top)+0.5,Math.max(1,x1-xa-1),Math.max(1,h-1));
+    if(!dead){ ctx.beginPath(); const ym=Math.round(top+h/2)+0.5; ctx.setLineDash([5,4]);
+      ctx.moveTo(xa,ym); ctx.lineTo(x1,ym); ctx.strokeStyle=hexa(base,.55); ctx.lineWidth=1; ctx.stroke(); ctx.setLineDash([]); }
+    if(x1-xa>110 && o.label){ ctx.fillStyle=dead?hexa(base,.7):base; ctx.textAlign="left";
+      ctx.fillText(o.label,xa+5,top+Math.min(h/2,9)+1); }
+  }
+  ctx.restore();
+}
+function drawPatterns(p){
+  if(!ovOn("patterns")||!(S.ov.patterns||[]).length) return;
+  ctx.save(); ctx.lineJoin="round"; ctx.textBaseline="middle";
+  for(const pt of S.ov.patterns){
+    const col=pt.color||"#F5B544";
+    if(pt.fill&&pt.fill.length>2){
+      ctx.beginPath();
+      pt.fill.forEach(function(q,k){ const x=X(q[0]+.5), y=Y(p,q[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.closePath(); ctx.fillStyle=hexa(col,.08); ctx.fill();
+    }
+    for(const ln of (pt.lines||[])){
+      ctx.beginPath(); ctx.lineWidth=ln.w||2; ctx.strokeStyle=ln.c||col;
+      ctx.setLineDash(ln.dash?[6,5]:[]);
+      (ln.pts||[]).forEach(function(q,k){ const x=X(q[0]+.5), y=Y(p,q[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    for(const d of (pt.dots||[])){
+      const x=X(d[0]+.5), y=Y(p,d[1]);
+      ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+      ctx.lineWidth=1.5; ctx.strokeStyle=BG; ctx.stroke();
+    }
+    if(pt.label&&pt.at){
+      const x=X(pt.at[0]+.5), y=Y(p,pt.at[1]);
+      ctx.font="bold 11px sans-serif";
+      const w=ctx.measureText(pt.label).width+12, lx=Math.max(4,Math.min(S.plotW-w-4,x-w/2)), ly=Math.max(p.top+12,y-16);
+      ctx.fillStyle=hexa(col,.92); roundRect(lx,ly-9,w,18,5); ctx.fill();
+      ctx.fillStyle="#0A0B0D"; ctx.textAlign="left"; ctx.fillText(pt.label,lx+6,ly);
+    }
+  }
+  ctx.restore();
+}
+function roundRect(x,y,w,h,r){
+  ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+}
+function drawMarks(p){
+  if(!ovOn("marks")||!(S.ov.marks||[]).length) return;
+  const bars=series(), [i0,i1]=visRange(), w=bw();
+  const sz=Math.max(5,Math.min(11,w*0.7));
+  ctx.save(); ctx.font="bold 9.5px sans-serif"; ctx.textAlign="center";
+  for(const m of S.ov.marks){
+    if(m.i<i0||m.i>i1) continue;
+    const b=bars[m.i]; if(!b) continue;
+    const x=X(m.i+.5), buy=m.side==="buy", col=buy?UP:DOWN;
+    const y=buy?Y(p,b.l)+8:Y(p,b.h)-8;
+    ctx.beginPath();
+    if(buy){ ctx.moveTo(x,y); ctx.lineTo(x-sz*.75,y+sz*1.2); ctx.lineTo(x+sz*.75,y+sz*1.2); }
+    else { ctx.moveTo(x,y); ctx.lineTo(x-sz*.75,y-sz*1.2); ctx.lineTo(x+sz*.75,y-sz*1.2); }
+    ctx.closePath(); ctx.fillStyle=col; ctx.fill();
+    ctx.lineWidth=1; ctx.strokeStyle=BG; ctx.stroke();
+    if(w>7&&m.label){ ctx.fillStyle=col; ctx.textBaseline=buy?"top":"bottom";
+      ctx.fillText(m.label,x,buy?y+sz*1.2+2:y-sz*1.2-2); }
+  }
+  ctx.restore();
+}
+function drawPrints(p){
+  if(!ovOn("prints")||!(S.ov.prints||[]).length) return;
+  ctx.save(); ctx.font="bold 10px sans-serif"; ctx.textBaseline="bottom"; ctx.textAlign="right";
+  const used=[];
+  for(const d of S.ov.prints){
+    const y=Y(p,d.price);
+    if(!isFinite(y)||y<p.top||y>p.top+p.h) continue;
+    const x0=d.i==null?0:Math.max(0,X(d.i));
+    const col=d.side==="buy"?UP:d.side==="sell"?DOWN:"#C4B5FD";
+    ctx.setLineDash([2,3]); ctx.strokeStyle=hexa(col,.9); ctx.lineWidth=1+Math.min(2,(d.w||0)*2);
+    ctx.beginPath(); ctx.moveTo(x0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke();
+    ctx.setLineDash([]);
+    if(d.i!=null){ ctx.beginPath(); ctx.arc(X(d.i+.5),y,3+Math.min(5,(d.w||0)*6),0,Math.PI*2);
+      ctx.fillStyle=hexa(col,.55); ctx.fill(); ctx.strokeStyle=col; ctx.lineWidth=1; ctx.stroke(); }
+    if(d.label && !used.some(function(u){return Math.abs(u-y)<12;})){ used.push(y);
+      ctx.fillStyle=col; ctx.fillText(d.label,S.plotW-6,y-2); }
+  }
+  ctx.restore();
 }
 function drawGaps(p){
   if(!(S.cfg.gaps&&S.cfg.gaps.on)||!S.gaps.length) return;
@@ -1006,6 +1106,9 @@ function drawCross(){
 }
 function updateLegend(){
   const L=document.getElementById("legend");
+  // v4.0: grafiğin üstündeki metin satırları (OHLC, ortalamalar, "Ranked S/R") varsayılan olarak kapalı;
+  // gösterge menüsünden "Value legend" ile açılabilir.
+  if(!(S.cfg.legend&&S.cfg.legend.on)){ if(L.innerHTML) L.innerHTML=""; return; }
   const i=curIdx();
   const b=series()[i]; if(!b){ L.innerHTML=""; return; }
   const ch=b.c-b.o, chp=b.o?ch/b.o*100:0, col=ch>=0?UP:DOWN;
@@ -1834,19 +1937,21 @@ const IND_DEFS=[
   f:[{k:"h",t:"num",l:"Bandwidth (h)",min:1,max:100,step:0.5},
      {k:"mult",t:"num",l:"Multiplier",min:0.5,max:10,step:0.1},
      {k:"c",t:"col",l:"Colour"}]},
- {k:"zones",n:"Ranked S/R Zones",d:"Pivot clusters; scored out of 100% by touches, volume and proximity",
+ {k:"legend",n:"Value legend (OHLC, averages)",d:"Text lines at the top-left of the chart with the values under the cursor",
+  g:"Levels",t:"legend ohlc values text header lejant",f:[]},
+ {k:"zones",n:"Ranked S/R Zones",d:"The 3–4 strongest pivot clusters; scored out of 100% by touches, volume and proximity",
   g:"Levels",t:"ranked support resistance zones destek direnc bant seviye pivot",
   f:[{k:"lookback",t:"num",l:"Lookback (bars)",min:60,max:1200,step:10},
      {k:"left",t:"num",l:"Pivot left",min:2,max:30,step:1},
      {k:"right",t:"num",l:"Pivot right",min:2,max:30,step:1},
      {k:"merge",t:"num",l:"Merge %",min:0.1,max:5,step:0.1},
-     {k:"max",t:"num",l:"Max zones",min:2,max:20,step:1},
+     {k:"max",t:"num",l:"Max zones",min:2,max:4,step:1},
      {k:"cs",t:"col",l:"Support colour"},{k:"cr",t:"col",l:"Resistance colour"}]},
  {k:"gaps",n:"Price Gaps",d:"Unfilled gaps — below price they act as support, above as resistance; partly filled gaps shrink",
   g:"Levels",t:"price gaps gap bosluk window unfilled support resistance destek direnc",
   f:[{k:"lookback",t:"num",l:"Lookback (bars)",min:20,max:2000,step:10},
      {k:"min",t:"num",l:"Min gap %",min:0.05,max:10,step:0.05},
-     {k:"max",t:"num",l:"Max gaps",min:1,max:30,step:1},
+     {k:"max",t:"num",l:"Max gaps",min:1,max:3,step:1},
      {k:"cs",t:"col",l:"Support colour"},{k:"cr",t:"col",l:"Resistance colour"}]},
  {k:"vol",n:"Volume",d:"Volume bars in a lower pane",
   g:"Volume",t:"hacim volume bar",
