@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "4.0"
+BACKEND_VERSION = "4.1"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -372,7 +372,8 @@ def send_push(topic, title, body, url=None, tags=None, priority=3):
 # Kullanıcı profilleri (izleme listesi, alarmlar, bildirim ayarları …)
 # ======================================================================
 NOTIFY_DEFAULT = {"on": True, "push": False, "topic": "", "email": False, "browser": True,
-                  "price": True, "earn_up": True, "earn_res": True, "macro": True, "macro_impact": "High"}
+                  "price": True, "earn_up": True, "earn_res": True, "macro": True, "macro_impact": "High",
+                  "ai": True}
 
 
 def notify_prefs(prof):
@@ -389,15 +390,15 @@ def profile_get(email):
     return profiles().get(str(email or "").lower()) or {}
 
 
-def profile_put(email, prof):
-    """Profili kaydeder (bellek + yerel hemen; GitHub'a arka planda)."""
+def profile_put(email, prof, sync=False):
+    """Profili kaydeder (bellek + yerel hemen; GitHub'a arka planda, sync=True ise hemen)."""
     email = str(email or "").lower()
     if not email:
         return
     with _LOCK:
         allp = kv_get("profiles") or {"v": 1, "users": {}}
         allp.setdefault("users", {})[email] = prof
-        kv_put("profiles", allp, sync=False)
+    return kv_put("profiles", allp, sync=sync)
 
 
 def profile_remove(email):
@@ -434,15 +435,18 @@ def inbox_since(email, last_id=0):
 
 
 def deliver(email, prefs, kind, title, body, sym=None, tags=None, priority=3):
-    """Kutusuna koyar; ayara göre push ve e-posta yollar. Döner: kullanılan kanallar."""
+    """Kutusuna koyar; ayara göre push ve e-posta yollar. Döner: kullanılan kanallar.
+    prefs['_inbox'] = False: olay sayfaya zaten eklendi, yalnızca push / e-posta gönder."""
     email = str(email or "").lower()
-    used = ["inbox"]
-    with _LOCK:
-        _SEQ[0] += 1
-        item = {"id": _SEQ[0], "ts": time.time(), "kind": kind, "sym": sym or "", "title": title, "body": body}
-        box = _INBOX.setdefault(email, [])
-        box.append(item)
-        del box[:-100]
+    used = []
+    if prefs.get("_inbox", True):
+        used.append("inbox")
+        with _LOCK:
+            _SEQ[0] += 1
+            item = {"id": _SEQ[0], "ts": time.time(), "kind": kind, "sym": sym or "", "title": title, "body": body}
+            box = _INBOX.setdefault(email, [])
+            box.append(item)
+            del box[:-100]
     url = CFG.get("app_url") or None
     if url and sym:
         url = f"{url}/?sec=Markets&sym={sym}"
