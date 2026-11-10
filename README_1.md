@@ -1,3 +1,39 @@
+# Pulse — Market Dashboard (Streamlit) · v4.1
+
+## Neu in v4.1 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Die Secrets aus v4.0 (unten) gelten unverändert weiter.
+
+* **Earnings-Box unter dem Chart.** Sie steht nicht mehr über dem Chart, sondern direkt darunter, und ist
+  deutlich kleiner: eine Zeile je Box statt einer Tabelle. Die Details (Analystenspanne, Anzahl der
+  Analysten, Vorjahreswert, Veränderung zum Vorjahr) erscheinen beim Darüberfahren mit der Maus. Bei ≤ 5
+  Tagen bleibt die Box rot.
+* **Order Blocks haben eigene Farben.** Order Blocks sind jetzt violett (bullish) und pink (bearish) und
+  zusätzlich schraffiert; Rechteck-Formationen sind türkis, die übrigen Formationen bleiben gelb,
+  Support- und Widerstandszonen grün und rot. Unter dem Short-Term-Chart steht eine kleine Farblegende.
+* **Sentiment: X und Ausweichquellen.** Mit `X_BEARER_TOKEN` wird X direkt gelesen. Ist der Zugang
+  gesperrt oder das Limit erreicht, sagt die Anzeige das samt nächstem Versuch und probiert es automatisch
+  in wachsenden Abständen erneut (5 min → 1 h). Währenddessen liefert **Finnhub Social Sentiment**
+  (`FINNHUB_API_KEY`) die X- und Reddit-Zahlen, sodass die Stimmung weiter gemessen wird. Reddit und
+  StockTwits laufen wie bisher und werden nach einem Fehler ebenfalls automatisch erneut versucht.
+* **Benachrichtigungs-Einstellungen bleiben erhalten.** Jedes Häkchen im Menü (Price Alerts, Earnings
+  Ahead, Earnings Results, Economic Data, Impulse Levels sowie Push / E-Mail / Browser) wird sofort im
+  Konto gespeichert — auf dem Server und, wenn `[pulse_store]` eingerichtet ist, im privaten GitHub-Repo.
+  Nach einem Neuladen, einem Neustart der App oder auf einem anderen Gerät sind sie wieder da. Neu ist
+  **Impulse Levels**: frische Ausbrüche aus dem AI-Scan gehen auf Wunsch auch aufs Handy.
+* **Quarterly Results als großes Diagramm.** Statt der Tabelle für ein einzelnes Jahr gibt es jetzt ein
+  durchgehendes Säulendiagramm über alle Geschäftsjahre (4, 6, 8 Jahre oder alle). Oben wählst du, welche
+  Kennzahlen die Säulen zeigen (Umsatz, Bruttogewinn, operatives Ergebnis, Nettogewinn, operativer
+  Cashflow, Free Cashflow) und welche Reihe als Linie auf der rechten Achse läuft (EPS oder eine Marge).
+  Noch nicht berichtete Quartale sind blass. Ein Klick auf eine Säule öffnet die Detailtabelle dieses
+  Geschäftsjahres (aufklappbar unter dem Diagramm).
+* **Earnings-Kalender nur mit der Watchlist.** Die Wochenübersicht zeigt ausschließlich Unternehmen von
+  deiner Watchlist, mit erwartetem EPS und — bei bereits berichteten Tagen — dem tatsächlichen Wert samt
+  Abweichung und ▲ / ▼. Ist die Watchlist leer, sagt der Kalender das.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.0
 
 ## Neu in v4.0 (Deutsch) — bitte zuerst lesen
