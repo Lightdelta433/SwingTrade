@@ -1,4 +1,115 @@
-# Pulse — Market Dashboard (Streamlit) · v3.9
+# Pulse — Market Dashboard (Streamlit) · v4.0
+
+## Neu in v4.0 (Deutsch) — bitte zuerst lesen
+
+**Dateien dieser Version (alle hochladen, dann *Reboot app*):** `app.py`, `engine.py`, `mock_data.py`,
+`chart.py`, **`backend.py` (neu)** und **`pulse_chart/index.html` (geändert)**. `requirements.txt` bleibt gleich.
+
+### Secrets (Streamlit → App → Settings → Secrets)
+
+Nur der erste Block ist nötig, damit Logins dauerhaft halten. Alles andere ist optional.
+
+```toml
+# 1) Dauerhafter Speicher — behebt „Passwort falsch“ nach Neustarts
+[pulse_store]
+repo  = "DEIN-GITHUB-NAME/pulse-data"     # privates Repository (mit README angelegt)
+token = "github_pat_…"                     # Fine-grained Token: nur dieses Repo, Contents: Read and write
+
+# 2) E-Mail (Code bei „Forgot password?“, Benachrichtigungen per E-Mail)
+[pulse_mail]
+user = "absender@gmail.com"
+app_password = "abcd efgh ijkl mnop"       # Google-Konto → 2-Step Verification → App-Passwort
+
+# 3) Owner-Schlüssel (Notfall: Owner-Login zurücksetzen)
+[pulse_admin]
+key = "mindestens-8-zeichen"
+
+# 4) Impressum: Name und Anschrift (die beiden Kontakt-E-Mails stehen immer im Footer)
+[pulse_imprint]
+name = "Vorname Nachname"
+address = "Straße 1, 12345 Ort"
+# phone = "+49 …"
+
+# 5) Optional: bezahlte Datenquellen
+UNUSUAL_WHALES_TOKEN = "…"                 # Dark-Pool-Daten im Short-Term-Chart
+X_BEARER_TOKEN = "…"                       # X (Twitter) für die Sentiment-Analyse
+REDDIT_CLIENT_ID = "…"                     # falls Reddit den Server ohne App-Schlüssel blockiert
+REDDIT_CLIENT_SECRET = "…"
+```
+
+### Login
+
+* **Ursache des Fehlers „Passwort falsch“:** Streamlit Cloud löscht die Festplatte der App bei jedem Neustart
+  und wenn die App einschläft. Logins lagen bisher nur dort (oder als alter Stand in den Secrets). Nach einem
+  Neustart galt deshalb wieder ein altes Passwort, oder das Konto war weg. Mit `[pulse_store]` liegen Logins,
+  Watchlist, Alarme und Einstellungen in einem privaten GitHub-Repository und überstehen Neustarts.
+* Ohne `[pulse_store]` funktioniert alles wie bisher, aber nur bis zum nächsten Neustart. Der Owner sieht
+  dazu einen Hinweis unter **A → Storage & email**.
+* Die Passwortprüfung akzeptiert dasselbe Passwort auch dann, wenn ein Gerät Umlaute anders kodiert oder ein
+  Leerzeichen anhängt. Die Fehlermeldung sagt jetzt, ob die E-Mail unbekannt oder das Passwort falsch ist.
+* **Passwort vergessen:** E-Mail eingeben → 6-stelliger Code per E-Mail (15 Minuten gültig, einmal
+  verwendbar) → neues Passwort. Den früheren Wiederherstellungscode gibt es nicht mehr.
+* Einstellungen gehören jetzt zum Konto (nicht mehr zum Browser-Link): Watchlist, Alarme, Zeichnungen,
+  Filter, Theme, Value-Path-Einstellungen, Benachrichtigungen.
+
+### Benachrichtigungen (🔔 → „Send to my device“)
+
+* **Wann:** Kursalarm ausgelöst (Glocken-Werkzeug im Chart) · Earnings einer Watchlist-Aktie in ≤ 5 Tagen und
+  am Tag selbst · Earnings veröffentlicht (Beat / Miss mit Zusammenfassung: EPS, Umsatz, Net Income,
+  Kursreaktion) · wichtige Wirtschaftsdaten veröffentlicht (Währungen aus dem Kalender).
+* **Wohin:** Push aufs Handy / den Computer über die kostenlose App **ntfy** (Topic aus den Einstellungen
+  abonnieren), E-Mail (wenn `[pulse_mail]` gesetzt ist), Pop-up im Browser solange Pulse offen ist.
+* Geprüft wird alle 2 Minuten auf dem Server. **Grenze:** Streamlit legt die App nach etwa 12 Stunden ohne
+  Besuch schlafen, dann wird nichts geprüft, bis jemand die Seite wieder öffnet.
+
+### Earnings
+
+* **Unternehmensübersicht (Markets und Valuation):** nächster Termin mit Tageszeit (vor Börsenöffnung /
+  nach Börsenschluss), bestätigt oder erwartet, erwartetes EPS (Spanne, Analystenzahl), erwarteter Net
+  Income (EPS-Schätzung × verwässerte Aktien), erwarteter Umsatz. Bei ≤ 5 Tagen ist der ganze Hinweis rot.
+  Daneben der letzte Bericht mit **BEAT / MISS / IN LINE**. Quellen: Nasdaq-Earnings-Kalender und Yahoo
+  Finance. Es werden keine Beispieldaten angezeigt; fehlt eine Quelle, steht das dort.
+* **Earnings Calendar (Markets):** Montag bis Freitag, je Tag „Before Open“ und „After Close“, größte
+  Unternehmen zuerst, Watchlist umrandet, Logos farbig, Wochenauswahl oben rechts. Die laufende Woche bleibt
+  bis Freitagabend stehen und wechselt am Samstag (US-Zeit).
+
+### Markets, Charts, Support & Resistance
+
+* Der Chart läuft über die volle Breite und ist höher. Die Textzeilen im Chart (OHLC, SMAs, „Ranked S/R“)
+  sind aus; im Indikator-Menü lassen sie sich als „Value legend“ wieder einschalten.
+* Support & Resistance: nur noch Pivot, R1, S1 und das nächste offene Gap. Im Chart höchstens 4 Zonen
+  (die nächste über und unter dem Kurs zuerst) und 2 Gaps.
+
+### Short Term
+
+* Klick auf eine Zeile springt zum **großen Chart** der Aktie. Eingezeichnet werden das Pattern aus der
+  Tabelle (Dreieck, Rechteck, Staircase, Breakout) mit seinen Pivot-Punkten, die Plan-Linien (Level, Stop,
+  Ziele), **Order Blocks** und **Käufe / Verkäufe mit mindestens doppeltem Durchschnittsvolumen** (▲ / ▼).
+* **Unusual Whales:** Mit `UNUSUAL_WHALES_TOKEN` kommen die großen Dark-Pool-Abschlüsse der letzten 5
+  Handelstage dazu (Preisniveaus im Chart, Summen am / über dem Ask und am / unter dem Bid). Die Daten gibt
+  es bei Unusual Whales nur über eine kostenpflichtige API; ohne Token steht dort „Not connected“.
+* **Community Sentiment:** Reddit (Finanz-Subreddits), StockTwits und, mit `X_BEARER_TOKEN`, X. Ergebnis:
+  Bullish / Bearish / Neutral mit Score von −100 bis +100, dazu Hype (Reddit-Erwähnungen in 24 h, Veränderung,
+  Rang; StockTwits-Beobachter). Aktualisierung alle 10 Minuten.
+
+### Valuation
+
+* **Value Path:** Startwerte kommen aus den neuesten Berichten des Unternehmens (SEC 10-Q / 10-K: letzte
+  12 Monate, letzte Bilanz). Unter „Data basis“ stehen Wert, Zeitraum und Quelle jeder Zahl. Die
+  Standardwerte für Peak- und Trough-Marge, Umsatzrückgang und Langfrist-Wachstum stammen aus den gemeldeten
+  Jahren des Unternehmens. Ist die Datenquelle nicht erreichbar, wird die Bewertung angehalten statt mit
+  Beispieldaten zu rechnen.
+* Layout: Value-Path-Chart über die volle Breite, die beiden Tabellen darunter nebeneinander.
+
+### Layout und Footer
+
+* Kleinere Abstände zwischen allen Boxen, vor allem auf Laptops; Boxen in einer Zeile enden auf gleicher Höhe.
+* Footer mit Impressum, Haftungsausschluss und Datenschutz-Kurzinfo auf jeder Seite, auch auf der Login-Seite.
+
+---
+
+*(Ab hier die bisherige Dokumentation, auf Türkisch.)*
+
 
 Swing-trade paneli (koyu temalar + **White** açık tema). **Arayüz İngilizce** (v3.5). Bölümler: **Markets · Valuation ·
 Long Term · Short Term · Backtest · Forex & News**. Eski Türkçe bağlantılar
