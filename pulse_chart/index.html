@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="pulse-ui" content="4.0">
+<meta name="pulse-ui" content="4.1">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Pulse Chart</title>
 <style id="baseCss">
@@ -873,8 +873,23 @@ function drawZones(p){
     ctx.font="10px sans-serif";
   }
 }
-/* ---------------------------------------------------------------- v4.0 overlays (Short Term) */
+/* ---------------------------------------------------------------- v4.0 overlays (Short Term)
+   v4.1: Order block'lar kendi renklerini kullanır (mor / pembe) ve taralı doldurulur; böylece
+   destek-direnç bantları (yeşil / kırmızı) ve dikdörtgen formasyonu (camgöbeği) ile karışmaz. */
+var OB_BULL="#A78BFA", OB_BEAR="#F472B6";
 function ovOn(k){ return S.ov && (!S.ov.show || S.ov.show[k]!==false); }
+var _hatch={};
+function hatchFill(color,alpha){
+  const k=color+"|"+alpha;
+  if(_hatch[k]) return _hatch[k];
+  const c=document.createElement("canvas"); c.width=8; c.height=8;
+  const x=c.getContext("2d");
+  x.fillStyle=hexa(color,alpha*0.4); x.fillRect(0,0,8,8);
+  x.strokeStyle=hexa(color,Math.min(1,alpha*2.4)); x.lineWidth=1.5;
+  x.beginPath(); x.moveTo(-2,10); x.lineTo(10,-2); x.moveTo(-2,2); x.lineTo(2,-2);
+  x.moveTo(6,10); x.lineTo(10,6); x.stroke();
+  const p=ctx.createPattern(c,"repeat"); _hatch[k]=p; return p;
+}
 function drawOB(p){
   if(!ovOn("obs")||!(S.ov.obs||[]).length) return;
   ctx.save(); ctx.font="bold 10px sans-serif"; ctx.textBaseline="middle";
@@ -884,14 +899,15 @@ function drawOB(p){
     const x0=X(o.start), x1=(o.end==null)?S.plotW:Math.min(S.plotW,X(o.end+1));
     if(x1<=0||x0>=S.plotW) continue;
     const xa=Math.max(0,x0), top=Math.min(y1,y2), h=Math.max(3,Math.abs(y2-y1));
-    const base=o.kind==="bull"?UP:DOWN, dead=o.end!=null;
-    ctx.fillStyle=hexa(base,dead?.07:.20); ctx.fillRect(xa,top,x1-xa,h);
+    const base=o.kind==="bull"?OB_BULL:OB_BEAR, dead=o.end!=null;
+    ctx.fillStyle=hatchFill(base,dead?.09:.22); ctx.fillRect(xa,top,x1-xa,h);
     ctx.strokeStyle=hexa(base,dead?.35:.95); ctx.lineWidth=dead?1:1.5;
+    ctx.setLineDash(dead?[4,4]:[]);
     ctx.strokeRect(Math.round(xa)+0.5,Math.round(top)+0.5,Math.max(1,x1-xa-1),Math.max(1,h-1));
-    if(!dead){ ctx.beginPath(); const ym=Math.round(top+h/2)+0.5; ctx.setLineDash([5,4]);
-      ctx.moveTo(xa,ym); ctx.lineTo(x1,ym); ctx.strokeStyle=hexa(base,.55); ctx.lineWidth=1; ctx.stroke(); ctx.setLineDash([]); }
+    ctx.setLineDash([]);
+    if(!dead){ ctx.fillStyle=base; ctx.fillRect(Math.round(xa),top,3,h); }   /* sol kenarda kalın işaret */
     if(x1-xa>110 && o.label){ ctx.fillStyle=dead?hexa(base,.7):base; ctx.textAlign="left";
-      ctx.fillText(o.label,xa+5,top+Math.min(h/2,9)+1); }
+      ctx.fillText(o.label,xa+8,top+Math.min(h/2,9)+1); }
   }
   ctx.restore();
 }
@@ -960,7 +976,7 @@ function drawPrints(p){
     const y=Y(p,d.price);
     if(!isFinite(y)||y<p.top||y>p.top+p.h) continue;
     const x0=d.i==null?0:Math.max(0,X(d.i));
-    const col=d.side==="buy"?UP:d.side==="sell"?DOWN:"#C4B5FD";
+    const col=d.side==="buy"?UP:d.side==="sell"?DOWN:"#94A3B8";
     ctx.setLineDash([2,3]); ctx.strokeStyle=hexa(col,.9); ctx.lineWidth=1+Math.min(2,(d.w||0)*2);
     ctx.beginPath(); ctx.moveTo(x0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke();
     ctx.setLineDash([]);
@@ -2206,7 +2222,8 @@ renderTools();
 if(inStreamlit){ stSend("streamlit:componentReady",{apiVersion:1}); }
 else if(window.__PULSE_ARGS__){ applyArgs(window.__PULSE_ARGS__); }
 window.PULSE={S:S,applyArgs:applyArgs,draw:draw,startTool:startTool,geom:geom,
-  fitAll:fitAll,zoomAt:zoomAt,hitDraw:hitDraw,commitPending:commitPending};
+  fitAll:fitAll,zoomAt:zoomAt,hitDraw:hitDraw,commitPending:commitPending,
+  colors:function(){return {obBull:OB_BULL,obBear:OB_BEAR,up:UP,down:DOWN};}};
 </script>
 </body>
 </html>
