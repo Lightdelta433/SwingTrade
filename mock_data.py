@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "3.9"
+DATA_VERSION = "4.0"
 
 try:
     import yfinance as yf
@@ -1340,44 +1340,22 @@ def get_universe_history():
 
 @_ttl_cache(21600, fail_ttl=900)
 def get_earnings_map(days=21):
-    """{ticker: 'YYYY-MM-DD'} — önümüzdeki günlerde bilanço açıklayacaklar."""
-    today = pd.Timestamp.now(tz=TZ).normalize()
-    end = today + pd.Timedelta(days=days)
-    key = os.environ.get("FINNHUB_API_KEY") or os.environ.get("FINNHUB_KEY")
+    """{ticker: 'YYYY-MM-DD'} — önümüzdeki günlerde bilanço açıklayacaklar (Nasdaq takvimi; yoksa Finnhub)."""
+    today = us_today()
+    bdays = [today + pd.Timedelta(days=i) for i in range(days + 1)]
+    bdays = [d for d in bdays if d.weekday() < 5]
     emap = {}
-    if key and _HAS_REQ:
-        try:
-            r = requests.get("https://finnhub.io/api/v1/calendar/earnings",
-                             params={"from": today.strftime("%Y-%m-%d"), "to": end.strftime("%Y-%m-%d"),
-                                     "token": key}, timeout=12)
-            for e in r.json().get("earningsCalendar", []):
-                if e.get("symbol") and e.get("date"):
-                    emap.setdefault(e["symbol"], e["date"])
-            if emap:
-                return {"map": emap, "src": "real"}
-        except Exception:
-            emap = {}
-    if _HAS_REQ:
-        def one_day(d):
-            try:
-                r = requests.get("https://api.nasdaq.com/api/calendar/earnings",
-                                 params={"date": d.strftime("%Y-%m-%d")}, headers=_HEADERS, timeout=6)
-                rows = (r.json().get("data") or {}).get("rows") or []
-                return [row["symbol"] for row in rows if row.get("symbol")]
-            except Exception:
-                return None
-
-        bdays = [today + pd.Timedelta(days=i) for i in range(days + 1)]
-        bdays = [d for d in bdays if d.weekday() < 5]
-        for d, syms in zip(bdays, _pmap(one_day, bdays, workers=6)):  # gün sırası korunur
-            for s in syms or []:
-                emap.setdefault(s, d.strftime("%Y-%m-%d"))
-        if emap:
-            return {"map": emap, "src": "real"}
-    if not _HAS_YF:  # tamamen çevrimdışı demo modu
-        rng = np.random.default_rng(42)
-        return {"map": {t: (today + pd.Timedelta(days=int(rng.integers(2, 60)))).strftime("%Y-%m-%d")
-                        for t in SCAN_UNIVERSE}, "src": "mock"}
+    res = _pmap(_nasdaq_earn_day, [str(d.date()) for d in bdays], workers=6)
+    for d, rows in zip(bdays, res):                       # gün sırası korunur
+        for x in rows or []:
+            emap.setdefault(x["sym"], str(d.date()))
+    if not emap:
+        fh = _finnhub_earn(bdays[0], bdays[-1]) or {}
+        for d in sorted(fh):
+            for x in fh[d]:
+                emap.setdefault(x["sym"], d)
+    if emap:
+        return {"map": emap, "src": "real"}
     return {"map": {}, "src": "none"}
 
 
@@ -2924,6 +2902,16 @@ _SEC_Q_CONCEPTS = {
     "ocf": ["NetCashProvidedByUsedInOperatingActivities",
             "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+    "da": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet",
+           "DepreciationAndAmortization"],
+    "dil_shares": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+}
+# Bilanço (an) değerleri: yalnızca "end" tarihi olur
+_SEC_INSTANT = {
+    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+    "sti": ["ShortTermInvestments", "MarketableSecuritiesCurrent", "AvailableForSaleSecuritiesDebtSecuritiesCurrent"],
+    "ltd": ["LongTermDebtNoncurrent", "LongTermDebt"],
+    "std": ["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings", "CommercialPaper"],
 }
 
 
@@ -2971,6 +2959,34 @@ def get_sec_quarterly(t):
                 best, best_end = per, last
         if best:
             out["series"][metric] = best
+    # ---- v4.0: bilanço kalemleri (son değer) + kapak sayfasındaki hisse sayısı + son dosyalama
+    inst = {}
+
+    def _latest(node, unit="USD"):
+        arr = ((node or {}).get("units") or {}).get(unit) or []
+        arr = [x for x in arr if x.get("end") and x.get("val") is not None]
+        if not arr:
+            return None
+        x = max(arr, key=lambda x: (str(x["end"]), str(x.get("filed", ""))))
+        return {"val": float(x["val"]), "end": str(x["end"]), "form": str(x.get("form") or ""),
+                "filed": str(x.get("filed") or "")}
+    for k, names in _SEC_INSTANT.items():
+        cands = [c for c in (_latest(gaap.get(nm)) for nm in names) if c]
+        if cands:
+            inst[k] = max(cands, key=lambda c: c["end"])
+    dei = (js.get("facts") or {}).get("dei") or {}
+    sh = _latest(dei.get("EntityCommonStockSharesOutstanding"), "shares")
+    if sh:
+        inst["shares_out"] = sh
+    out["instant"] = inst
+    try:
+        rev_names = [nm for nm in _SEC_Q_CONCEPTS["revenue"] + _SEC_Q_CONCEPTS["net_income"] if gaap.get(nm)]
+        allx = [x for nm in rev_names for x in ((gaap[nm].get("units") or {}).get("USD") or []) if x.get("filed")]
+        if allx:
+            x = max(allx, key=lambda x: (str(x.get("end")), str(x["filed"])))
+            out["latest"] = {"form": str(x.get("form") or ""), "filed": str(x["filed"]), "end": str(x.get("end"))}
+    except Exception:
+        pass
     if out["series"].get("revenue") or out["series"].get("net_income"):
         out["src"] = "real"
         out["cik"] = cik
@@ -3014,4 +3030,874 @@ def get_yf_quarterly_fin(t):
             continue
     if out["series"]:
         out["src"] = "real"
+    return out
+
+
+# ======================================================================
+# v4.0 — Bilanço (earnings) takvimi ve şirket bazında bilanço bilgisi
+#   Kaynaklar: Nasdaq günlük bilanço takvimi (tarih, saat dilimi, EPS beklentisi, piyasa değeri),
+#   Yahoo (takvim, earnings_dates, earnings_history, tahminler, çeyrek tablolar),
+#   isteğe bağlı Finnhub (FINNHUB_API_KEY). Hiçbir alan üretilmez: kaynak vermiyorsa None.
+# ======================================================================
+US_TZ = "America/New_York"
+_EARN_DAY = {}
+_WHEN = {"time-pre-market": "bmo", "time-after-hours": "amc", "bmo": "bmo", "amc": "amc"}
+
+
+def _f_or_none(v):
+    f = _num_money(v) if not isinstance(v, (int, float)) else float(v)
+    return None if f != f else float(f)
+
+
+def us_today():
+    return pd.Timestamp.now(tz=US_TZ).normalize().tz_localize(None)
+
+
+def _nasdaq_earn_day(day):
+    """Nasdaq bilanço takvimi — tek gün. Döner: [{sym, name, when, cap, eps_est, n, eps, surprise, fq,
+    last_year_eps}] ya da None (alınamadı). Geçmiş günler 24 saat, bugün/gelecek 2 saat önbellekte."""
+    day = str(pd.Timestamp(day).date())
+    now = time.time()
+    hit = _EARN_DAY.get(day)
+    if hit is not None and now - hit[0] < hit[1]:
+        return hit[2]
+    rows = None
+    if _HAS_REQ:
+        try:
+            r = requests.get("https://api.nasdaq.com/api/calendar/earnings", params={"date": day},
+                             headers=_HEADERS, timeout=8)
+            data = (r.json() or {}).get("data") or {}
+            raw = data.get("rows")
+            if raw is None and isinstance(data, dict) and "rows" in data:
+                raw = []
+            if raw is not None:
+                rows = []
+                for x in raw:
+                    sym = str(x.get("symbol") or "").strip().upper()
+                    if not sym or not re.match(r"^[A-Z][A-Z.\-]{0,6}$", sym):
+                        continue
+                    n = _f_or_none(x.get("noOfEsts"))
+                    rows.append({"sym": sym, "name": str(x.get("name") or "").strip(),
+                                 "when": _WHEN.get(str(x.get("time") or "").strip(), ""),
+                                 "cap": _f_or_none(x.get("marketCap")), "eps_est": _f_or_none(x.get("epsForecast")),
+                                 "n": int(n) if n is not None else None, "eps": _f_or_none(x.get("eps")),
+                                 "surprise": _f_or_none(x.get("surprise")),
+                                 "fq": str(x.get("fiscalQuarterEnding") or "").strip(),
+                                 "last_year_eps": _f_or_none(x.get("lastYearEPS"))})
+        except Exception:
+            rows = None
+    past = pd.Timestamp(day) < us_today()
+    _EARN_DAY[day] = (now, (86400 if past else 7200) if rows is not None else 300, rows)
+    if len(_EARN_DAY) > 400:
+        for k in sorted(_EARN_DAY)[:150]:
+            _EARN_DAY.pop(k, None)
+    return rows
+
+
+def _finnhub_earn(d0, d1):
+    key = os.environ.get("FINNHUB_API_KEY") or os.environ.get("FINNHUB_KEY")
+    if not key or not _HAS_REQ:
+        return None
+    try:
+        r = requests.get("https://finnhub.io/api/v1/calendar/earnings",
+                         params={"from": str(d0.date()), "to": str(d1.date()), "token": key}, timeout=12)
+        out = {}
+        for e in (r.json() or {}).get("earningsCalendar", []):
+            if not e.get("symbol") or not e.get("date"):
+                continue
+            a, est = _num(e.get("epsActual")), _num(e.get("epsEstimate"))
+            out.setdefault(e["date"], []).append(
+                {"sym": str(e["symbol"]).upper(), "name": "", "when": _WHEN.get(str(e.get("hour") or ""), ""),
+                 "cap": None, "eps_est": est, "n": None, "eps": a,
+                 "surprise": ((a - est) / abs(est) * 100) if (a is not None and est) else None,
+                 "fq": f'Q{e.get("quarter")} {e.get("year")}' if e.get("quarter") else "", "last_year_eps": None})
+        return out
+    except Exception:
+        return None
+
+
+def earnings_week_start(offset=0, now=None):
+    """Gösterilecek haftanın pazartesisi. İçinde bulunulan hafta pazartesiden cuma akşamına kadar
+    sabit kalır; cumartesi (ABD saatiyle) gelince bir sonraki haftaya geçer."""
+    now = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz=US_TZ)
+    day = now.normalize().tz_localize(None) if now.tzinfo is not None else now.normalize()
+    wd = day.weekday()
+    monday = day - pd.Timedelta(days=wd) if wd <= 4 else day + pd.Timedelta(days=7 - wd)
+    return monday + pd.Timedelta(days=7 * int(offset))
+
+
+def get_earnings_week(monday):
+    """Haftanın 5 işlem günü: {'days': [{'date', 'bmo': [...], 'amc': [...], 'tbd': [...], 'ok'}], 'src'}.
+    Satırlar piyasa değerine göre büyükten küçüğe."""
+    monday = pd.Timestamp(monday).normalize()
+    days = [monday + pd.Timedelta(days=i) for i in range(5)]
+    res = _pmap(_nasdaq_earn_day, [str(d.date()) for d in days], workers=5)
+    if all(r is None for r in res):
+        fh = _finnhub_earn(days[0], days[-1])
+        if fh is not None:
+            res = [fh.get(str(d.date()), []) for d in days]
+    out = []
+    for d, rows in zip(days, res):
+        slot = {"date": str(d.date()), "bmo": [], "amc": [], "tbd": [], "ok": rows is not None}
+        for x in sorted(rows or [], key=lambda x: -(x["cap"] or 0)):
+            slot[x["when"] or "tbd"].append(x)
+        out.append(slot)
+    return {"days": out, "src": "real" if any(s["ok"] for s in out) else "none"}
+
+
+def _earn_scan(sym, days=12):
+    """Önümüzdeki işlem günlerinde Nasdaq takviminde bu sembol var mı? → (tarih, satır) ya da (None, None)."""
+    t0 = us_today()
+    ds = [t0 + pd.Timedelta(days=i) for i in range(days + 1)]
+    ds = [str(d.date()) for d in ds if d.weekday() < 5]
+    for d, rows in zip(ds, _pmap(_nasdaq_earn_day, ds, workers=6)):
+        for x in rows or []:
+            if x["sym"] == sym:
+                return d, x
+    return None, None
+
+
+def _yf_earn_dates(tk):
+    """Yahoo earnings_dates → [{'date', 'when', 'est', 'eps', 'surprise'}] (yeni → eski)."""
+    out = []
+    try:
+        df = tk.get_earnings_dates(limit=12) if hasattr(tk, "get_earnings_dates") else getattr(tk, "earnings_dates", None)
+        if df is None or not hasattr(df, "iterrows") or df.empty:
+            return out
+        for ts, r in df.iterrows():
+            ts = pd.Timestamp(ts)
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert(US_TZ).tz_localize(None)
+            hm = ts.hour + ts.minute / 60.0
+            when = "bmo" if 0 < hm < 9.5 else "amc" if hm >= 16 else ""
+            sp_ = _num(r.get("Surprise(%)"))
+            out.append({"date": str(ts.date()), "when": when, "est": _num(r.get("EPS Estimate")),
+                        "eps": _num(r.get("Reported EPS")), "surprise": sp_})
+        out.sort(key=lambda x: x["date"], reverse=True)
+    except Exception:
+        return []
+    return out
+
+
+def earnings_verdict(eps, est):
+    """Beat / Miss / In line (sent hassasiyetinde)."""
+    if eps is None or est is None:
+        return None
+    d = float(eps) - float(est)
+    if abs(d) < 0.005:
+        return "In line"
+    return "Beat" if d > 0 else "Miss"
+
+
+def _earnings_info(t):
+    out = {"sym": t, "src": "none", "next": None, "last": None, "sources": [],
+           "checked": pd.Timestamp.now(tz=TZ).strftime("%b %d %H:%M")}
+    if not _HAS_YF or not t or any(c in t for c in "=^") or t.endswith("-USD"):
+        return out
+    tk = yf.Ticker(t)
+    try:
+        qd = get_quarterly.__wrapped__(t)
+    except Exception:
+        qd = {"q": [], "est": {}, "next_date": None}
+    qrows = [r for r in qd.get("q") or [] if r.get("eps") == r.get("eps")]
+    today = us_today()
+    ed = _yf_earn_dates(tk)
+    if ed:
+        out["sources"].append("Yahoo earnings dates")
+    # ---- seyreltilmiş hisse sayısı: son çeyreğin net kârı ÷ seyreltilmiş EPS (raporlanan değerlerden)
+    shares, ni_last, ni_map = None, None, {}
+    try:
+        qf = get_yf_quarterly_fin.__wrapped__(t)
+        ni_map = (qf.get("series") or {}).get("net_income") or {}
+        eps_map = (qf.get("series") or {}).get("eps") or {}
+        for k in sorted(ni_map, reverse=True):
+            e = eps_map.get(k)
+            if e and abs(e) > 1e-6 and ni_map[k]:
+                sh = ni_map[k] / e
+                if sh > 0:
+                    shares = sh
+                    break
+    except Exception:
+        pass
+    # ---- sıradaki bilanço
+    nd, nrow = _earn_scan(t)
+    cal = {}
+    try:
+        c = getattr(tk, "calendar", None)
+        cal = c if isinstance(c, dict) else {}
+    except Exception:
+        cal = {}
+    cal_dates = []
+    try:
+        raw = cal.get("Earnings Date") or []
+        raw = raw if isinstance(raw, (list, tuple)) else [raw]
+        cal_dates = sorted(str(pd.Timestamp(x).date()) for x in raw)
+    except Exception:
+        cal_dates = []
+    nxt = None
+    if nd:
+        nxt = {"date": nd, "when": nrow["when"], "confirmed": True, "source": "Nasdaq earnings calendar",
+               "eps_est": nrow.get("eps_est"), "n": nrow.get("n")}
+        out["sources"].append("Nasdaq earnings calendar")
+    else:
+        fut = [d for d in cal_dates if pd.Timestamp(d) >= today]
+        fut_ed = sorted(x["date"] for x in ed if pd.Timestamp(x["date"]) >= today and x["eps"] is None)
+        d0 = fut[0] if fut else (fut_ed[0] if fut_ed else None)
+        if d0:
+            w = next((x["when"] for x in ed if x["date"] == d0), "")
+            nxt = {"date": d0, "when": w, "confirmed": bool(fut) and len(cal_dates) == 1,
+                   "source": "Yahoo Finance", "eps_est": None, "n": None}
+            out["sources"].append("Yahoo calendar")
+    if nxt:
+        if not nxt["when"]:
+            nxt["when"] = next((x["when"] for x in ed if x["date"] == nxt["date"]), "")
+        est = (qd.get("est") or {}).get("0q") or {}
+        ya = est.get("year_ago")
+        eps_est = est.get("avg")
+        if eps_est is None:
+            eps_est = _num(cal.get("Earnings Average")) if cal else None
+        if eps_est is None:
+            eps_est = nxt.get("eps_est")
+        rev_est = est.get("rev") or (_num(cal.get("Revenue Average")) if cal else None)
+        nxt.update({"eps_est": eps_est, "eps_low": est.get("low"), "eps_high": est.get("high"),
+                    "n": est.get("n") or nxt.get("n"), "year_ago_eps": ya, "rev_est": rev_est,
+                    "ni_est": (eps_est * shares) if (eps_est is not None and shares) else None,
+                    "days": int((pd.Timestamp(nxt["date"]) - today).days), "period": "", "period_end": None})
+        out["next"] = nxt
+    # ---- son açıklanan bilanço
+    rep = next((x for x in ed if x["eps"] is not None), None)
+    last = None
+    if qrows:
+        r = qrows[-1]
+        last = {"period_end": str(pd.Timestamp(r["end"]).date()), "eps": float(r["eps"]),
+                "eps_est": None if r.get("est") != r.get("est") else float(r["est"]),
+                "surprise_pct": None if r.get("surprise") != r.get("surprise") else float(r["surprise"]),
+                "rev": None if r.get("rev") != r.get("rev") else float(r["rev"]), "gaap": bool(r.get("gaap")),
+                "date": None, "when": ""}
+        prev = next((p for p in qrows[:-1] if abs((pd.Timestamp(r["end"]) - pd.Timestamp(p["end"])).days - 365) <= 25), None)
+        if prev:
+            if prev.get("eps") == prev.get("eps") and abs(prev["eps"]) > 1e-9:
+                last["eps_yoy"] = (r["eps"] / prev["eps"] - 1) * 100 if prev["eps"] > 0 else None
+            if last["rev"] is not None and prev.get("rev") == prev.get("rev") and prev["rev"]:
+                last["rev_yoy"] = (last["rev"] / prev["rev"] - 1) * 100
+        out["sources"].append("Yahoo earnings history")
+        if rep and abs(rep["eps"] - last["eps"]) < 0.011:
+            last["date"], last["when"] = rep["date"], rep["when"]
+            if last["eps_est"] is None:
+                last["eps_est"] = rep["est"]
+        elif rep and pd.Timestamp(rep["date"]) > pd.Timestamp(last["period_end"]) + pd.Timedelta(days=100):
+            # tablolar henüz güncellenmedi ama yeni çeyreğin EPS'i açıklandı
+            last = {"period_end": rep["date"], "eps": rep["eps"], "eps_est": rep["est"],
+                    "surprise_pct": rep["surprise"], "rev": None, "gaap": False, "date": rep["date"],
+                    "when": rep["when"], "fresh": True}
+    elif rep:
+        last = {"period_end": rep["date"], "eps": rep["eps"], "eps_est": rep["est"], "surprise_pct": rep["surprise"],
+                "rev": None, "gaap": False, "date": rep["date"], "when": rep["when"], "fresh": True}
+    if last:
+        if last.get("surprise_pct") is None and last.get("eps_est"):
+            last["surprise_pct"] = (last["eps"] - last["eps_est"]) / abs(last["eps_est"]) * 100
+        last["verdict"] = earnings_verdict(last["eps"], last.get("eps_est"))
+        if not last.get("fresh"):
+            k = next((k for k in ni_map if abs((pd.Timestamp(k) - pd.Timestamp(last["period_end"])).days) <= 25), None)
+            last["ni"] = float(ni_map[k]) if k is not None else None
+        if shares:
+            last["ni_adj"] = last["eps"] * shares
+            last["ni_est"] = last["eps_est"] * shares if last.get("eps_est") is not None else None
+        if last.get("date"):
+            try:
+                h = get_history(t)
+                if h is not None and len(h) > 5 and h.attrs.get("src") != "mock":
+                    idx = h.index
+                    rd = pd.Timestamp(last["date"])
+                    base = h[idx <= rd] if last.get("when") == "amc" else h[idx < rd]
+                    if len(base) and len(h[idx > base.index[-1]]):
+                        last["reaction_pct"] = (float(h["Close"].iloc[-1]) / float(base["Close"].iloc[-1]) - 1) * 100
+            except Exception:
+                pass
+        out["last"] = last
+    # açıklanma günü geçti ama rakam henüz yok
+    if out["next"] and out["next"]["days"] < 0:
+        out["next"]["overdue"] = True
+    if out["next"] or out["last"]:
+        out["src"] = "real"
+    return out
+
+
+_EINFO = {}
+
+
+def get_earnings_info(t):
+    """Şirketin sıradaki bilanço tarihi + beklentiler ve son bilançonun beklentiyle karşılaştırması.
+    Bilanço yakınken (±2 gün) 10 dakikada, bir hafta içindeyse saatte, değilse 6 saatte bir yenilenir."""
+    now = time.time()
+    hit = _EINFO.get(t)
+    if hit is not None and now - hit[0] < hit[1]:
+        return hit[2]
+    try:
+        val = _earnings_info(t)
+    except Exception:
+        val = {"sym": t, "src": "none", "next": None, "last": None, "sources": [], "checked": ""}
+    ttl = 21600
+    if val.get("src") != "real":
+        ttl = 600
+    else:
+        nx, ls = val.get("next"), val.get("last")
+        if nx and nx.get("days") is not None and nx["days"] <= 1:
+            ttl = 600
+        elif ls and ls.get("date") and (us_today() - pd.Timestamp(ls["date"])).days <= 2:
+            ttl = 900
+        elif nx and nx.get("days") is not None and nx["days"] <= 7:
+            ttl = 3600
+    _EINFO[t] = (now, ttl, val)
+    if len(_EINFO) > 500:
+        for k in list(_EINFO)[:150]:
+            _EINFO.pop(k, None)
+    return val
+
+
+get_earnings_info.clear = _EINFO.clear
+
+
+# ======================================================================
+# v4.0 — Unusual Whales (kurumsal / dark pool işlemleri)
+#   Ücretli API: Secrets'ta UNUSUAL_WHALES_TOKEN olmalı. Token yoksa hiçbir şey üretilmez ("none").
+#   GET https://api.unusualwhales.com/api/darkpool/{ticker}   (Authorization: Bearer <token>)
+# ======================================================================
+_UW = {"err": "", "ok_at": None}
+
+
+def uw_token():
+    return os.environ.get("UNUSUAL_WHALES_TOKEN") or os.environ.get("UW_TOKEN") or ""
+
+
+def uw_status():
+    return {"on": bool(uw_token()), "err": _UW["err"], "ok_at": _UW["ok_at"]}
+
+
+def _uw_get(path, params=None):
+    tok = uw_token()
+    if not tok or not _HAS_REQ:
+        return None
+    try:
+        r = requests.get("https://api.unusualwhales.com" + path, params=params or {}, timeout=10,
+                         headers={"Authorization": "Bearer " + tok, "Accept": "application/json",
+                                  "User-Agent": "pulse-dashboard"})
+        if r.status_code in (401, 403):
+            _UW["err"] = f"Unusual Whales rejected the token (HTTP {r.status_code})"
+            return None
+        if r.status_code == 429:
+            _UW["err"] = "Unusual Whales rate limit reached — retrying later"
+            return None
+        if r.status_code != 200:
+            _UW["err"] = f"Unusual Whales answered HTTP {r.status_code}"
+            return None
+        _UW["err"], _UW["ok_at"] = "", time.time()
+        return r.json()
+    except Exception as ex:
+        _UW["err"] = f"Unusual Whales not reachable ({type(ex).__name__})"
+        return None
+
+
+@_ttl_cache(900, fail_ttl=180)
+def get_uw_darkpool(t, days=5, min_premium=250000):
+    """Son işlem günlerinin büyük dark-pool / borsa dışı işlemleri.
+    Döner: {'src': 'uw'|'none'|'error', 'err', 'prints': [...], 'levels': [...], 'by_day': {...}, 'total'}
+      prints : {date, ts, price, size, premium, side}   side: buy (≥ en iyi satış), sell (≤ en iyi alış), mid
+      levels : fiyat kümeleri — {price, premium, size, n, buy, sell}  (primi en yüksek 6)
+      by_day : {'YYYY-MM-DD': {'premium', 'buy', 'sell', 'n'}}"""
+    out = {"src": "none", "err": "", "prints": [], "levels": [], "by_day": {}, "total": 0.0}
+    if not uw_token():
+        return out
+    d = us_today()
+    dates = []
+    while len(dates) < int(days):
+        if d.weekday() < 5:
+            dates.append(str(d.date()))
+        d -= pd.Timedelta(days=1)
+
+    def one(day):
+        return _uw_get(f"/api/darkpool/{t}", {"date": day, "limit": 500, "min_premium": int(min_premium),
+                                               "order_by": "premium", "cancellation_status": "hide_cancelled"})
+    res = _pmap(one, dates, workers=3)
+    if all(r is None for r in res):
+        out.update({"src": "error", "err": _UW["err"] or "no answer"})
+        return out
+    prints = []
+    for day, r in zip(dates, res):
+        rows = (r or {}).get("data") if isinstance(r, dict) else None
+        for x in rows or []:
+            try:
+                if x.get("canceled"):
+                    continue
+                price, size = float(x.get("price")), float(x.get("size") or 0)
+                prem = float(x.get("premium") or price * size)
+                ask, bid = _num(x.get("nbbo_ask")), _num(x.get("nbbo_bid"))
+                side = "buy" if (ask and price >= ask) else "sell" if (bid and price <= bid) else "mid"
+                prints.append({"date": day, "ts": str(x.get("executed_at") or ""), "price": price, "size": size,
+                               "premium": prem, "side": side})
+            except (TypeError, ValueError):
+                continue
+    if not prints:
+        out["src"] = "uw"
+        return out
+    px = float(np.median([p["price"] for p in prints]))
+    step = max(px * 0.0025, 0.01)
+    lv, by_day = {}, {}
+    for p_ in prints:
+        k = round(p_["price"] / step)
+        e = lv.setdefault(k, {"pp": 0.0, "premium": 0.0, "size": 0.0, "n": 0, "buy": 0.0, "sell": 0.0})
+        e["pp"] += p_["price"] * p_["premium"]
+        e["premium"] += p_["premium"]
+        e["size"] += p_["size"]
+        e["n"] += 1
+        if p_["side"] in ("buy", "sell"):
+            e[p_["side"]] += p_["premium"]
+        dd = by_day.setdefault(p_["date"], {"premium": 0.0, "buy": 0.0, "sell": 0.0, "n": 0})
+        dd["premium"] += p_["premium"]
+        dd["n"] += 1
+        if p_["side"] in ("buy", "sell"):
+            dd[p_["side"]] += p_["premium"]
+    levels = [{"price": e["pp"] / e["premium"], "premium": e["premium"], "size": e["size"], "n": e["n"],
+               "buy": e["buy"], "sell": e["sell"]} for e in lv.values() if e["premium"] > 0]
+    levels.sort(key=lambda e: -e["premium"])
+    prints.sort(key=lambda p_: -p_["premium"])
+    out.update({"src": "uw", "prints": prints[:60], "levels": levels[:6], "by_day": by_day,
+                "total": float(sum(p_["premium"] for p_ in prints))})
+    return out
+
+
+# ======================================================================
+# v4.0 — Topluluk duyarlılığı (Reddit · StockTwits · X)
+#   Reddit    : finans alt-forumlarında arama (herkese açık JSON; REDDIT_CLIENT_ID/SECRET varsa OAuth)
+#               + ApeWisdom'un Reddit anılma sayıları (hype)
+#   StockTwits: sembol akışı — kullanıcıların kendi koyduğu Bullish/Bearish etiketi
+#   X         : yalnızca X_BEARER_TOKEN varsa (X'in ücretsiz okuma API'si yok)
+#   Metin puanı sözlük tabanlıdır (şeffaf, model yok). Hiçbir gönderi / sayı üretilmez.
+# ======================================================================
+SENT_SUBS = "wallstreetbets+stocks+investing+options+StockMarket+pennystocks+Daytrading+swingtrading"
+_BULL_W = {"bull", "bullish", "buy", "buying", "bought", "long", "calls", "call", "moon", "mooning", "rocket",
+           "breakout", "breaking", "rally", "rallying", "rip", "ripping", "squeeze", "undervalued", "cheap",
+           "beat", "beats", "upgrade", "upgraded", "strong", "growth", "accumulate", "accumulating", "hold",
+           "holding", "hodl", "dip", "btfd", "green", "up", "higher", "outperform", "winner", "gains", "gain",
+           "profit", "bottomed", "oversold", "support", "loading", "adding", "added", "tendies", "ath", "soar",
+           "soaring", "surge", "surging", "pump", "pumping", "yolo", "print", "printing", "upside", "raised"}
+_BEAR_W = {"bear", "bearish", "sell", "selling", "sold", "short", "shorting", "puts", "put", "crash", "crashing",
+           "dump", "dumping", "drop", "dropping", "tank", "tanking", "overvalued", "expensive", "bubble", "miss",
+           "missed", "downgrade", "downgraded", "weak", "red", "down", "lower", "underperform", "loser", "loss",
+           "losses", "bagholder", "bagholding", "bag", "rug", "rugpull", "overbought", "resistance", "dilution",
+           "diluting", "offering", "bankrupt", "bankruptcy", "fraud", "scam", "plunge", "plunging", "collapse",
+           "fall", "falling", "fell", "dead", "top", "topped", "downside", "cut", "warning", "lawsuit", "fade"}
+_NEG_W = {"not", "no", "never", "dont", "don't", "isnt", "isn't", "wont", "won't", "cant", "can't", "without",
+          "nobody", "stop", "avoid"}
+_BULL_E = ("🚀", "📈", "🟢", "💎", "🐂", "🔥", "🌕", "💰")
+_BEAR_E = ("📉", "🔻", "🩸", "🐻", "💀", "🤡", "🔴", "⚰")
+
+
+def text_sentiment(text):
+    """Metnin duyarlılığı: −1 … +1 (sözlük + olumsuzlama + emoji). 0 = belirsiz / nötr."""
+    txt = str(text or "")
+    low = txt.lower()
+    toks = re.findall(r"[a-z']+", low)
+    b = s = 0.0
+    for i, w in enumerate(toks):
+        v = 1 if w in _BULL_W else -1 if w in _BEAR_W else 0
+        if not v:
+            continue
+        if any(x in _NEG_W for x in toks[max(0, i - 2):i]):
+            v = -v
+        if v > 0:
+            b += 1
+        else:
+            s += 1
+    b += sum(min(3, txt.count(e)) for e in _BULL_E) * 0.7
+    s += sum(min(3, txt.count(e)) for e in _BEAR_E) * 0.7
+    if b + s == 0:
+        return 0.0
+    return float((b - s) / (b + s))
+
+
+def _mentions(t, name, text):
+    """Gönderi gerçekten bu hisseden mi söz ediyor? ($TICKER, büyük harfle TICKER ya da şirket adı)."""
+    if not text:
+        return False
+    if re.search(r"\$" + re.escape(t) + r"\b", text, re.I):
+        return True
+    if len(t) >= 3 and re.search(r"(?<![A-Za-z])" + re.escape(t) + r"(?![A-Za-z])", text):
+        return True
+    first = re.sub(r"[^A-Za-z ]", "", str(name or "")).split()
+    key = first[0] if first else ""
+    return len(key) >= 4 and key.lower() not in ("the", "inc", "corp", "group", "holdings") and \
+        re.search(r"\b" + re.escape(key) + r"\b", text, re.I) is not None
+
+
+_RTOK = {"tok": None, "exp": 0.0}
+
+
+def _reddit_token():
+    cid, sec = os.environ.get("REDDIT_CLIENT_ID"), os.environ.get("REDDIT_CLIENT_SECRET")
+    if not (cid and sec and _HAS_REQ):
+        return None
+    if _RTOK["tok"] and time.time() < _RTOK["exp"]:
+        return _RTOK["tok"]
+    try:
+        r = requests.post("https://www.reddit.com/api/v1/access_token", auth=(cid, sec),
+                          data={"grant_type": "client_credentials"},
+                          headers={"User-Agent": "pulse-dashboard/4.0"}, timeout=8)
+        j = r.json()
+        _RTOK["tok"], _RTOK["exp"] = j.get("access_token"), time.time() + float(j.get("expires_in", 3000)) - 120
+        return _RTOK["tok"]
+    except Exception:
+        return None
+
+
+def _reddit_posts(t, name):
+    """(gönderiler | None, hata). Gönderi: {title, text, score, comments, ts, url, sub}."""
+    if not _HAS_REQ:
+        return None, "offline"
+    q = f'"${t}" OR "{t}"' if len(t) >= 3 else f'"${t}"'
+    params = {"q": q, "restrict_sr": 1, "sort": "new", "t": "week", "limit": 100, "raw_json": 1}
+    tok = _reddit_token()
+    try:
+        if tok:
+            r = requests.get(f"https://oauth.reddit.com/r/{SENT_SUBS}/search", params=params, timeout=10,
+                             headers={"Authorization": "Bearer " + tok, "User-Agent": "pulse-dashboard/4.0"})
+        else:
+            r = requests.get(f"https://www.reddit.com/r/{SENT_SUBS}/search.json", params=params, timeout=10,
+                             headers={"User-Agent": "pulse-dashboard/4.0 (market dashboard)"})
+        if r.status_code != 200:
+            return None, f"Reddit answered HTTP {r.status_code}" + (
+                "" if tok else " — Reddit often blocks cloud servers without an app key")
+        out = []
+        for ch_ in ((r.json() or {}).get("data") or {}).get("children") or []:
+            x = ch_.get("data") or {}
+            title, body = str(x.get("title") or ""), str(x.get("selftext") or "")[:1500]
+            if not _mentions(t, name, title + " " + body):
+                continue
+            out.append({"title": title, "text": body, "score": float(x.get("score") or 0),
+                        "comments": float(x.get("num_comments") or 0), "ts": float(x.get("created_utc") or 0),
+                        "url": "https://www.reddit.com" + str(x.get("permalink") or ""),
+                        "sub": str(x.get("subreddit") or "")})
+        return out, ""
+    except Exception as ex:
+        return None, f"Reddit not reachable ({type(ex).__name__})"
+
+
+@_ttl_cache(600, fail_ttl=180)
+def get_reddit_trending():
+    """ApeWisdom: Reddit'te en çok anılan hisseler → {ticker: {rank, mentions, upvotes, rank_prev, mentions_prev}}."""
+    if not _HAS_REQ:
+        return {"map": {}, "src": "none"}
+
+    def page(n):
+        try:
+            r = requests.get(f"https://apewisdom.io/api/v1.0/filter/all-stocks/page/{n}", timeout=8,
+                             headers={"User-Agent": "pulse-dashboard/4.0"})
+            return (r.json() or {}).get("results") or []
+        except Exception:
+            return None
+    out = {}
+    for rows in _pmap(page, [1, 2, 3], workers=3):
+        for x in rows or []:
+            tk_ = str(x.get("ticker") or "").upper()
+            if not tk_:
+                continue
+            f = lambda k: _num(x.get(k))
+            out[tk_] = {"rank": f("rank"), "mentions": f("mentions"), "upvotes": f("upvotes"),
+                        "rank_prev": f("rank_24h_ago"), "mentions_prev": f("mentions_24h_ago")}
+    return {"map": out, "src": "real" if out else "none"}
+
+
+def _stocktwits(t):
+    if not _HAS_REQ:
+        return None, "offline", None
+    try:
+        r = requests.get(f"https://api.stocktwits.com/api/2/streams/symbol/{t}.json", timeout=8,
+                         headers={"User-Agent": _HEADERS.get("User-Agent", "Mozilla/5.0"), "Accept": "application/json"})
+        if r.status_code != 200:
+            return None, f"StockTwits answered HTTP {r.status_code}", None
+        j = r.json() or {}
+        out = []
+        for m in j.get("messages") or []:
+            lab = (((m.get("entities") or {}).get("sentiment")) or {}).get("basic")
+            try:
+                ts = pd.Timestamp(m.get("created_at")).timestamp()
+            except Exception:
+                ts = 0.0
+            out.append({"title": str(m.get("body") or "")[:400], "text": "", "label": lab,
+                        "score": float(((m.get("likes") or {}).get("total")) or 0), "comments": 0.0, "ts": ts,
+                        "url": f"https://stocktwits.com/message/{m.get('id')}" if m.get("id") else "", "sub": ""})
+        return out, "", _num((j.get("symbol") or {}).get("watchlist_count"))
+    except Exception as ex:
+        return None, f"StockTwits not reachable ({type(ex).__name__})", None
+
+
+def x_token():
+    return os.environ.get("X_BEARER_TOKEN") or os.environ.get("TWITTER_BEARER_TOKEN") or ""
+
+
+def _x_posts(t):
+    tok = x_token()
+    if not tok or not _HAS_REQ:
+        return None, "not connected"
+    try:
+        r = requests.get("https://api.twitter.com/2/tweets/search/recent", timeout=10,
+                         headers={"Authorization": "Bearer " + tok},
+                         params={"query": f'("${t}" OR #{t}) lang:en -is:retweet', "max_results": 100,
+                                 "tweet.fields": "created_at,public_metrics"})
+        if r.status_code != 200:
+            return None, f"X answered HTTP {r.status_code}"
+        out = []
+        for x in (r.json() or {}).get("data") or []:
+            pm = x.get("public_metrics") or {}
+            try:
+                ts = pd.Timestamp(x.get("created_at")).timestamp()
+            except Exception:
+                ts = 0.0
+            out.append({"title": str(x.get("text") or "")[:400], "text": "", "ts": ts, "sub": "",
+                        "score": float(pm.get("like_count") or 0) + 2 * float(pm.get("retweet_count") or 0),
+                        "comments": float(pm.get("reply_count") or 0),
+                        "url": f"https://x.com/i/web/status/{x.get('id')}"})
+        return out, ""
+    except Exception as ex:
+        return None, f"X not reachable ({type(ex).__name__})"
+
+
+def _score_posts(posts):
+    """Gönderiler → {'n','bull','bear','neutral','score'} (beğeni/yorumla ağırlıklı, −100 … +100)."""
+    b = s = n0 = 0
+    wsum = acc = 0.0
+    for p_ in posts:
+        lab = p_.get("label")
+        v = 1.0 if lab == "Bullish" else -1.0 if lab == "Bearish" else text_sentiment(p_["title"] + " " + p_.get("text", ""))
+        sgn = 1 if v > 0.15 else -1 if v < -0.15 else 0
+        p_["sent"] = sgn
+        w = 1.0 + np.log10(1.0 + max(0.0, p_.get("score", 0.0)) + max(0.0, p_.get("comments", 0.0)))
+        wsum += w
+        acc += w * sgn
+        if sgn > 0:
+            b += 1
+        elif sgn < 0:
+            s += 1
+        else:
+            n0 += 1
+    return {"n": len(posts), "bull": b, "bear": s, "neutral": n0,
+            "score": float(acc / wsum * 100) if wsum else 0.0}
+
+
+def sentiment_label(score, n):
+    if n < 5:
+        return "Not enough posts"
+    return "Bullish" if score >= 20 else "Bearish" if score <= -20 else "Neutral"
+
+
+def hype_level(h):
+    m, prev, rank = h.get("mentions"), h.get("mentions_prev"), h.get("rank")
+    if m is None:
+        return "Unknown"
+    ratio = (m / prev) if prev else None
+    if (rank is not None and rank <= 10) or (ratio is not None and ratio >= 3 and m >= 50):
+        return "Extreme"
+    if (rank is not None and rank <= 30) or (ratio is not None and ratio >= 1.6 and m >= 20):
+        return "Elevated"
+    return "Normal" if m >= 5 else "Low"
+
+
+_SENT, _SENT_HIST = {}, {}
+
+
+def _social_sentiment(t):
+    name = company_name(t)
+    red, red_err = _reddit_posts(t, name)
+    stw, stw_err, watchers = _stocktwits(t)
+    xp, x_err = _x_posts(t)
+    tr_ = get_reddit_trending()
+    ape = (tr_.get("map") or {}).get(t)
+    now = time.time()
+    src = {}
+    total_w = total = 0.0
+    n_all = bull = bear = neu = 0
+    top = []
+    for key, label, posts, err in (("reddit", "Reddit", red, red_err), ("stocktwits", "StockTwits", stw, stw_err),
+                                   ("x", "X (Twitter)", xp, x_err)):
+        if posts is None:
+            src[key] = {"name": label, "ok": False, "err": err, "n": 0}
+            continue
+        sc = _score_posts(posts)
+        d24 = sum(1 for p_ in posts if now - p_["ts"] <= 86400)
+        src[key] = {"name": label, "ok": True, "err": "", **sc, "last24h": d24}
+        w = min(sc["n"], 60)
+        total_w += w
+        total += w * sc["score"]
+        n_all += sc["n"]
+        bull += sc["bull"]
+        bear += sc["bear"]
+        neu += sc["neutral"]
+        for p_ in posts:
+            top.append({"src": label, "title": p_["title"][:160], "url": p_["url"], "sent": p_["sent"],
+                        "eng": p_.get("score", 0) + p_.get("comments", 0), "ts": p_["ts"], "sub": p_.get("sub", "")})
+    score = total / total_w if total_w else 0.0
+    hype = {"mentions": (ape or {}).get("mentions"), "mentions_prev": (ape or {}).get("mentions_prev"),
+            "rank": (ape or {}).get("rank"), "rank_prev": (ape or {}).get("rank_prev"),
+            "upvotes": (ape or {}).get("upvotes"), "watchers": watchers,
+            "tracked": tr_.get("src") == "real"}
+    if hype["mentions"] is None and hype["tracked"]:
+        hype["mentions"] = 0.0            # liste alındı ama hisse ilk 300'de değil → az anılıyor
+    if hype["mentions"] is not None and hype["mentions_prev"]:
+        hype["change_pct"] = (hype["mentions"] / hype["mentions_prev"] - 1) * 100
+    hype["level"] = hype_level(hype)
+    top.sort(key=lambda p_: (-(now - p_["ts"] <= 3 * 86400), -p_["eng"]))
+    ok_any = any(v.get("ok") for v in src.values()) or hype["tracked"]
+    out = {"sym": t, "src": "real" if ok_any else "none", "score": round(score, 1), "n": n_all,
+           "label": sentiment_label(score, n_all), "bull": bull, "bear": bear, "neutral": neu,
+           "sources": src, "hype": hype, "top": top[:5],
+           "checked": pd.Timestamp.now(tz=TZ).strftime("%H:%M")}
+    if ok_any and n_all >= 5:
+        hist = _SENT_HIST.setdefault(t, [])
+        if not hist or now - hist[-1][0] > 540:
+            hist.append((now, out["score"]))
+            del hist[:-144]
+    out["hist"] = [(a_, b_) for a_, b_ in _SENT_HIST.get(t, [])]
+    return out
+
+
+def get_sentiment(t):
+    """Topluluk duyarlılığı — 10 dakikada bir yenilenir (sayfa açıkken sürekli tarama)."""
+    now = time.time()
+    hit = _SENT.get(t)
+    if hit is not None and now - hit[0] < hit[1]:
+        return hit[2]
+    try:
+        val = _social_sentiment(t)
+    except Exception:
+        val = {"sym": t, "src": "none", "score": 0.0, "n": 0, "label": "Not enough posts", "bull": 0, "bear": 0,
+               "neutral": 0, "sources": {}, "hype": {"level": "Unknown"}, "top": [], "checked": "", "hist": []}
+    _SENT[t] = (now, 600 if val.get("src") == "real" else 180, val)
+    if len(_SENT) > 300:
+        for k in list(_SENT)[:100]:
+            _SENT.pop(k, None)
+    return val
+
+
+get_sentiment.clear = _SENT.clear
+
+
+
+# ======================================================================
+# v4.0 — Değer patikasının veri tabanı: şirketin EN SON resmî raporları
+#   Akış kalemleri (ciro, faaliyet kârı, capex …): son 12 ay = son mali yıl + bu yılın YTD'si − geçen yılın
+#   aynı dönemi (SEC 10-K / 10-Q). Bilanço kalemleri: son çeyrek sonu. Hiçbir değer tahmin edilmez; kaynak
+#   vermiyorsa alan boş kalır ve model yıllık tabloya (son 10-K) döner.
+# ======================================================================
+def _sec_ttm(per):
+    """{(start, end): değer} → son 12 ay: {'val', 'end', 'kind'} ya da None."""
+    items = []
+    for (s_, e_), v in (per or {}).items():
+        try:
+            items.append((pd.Timestamp(s_), pd.Timestamp(e_), float(v)))
+        except (TypeError, ValueError):
+            continue
+    fy = [x for x in items if 350 <= (x[1] - x[0]).days <= 380]
+    if not fy:
+        return None
+    s0, e0, v0 = max(fy, key=lambda x: x[1])
+    base = {"val": v0, "end": str(e0.date()), "kind": "fiscal year"}
+    day = pd.Timedelta(days=1)
+
+    def ytd(start, until=None):
+        """start'tan başlayan en uzun dönem: doğrudan YTD kaydı ya da art arda çeyreklerin toplamı."""
+        direct = [x for x in items if abs((x[0] - start).days) <= 7 and (x[1] - x[0]).days < 350
+                  and (until is None or x[1] <= until + pd.Timedelta(days=8))]
+        best = max(direct, key=lambda x: x[1]) if direct else None
+        cur, tot, end = start, 0.0, None
+        while True:
+            nx = [x for x in items if abs((x[0] - cur).days) <= 7 and (x[1] - x[0]).days <= 100
+                  and (until is None or x[1] <= until + pd.Timedelta(days=8))]
+            if not nx:
+                break
+            x = max(nx, key=lambda x: x[1])
+            tot, end, cur = tot + x[2], x[1], x[1] + day
+        if end is not None and (best is None or end > best[1] + pd.Timedelta(days=8)):
+            return end, tot
+        return (best[1], best[2]) if best else (None, None)
+    e1, v1 = ytd(e0 + day)
+    if e1 is None:
+        return base
+    ep, vp = ytd(s0, until=e1 - pd.DateOffset(years=1))
+    if ep is None or abs((ep - (e1 - pd.DateOffset(years=1))).days) > 8:
+        return base
+    return {"val": v0 + v1 - vp, "end": str(e1.date()), "kind": "last 12 months"}
+
+
+def _sec_annual(per):
+    """Mali yıl değerleri {yıl sonu: değer} (eski → yeni)."""
+    out = {}
+    for (s_, e_), v in (per or {}).items():
+        try:
+            d = (pd.Timestamp(e_) - pd.Timestamp(s_)).days
+        except (TypeError, ValueError):
+            continue
+        if 350 <= d <= 380:
+            out[str(pd.Timestamp(e_).date())] = float(v)
+    return dict(sorted(out.items()))
+
+
+@_ttl_cache(21600, fail_ttl=900)
+def get_latest_basis(t):
+    """Şirketin en güncel resmî verileri → {'src', 'items': {ad: {'val', 'as_of', 'source'}}, 'annual': {...}}.
+    items: rev_ttm, op_ttm, ni_ttm, ocf_ttm, capex_ttm, da_ttm, dil_shares, shares_out, cash, debt."""
+    out = {"src": "none", "items": {}, "annual": {}, "latest": None}
+    sec = get_sec_quarterly(t)
+    ser = sec.get("series") or {}
+    put = lambda k, v, as_of, source: out["items"].__setitem__(k, {"val": float(v), "as_of": as_of, "source": source})  # noqa: E731
+    if sec.get("src") == "real":
+        lt = sec.get("latest") or {}
+        out["latest"] = lt
+        tag = f'SEC {lt.get("form") or "filing"}' + (f', filed {lt["filed"]}' if lt.get("filed") else "")
+        for k, m in (("rev_ttm", "revenue"), ("op_ttm", "op_income"), ("ni_ttm", "net_income"), ("ocf_ttm", "ocf"),
+                     ("capex_ttm", "capex"), ("da_ttm", "da")):
+            x = _sec_ttm(ser.get(m))
+            if x:
+                put(k, abs(x["val"]) if k == "capex_ttm" else x["val"], f'{x["kind"]} to {x["end"]}', tag)
+        ds = ser.get("dil_shares") or {}
+        q = [(pd.Timestamp(e_), v) for (s_, e_), v in ds.items()
+             if (pd.Timestamp(e_) - pd.Timestamp(s_)).days <= 100]
+        if q:
+            e_, v = max(q, key=lambda x: x[0])
+            put("dil_shares", v, f"quarter to {e_.date()}", tag)
+        inst = sec.get("instant") or {}
+        if inst.get("shares_out"):
+            x = inst["shares_out"]
+            put("shares_out", x["val"], f'as of {x["end"]}', f'SEC {x.get("form") or "filing"} cover page')
+        if inst.get("cash"):
+            c = inst["cash"]
+            sti = inst.get("sti")
+            put("cash", c["val"] + (sti["val"] if sti and sti["end"] == c["end"] else 0.0), f'as of {c["end"]}',
+                f'SEC {c.get("form") or "filing"} balance sheet')
+        debt = [inst[k] for k in ("ltd", "std") if inst.get(k)]
+        if debt:
+            end = max(x["end"] for x in debt)
+            put("debt", sum(x["val"] for x in debt if x["end"] == end), f"as of {end}",
+                f'SEC {debt[0].get("form") or "filing"} balance sheet')
+        out["annual"] = {"revenue": _sec_annual(ser.get("revenue")), "op_income": _sec_annual(ser.get("op_income"))}
+        out["src"] = "sec"
+    # Yahoo'nun çeyrek bilançosu (şirketin raporundan): toplam borç ve nakit — SEC etiketleri eksikse
+    if _HAS_YF and ("debt" not in out["items"] or "cash" not in out["items"]):
+        try:
+            bs = getattr(yf.Ticker(t), "quarterly_balance_sheet", None)
+            if bs is not None and hasattr(bs, "empty") and not bs.empty:
+                idx = {str(i).strip().lower(): i for i in bs.index}
+                col = max(bs.columns)
+                as_of = f"as of {pd.Timestamp(col).date()}"
+                for k, names in (("debt", ("total debt",)),
+                                 ("cash", ("cash cash equivalents and short term investments",
+                                           "cash and cash equivalents"))):
+                    if k in out["items"]:
+                        continue
+                    v = next((_num(bs.loc[idx[n], col]) for n in names if n in idx), None)
+                    if v is not None:
+                        put(k, v, as_of, "company balance sheet via Yahoo Finance")
+                        if out["src"] == "none":
+                            out["src"] = "yahoo"
+        except Exception:
+            pass
     return out
