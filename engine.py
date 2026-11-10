@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "3.9"
+ENGINE_VERSION = "4.0"
 NAN = float("nan")
 
 
@@ -4552,8 +4552,30 @@ def _med_d(xs, default):
     return float(np.median(v)) if v else default
 
 
-def driver_hist(f, an, b_wacc=None, rf=4.3):
-    """Geçmişten sürücü varsayılanları: son ciro, hisse, net borç, marjlar, vergi, capex/D&A oranı, dağıtım."""
+def hist_rev_drop(revs):
+    """Raporlanan yıllık cirolarda zirveden dibe en büyük düşüş (%); hiç düşüş yoksa 0."""
+    worst, peak = 0.0, None
+    for r in revs or []:
+        if not (_ok(r) and r > 0):
+            continue
+        peak = r if peak is None else max(peak, r)
+        worst = max(worst, (1 - r / peak) * 100)
+    return float(worst)
+
+
+def hist_cagr(revs):
+    """Raporlanan yıllık ciroların bileşik büyümesi (%/yıl); en az 3 yıl gerekir."""
+    v = [r for r in revs or [] if _ok(r) and r > 0]
+    if len(v) < 3:
+        return None
+    return float(((v[-1] / v[0]) ** (1.0 / (len(v) - 1)) - 1) * 100)
+
+
+def driver_hist(f, an, b_wacc=None, rf=4.3, basis=None):
+    """Sürücü modelinin başlangıç değerleri — yalnızca şirketin raporladığı rakamlardan.
+    basis (mock_data.get_latest_basis): en son 10-Q / 10-K'dan son 12 ay ve son bilanço; verilirse marj,
+    capex, amortisman, hisse sayısı ve net borç buradan alınır (yıllık tablo yerine). 'basis' alanı her
+    girdinin değerini, dönemini ve kaynağını listeler."""
     if not f:
         return None
     n = f["n"]
@@ -4578,20 +4600,75 @@ def driver_hist(f, an, b_wacc=None, rf=4.3):
     g_rev = (revs[-1] / revs[-2] - 1) * 100 if len(revs) >= 2 else 5.0
     nd = last("net_debt")
     kd = (b_wacc or {}).get("kd") if b_wacc else None
-    return {"rev_last": float(rev), "shares0": float(sh), "net_debt0": float(nd) if _ok(nd) else 0.0,
-            "op_m_hist": [m for m in f["op_m"] if _ok(m)], "op_m_last": last("op_m"),
-            "capex_pct": float(min(60.0, _med_d(caps, 0.05) * 100)), "da_pct": float(min(40.0, _med_d(das, 0.04) * 100)),
-            "tax": float(tax * 100), "payout": float(min(100.0, max(0.0, _med_d(pay, 0.5) * 100))),
-            "share_chg": float(max(-6.0, min(6.0, chg))), "g_rev_last": float(max(-50.0, min(150.0, g_rev))),
-            "kd": float(kd if _ok(kd) else rf + 1.5), "rf": float(rf), "eps_last": last("eps")}
+    yrs = [str(y) for y in (f.get("years") or [])]
+    fy_tag = f'fiscal year {yrs[-1]}' if yrs else "last fiscal year"
+    ann = "annual report (company filing via Yahoo Finance)"
+    out = {"rev_last": float(rev), "shares0": float(sh), "net_debt0": float(nd) if _ok(nd) else 0.0,
+           "op_m_hist": [m for m in f["op_m"] if _ok(m)], "op_m_last": last("op_m"),
+           "capex_pct": float(min(60.0, _med_d(caps, 0.05) * 100)), "da_pct": float(min(40.0, _med_d(das, 0.04) * 100)),
+           "tax": float(tax * 100), "payout": float(min(100.0, max(0.0, _med_d(pay, 0.5) * 100))),
+           "share_chg": float(max(-6.0, min(6.0, chg))), "g_rev_last": float(max(-50.0, min(150.0, g_rev))),
+           "kd": float(kd if _ok(kd) else rf + 1.5), "rf": float(rf), "eps_last": last("eps"),
+           "rev_hist": revs, "hist_years": yrs[-len(revs):] if yrs else []}
+    rows = {"rev": ("Revenue (last fiscal year)", out["rev_last"], "money", fy_tag, ann),
+            "opm": ("Operating margin", out["op_m_last"], "pct", fy_tag, ann),
+            "capex": ("Capex as % of revenue", out["capex_pct"], "pct", "median of the last 3 fiscal years", ann),
+            "da": ("Depreciation as % of revenue", out["da_pct"], "pct", "median of the last 3 fiscal years", ann),
+            "shares": ("Diluted shares", out["shares0"], "num", fy_tag, ann),
+            "nd": ("Net debt (− = net cash)", out["net_debt0"], "money", fy_tag, ann),
+            "tax": ("Tax rate", out["tax"], "pct", "median of the reported years", ann),
+            "chg": ("Share count change per year", out["share_chg"], "pct", "last two fiscal years", ann),
+            "payout": ("Share of free cash flow paid out", out["payout"], "pct", "last 3 fiscal years", ann)}
+    it = (basis or {}).get("items") or {}
+    use = lambda k: it[k] if (k in it and _ok(it[k].get("val"))) else None  # noqa: E731
+    rt, ot = use("rev_ttm"), use("op_ttm")
+    if rt and rt["val"] > 0:
+        out["rev_ttm"] = float(rt["val"])
+        rows["rev_ttm"] = ("Revenue (last 12 months)", rt["val"], "money", rt["as_of"], rt["source"])
+        if ot:
+            out["op_m_last"] = float(ot["val"] / rt["val"] * 100)
+            rows["opm"] = ("Operating margin", out["op_m_last"], "pct", ot["as_of"], ot["source"])
+        ct, dt = use("capex_ttm"), use("da_ttm")
+        if ct:
+            out["capex_pct"] = float(min(60.0, abs(ct["val"]) / rt["val"] * 100))
+            rows["capex"] = ("Capex as % of revenue", out["capex_pct"], "pct", ct["as_of"], ct["source"])
+        if dt and dt["val"] > 0:
+            out["da_pct"] = float(min(40.0, dt["val"] / rt["val"] * 100))
+            rows["da"] = ("Depreciation as % of revenue", out["da_pct"], "pct", dt["as_of"], dt["source"])
+    ds = use("dil_shares")
+    if ds and 0.6 * sh <= ds["val"] <= 1.6 * sh:          # birim hatasına karşı: yıllık rakama yakın olmalı
+        out["shares0"] = float(ds["val"])
+        rows["shares"] = ("Diluted shares", out["shares0"], "num", ds["as_of"], ds["source"])
+    cash, debt = use("cash"), use("debt")
+    if cash and debt:
+        out["net_debt0"] = float(debt["val"] - cash["val"])
+        rows["nd"] = ("Net debt (− = net cash)", out["net_debt0"], "money", debt["as_of"],
+                      debt["source"] if debt["source"] == cash["source"] else debt["source"] + " / " + cash["source"])
+    # uzun geçmiş (SEC): marj aralığı ve ciro döngüsü yalnızca raporlanan yıllardan
+    an_ = (basis or {}).get("annual") or {}
+    rv, op = an_.get("revenue") or {}, an_.get("op_income") or {}
+    if len(rv) > len(revs):
+        ys = sorted(rv)
+        out["rev_hist"] = [rv[y] for y in ys]
+        out["hist_years"] = [y[:4] for y in ys]
+    ms = [(y[:4], op[y] / rv[y] * 100) for y in sorted(rv) if y in op and rv[y] > 0]
+    if len(ms) > len(out["op_m_hist"]):
+        out["op_m_hist"] = [m for _, m in ms]
+        out["op_m_years"] = [y for y, _ in ms]
+    else:
+        out["op_m_years"] = yrs[-len(out["op_m_hist"]):] if yrs else []
+    out["basis"] = [{"k": k, "label": r_[0], "val": r_[1], "fmt": r_[2], "as_of": r_[3], "source": r_[4]}
+                    for k, r_ in rows.items()]
+    out["basis_src"] = (basis or {}).get("src") or "none"
+    return out
 
 
 def driver_trough(opm_hist, m_peak):
-    """Varsayılan dip marjı: geçmiş medyanın %40'ı (en kötü yıldan aşağı değil, zirveden en az 5 puan aşağıda)."""
-    med = _med_d(opm_hist, 10.0)
-    t = med * 0.4 if med > 0 else med
-    t = max(min(opm_hist) if opm_hist else -20.0, t)
-    return float(max(-30.0, min(t, m_peak - 5.0)))
+    """Varsayılan dip marjı: şirketin raporladığı yılların EN DÜŞÜK faaliyet marjı (v4.0 — eskiden medyanın
+    %40'ı gibi bir varsayımdı). Zirvenin en az 1 puan altında tutulur; −50 ile sınırlı."""
+    hs = [m for m in opm_hist or [] if _ok(m)]
+    t = min(hs) if hs else m_peak - 5.0
+    return float(max(-50.0, min(t, m_peak - 1.0)))
 
 
 def driver_margin_defaults(hist, an, fy0=None):
@@ -4841,3 +4918,214 @@ def driver_sensitivity(price, hist, an, cfg, rows_vals, mults, years=5):
             line.append(p["rows"][-1]["value"]["base"] if p else float("nan"))
         grid.append(line)
     return {"key": key, "rows": list(rows_vals), "multiples": list(mults), "grid": grid, "years": years}
+
+
+# ======================================================================
+# v4.0 — Short Term grafiği için katmanlar
+#   setup_geometry : tablodaki formasyonun (üçgen, dikdörtgen, merdiven, kırılım) çizgileri
+#   order_blocks   : güçlü bir hareketten önceki son ters mum (kurumsal emir bölgesi) — hacim teyitli
+#   volume_spikes  : ortalamanın belirgin üstünde hacimle yapılan alım / satım barları
+#   Konumlar verilen df'nin satır numaralarıdır (0 … len-1).
+# ======================================================================
+PAT_COLOR = {"bull": "#F5B544", "bear": "#F5B544", "neutral": "#F5B544"}
+
+
+def setup_geometry(df, key, lookback=140, left=3, right=3):
+    """Formasyonun çizimi: {'key','label','lines':[{'pts':[(i, fiyat)…],'dash','w'}],'dots':[(i, fiyat)…],
+    'fill':[(i, fiyat)…],'at':(i, fiyat)}  — setup_patterns ile aynı pivotlardan. Bulunamazsa None."""
+    if df is None or len(df) < 45 or not key:
+        return None
+    d = df.tail(int(lookback))
+    n, off = len(d), len(df) - len(d)
+    H = d["High"].to_numpy(float)
+    L = d["Low"].to_numpy(float)
+    C = d["Close"].to_numpy(float)
+    px = float(C[-1])
+    a = _last(atr(d, 14)) or px * 0.02
+    hi_i, _ = pivot_points(d["High"], left, right)
+    _, lo_i = pivot_points(d["Low"], left, right)
+    g = lambda i, p: (int(i) + off, float(p))
+    last = n - 1
+    if key.startswith("triangle") and len(hi_i) >= 3 and len(lo_i) >= 3:
+        hx, hy = hi_i[-3:], [H[j] for j in hi_i[-3:]]
+        lx, ly = lo_i[-3:], [L[j] for j in lo_i[-3:]]
+        sh, bh = _fit(hx, hy)
+        sl, bl = _fit(lx, ly)
+        x0 = min(hx[0], lx[0])
+        up0, up1 = sh * x0 + bh, sh * last + bh
+        dn0, dn1 = sl * x0 + bl, sl * last + bl
+        return {"key": key, "label": SETUP_NAMES.get(key, "Triangle"),
+                "lines": [{"pts": [g(x0, up0), g(last, up1)], "w": 2},
+                          {"pts": [g(x0, dn0), g(last, dn1)], "w": 2}],
+                "dots": [g(i, H[i]) for i in hx] + [g(i, L[i]) for i in lx],
+                "fill": [g(x0, up0), g(last, up1), g(last, dn1), g(x0, dn0)],
+                "at": g((x0 + last) // 2, max(up0, up1))}
+    if key == "rectangle" and len(hi_i) >= 2 and len(lo_i) >= 2:
+        hs_i, ls_i = hi_i[-3:], lo_i[-3:]
+        top = float(np.mean([H[j] for j in hs_i]))
+        bot = float(np.mean([L[j] for j in ls_i]))
+        x0 = min(hs_i[0], ls_i[0])
+        return {"key": key, "label": "Rectangle",
+                "lines": [{"pts": [g(x0, top), g(last, top)], "w": 2}, {"pts": [g(x0, bot), g(last, bot)], "w": 2}],
+                "dots": [g(i, H[i]) for i in hs_i] + [g(i, L[i]) for i in ls_i],
+                "fill": [g(x0, top), g(last, top), g(last, bot), g(x0, bot)], "at": g((x0 + last) // 2, top)}
+    if key == "ladder" and len(hi_i) >= 3 and len(lo_i) >= 3:
+        hs_i, ls_i = hi_i[-3:], lo_i[-3:]
+        piv = sorted([(i, H[i], "h") for i in hs_i] + [(i, L[i], "l") for i in ls_i])
+        zig = [g(i, p) for i, p, _ in piv]
+        steps = []
+        for seq, arr in ((hs_i, H), (ls_i, L)):          # basamaklar: her tepe / dip bir sonrakine kadar yatay
+            for k, i in enumerate(seq):
+                end = seq[k + 1] if k + 1 < len(seq) else last
+                steps.append({"pts": [g(i, arr[i]), g(end, arr[i])], "dash": True, "w": 1.5})
+        up = H[hs_i[-1]] > H[hs_i[0]]
+        return {"key": key, "label": "Staircase " + ("▲" if up else "▼"),
+                "lines": [{"pts": zig, "w": 2}] + steps,
+                "dots": zig, "fill": None, "at": g(hs_i[-1], H[hs_i[-1]])}
+    if key in ("breakout", "breakdown"):
+        for N in (20, 55):
+            if n < N + 6:
+                continue
+            prior_h = float(np.nanmax(H[-N - 1:-1]))
+            prior_l = float(np.nanmin(L[-N - 1:-1]))
+            x0 = n - N - 1
+            if key == "breakout" and px > prior_h + 0.25 * a:
+                j = x0 + int(np.nanargmax(H[-N - 1:-1]))
+                return {"key": key, "label": f"{N}-day high breakout",
+                        "lines": [{"pts": [g(x0, prior_h), g(last, prior_h)], "w": 2},
+                                  {"pts": [g(x0, prior_l), g(last, prior_l)], "dash": True, "w": 1}],
+                        "dots": [g(j, prior_h), g(last, C[-1])], "fill": None, "at": g(j, prior_h)}
+            if key == "breakdown" and px < prior_l - 0.25 * a:
+                j = x0 + int(np.nanargmin(L[-N - 1:-1]))
+                return {"key": key, "label": f"{N}-day low breakdown",
+                        "lines": [{"pts": [g(x0, prior_l), g(last, prior_l)], "w": 2},
+                                  {"pts": [g(x0, prior_h), g(last, prior_h)], "dash": True, "w": 1}],
+                        "dots": [g(j, prior_l), g(last, C[-1])], "fill": None, "at": g(j, prior_l)}
+    return None
+
+
+def order_blocks(df, lookback=220, vol_n=20, imp_atr=1.2, vol_x=1.3, max_n=4):
+    """Order block'lar (kurumsal emir bölgeleri).
+    Yükseliş OB: güçlü bir yükselişten (≥ imp_atr × ATR, önceki 10 barın zirvesini aşan kapanış) hemen önceki
+    son düşüş mumu; düşüş OB: tersi. Hareket ortalamanın en az vol_x katı hacimle gelmiş olmalı.
+    Bölge = o mumun aralığı. Fiyat bölgenin öbür ucunun ötesinde kapanırsa bölge geçersiz ("mitigated").
+    Döner: [{kind: bull|bear, i, lo, hi, vol_x, move_atr, end (geçersizleştiği bar | None), tests, dist}]
+    — geçerli olanlar, fiyata en yakından uzağa; en çok max_n."""
+    if df is None or len(df) < vol_n + 15:
+        return []
+    d = df.tail(int(lookback))
+    n, off = len(d), len(df) - len(d)
+    O = d["Open"].to_numpy(float)
+    H = d["High"].to_numpy(float)
+    L = d["Low"].to_numpy(float)
+    C = d["Close"].to_numpy(float)
+    V = d["Volume"].to_numpy(float)
+    A = atr(d, 14).to_numpy(float)
+    px = float(C[-1])
+    has_vol = float(np.nansum(V)) > 0
+    out = []
+    i = vol_n
+    while i < n - 2:
+        a = A[i]
+        if not (a == a and a > 0):
+            i += 1
+            continue
+        va = float(np.nanmean(V[i - vol_n:i])) if has_vol else 0.0
+        hit = None
+        for side in ("bull", "bear"):
+            if side == "bull" and not C[i] < O[i]:
+                continue
+            if side == "bear" and not C[i] > O[i]:
+                continue
+            j_end = min(n - 1, i + 3)
+            if side == "bull":
+                ext = float(np.max(C[i + 1:j_end + 1]))
+                move = (ext - H[i]) / a
+                broke = ext > float(np.max(H[max(0, i - 10):i + 1]))
+            else:
+                ext = float(np.min(C[i + 1:j_end + 1]))
+                move = (L[i] - ext) / a
+                broke = ext < float(np.min(L[max(0, i - 10):i + 1]))
+            if move < imp_atr or not broke:
+                continue
+            vx = float(np.max(V[i:j_end + 1]) / va) if (has_vol and va > 0) else None
+            if vx is not None and vx < vol_x:
+                continue
+            lo, hi = float(L[i]), float(H[i])
+            if hi - lo > 2.0 * a:                     # çok uzun mum: gövde + ilgili fitil
+                lo, hi = (lo, float(max(O[i], C[i]))) if side == "bull" else (float(min(O[i], C[i])), hi)
+            end, tests = None, 0
+            inside = False
+            for j in range(j_end + 1, n):
+                if side == "bull":
+                    if C[j] < lo:
+                        end = j
+                        break
+                    touch = L[j] <= hi
+                else:
+                    if C[j] > hi:
+                        end = j
+                        break
+                    touch = H[j] >= lo
+                if touch and not inside:
+                    tests += 1
+                inside = touch
+            hit = {"kind": side, "i": int(i) + off, "lo": lo, "hi": hi,
+                   "vol_x": round(vx, 2) if vx is not None else None, "move_atr": round(float(move), 2),
+                   "end": (int(end) + off) if end is not None else None, "tests": int(tests),
+                   "dist": float(((lo + hi) / 2 / px - 1) * 100) if px > 0 else 0.0}
+            break
+        if hit:
+            out.append(hit)
+            i += 2
+        else:
+            i += 1
+    live = [o for o in out if o["end"] is None]
+    # aynı yöndeki üst üste binen bölgelerden hacmi yüksek olan kalır
+    live.sort(key=lambda o: -(o["vol_x"] or 0))
+    keep = []
+    for o in live:
+        if any(k["kind"] == o["kind"] and o["lo"] <= k["hi"] and o["hi"] >= k["lo"] for k in keep):
+            continue
+        keep.append(o)
+    near = [o for o in keep if abs(o["dist"]) <= 25.0] or keep      # uzak bölgeler çizilmez
+    near.sort(key=lambda o: abs(o["dist"]))
+    return near[:int(max_n)]
+
+
+def volume_spikes(df, n=20, mult=2.0, lookback=160, max_n=14):
+    """Ortalamanın (önceki n bar) en az mult katı hacimli barlar.
+    Yön: kapanış aralığın üst yarısında ve önceki kapanışın üstündeyse ALIM, alt yarısında ve altındaysa SATIM;
+    belirsiz barlar atlanır. Döner: [{i, side: buy|sell, ratio, close_pos, chg}] (eski → yeni)."""
+    if df is None or len(df) < n + 5:
+        return []
+    d = df.tail(int(lookback) + n)
+    off = len(df) - len(d)
+    H = d["High"].to_numpy(float)
+    L = d["Low"].to_numpy(float)
+    C = d["Close"].to_numpy(float)
+    V = d["Volume"].to_numpy(float)
+    if float(np.nansum(V)) <= 0:
+        return []
+    out = []
+    for i in range(n, len(d)):
+        base = float(np.nanmean(V[i - n:i]))
+        if not (base > 0) or not (V[i] == V[i]):
+            continue
+        r = V[i] / base
+        if r < mult:
+            continue
+        rng = H[i] - L[i]
+        pos = (C[i] - L[i]) / rng if rng > 0 else 0.5
+        chg = (C[i] / C[i - 1] - 1) * 100 if C[i - 1] > 0 else 0.0
+        if pos >= 0.55 and chg > 0:
+            side = "buy"
+        elif pos <= 0.45 and chg < 0:
+            side = "sell"
+        else:
+            continue
+        out.append({"i": int(i) + off, "side": side, "ratio": round(float(r), 1), "close_pos": round(float(pos), 2),
+                    "chg": round(float(chg), 2)})
+    out.sort(key=lambda m: -m["ratio"])
+    out = sorted(out[:int(max_n)], key=lambda m: m["i"])
+    return out
