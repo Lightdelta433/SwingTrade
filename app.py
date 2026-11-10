@@ -2,10 +2,12 @@
 ========================================================================
  PULSE — PİYASA PANELİ  (app.py)  —  v3
 ========================================================================
-Bu sürüm 3 dosyadan oluşur ve üçü birlikte yüklenmelidir:
+Bu sürüm şu dosyalardan oluşur ve hepsi birlikte yüklenmelidir:
     app.py       → arayüz
     mock_data.py → veri (gerçek veri öncelikli, etiketli mock fallback)
     engine.py    → indikatörler, filtre motoru, tarayıcı, backtest
+    chart.py     → grafik bileşeni (pulse_chart/index.html)
+    backend.py   → kalıcı depo (GitHub), e-posta, push bildirimleri, arka plan izleyici
 
 Bölümler: Piyasalar · Long Term · Short Term · Backtest · Forex & Haberler
 
@@ -27,6 +29,7 @@ import os
 import re
 import secrets
 import time
+import unicodedata
 from urllib.parse import urlencode
 
 import numpy as np
@@ -38,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "3.9"
+APP_VERSION = "4.0"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -52,14 +55,20 @@ try:
 except ModuleNotFoundError:
     ch = None
     _missing.append("chart.py")
+try:
+    import backend as bk  # noqa: E402
+except ModuleNotFoundError:
+    bk = None
+    _missing.append("backend.py")
 if _missing:
     st.error("**" + ", ".join(_missing) + " not found.** This version consists of these files: `app.py`, "
-             "`mock_data.py`, `engine.py`, `chart.py` and `pulse_chart/index.html`. Upload the missing files "
+             "`mock_data.py`, `engine.py`, `chart.py`, `backend.py` and `pulse_chart/index.html`. Upload the missing files "
              "to the same folder as app.py on GitHub and click **Reboot app** in Streamlit.")
     st.stop()
 
 _vers = {"app.py": APP_VERSION, "mock_data.py": getattr(md, "DATA_VERSION", "old"),
-         "engine.py": getattr(en, "ENGINE_VERSION", "old"), "chart.py": getattr(ch, "CHART_VERSION", "old")}
+         "engine.py": getattr(en, "ENGINE_VERSION", "old"), "chart.py": getattr(ch, "CHART_VERSION", "old"),
+         "backend.py": getattr(bk, "BACKEND_VERSION", "old")}
 if set(_vers.values()) != {APP_VERSION}:
     st.error("**File versions do not match** — " +
              " · ".join(f"{k} v{v}" for k, v in _vers.items()) +
@@ -68,8 +77,62 @@ if set(_vers.values()) != {APP_VERSION}:
 _uiv = ch.frontend_version()
 if _uiv is not None and _uiv != getattr(ch, "UI_VERSION", _uiv):
     st.warning(f"**pulse_chart/index.html is outdated** (v{_uiv}, this release needs v{ch.UI_VERSION}). The chart "
-               "keeps working, but its labels, vertical scrolling and gap boxes come from the new file — upload "
-               "`pulse_chart/index.html` to GitHub and click **Reboot app**.")
+               "keeps working, but the clean chart header, pattern lines, order blocks and volume markers come "
+               "from the new file — upload `pulse_chart/index.html` to GitHub and click **Reboot app**.")
+
+
+# ======================================================================
+# Ayarlar (Streamlit Secrets / ortam değişkenleri) → backend + veri katmanı
+# ======================================================================
+def _sec(name):
+    """Secrets'taki bir anahtar ya da bölüm (yoksa None). Secrets dosyası hiç yoksa da hata vermez."""
+    try:
+        sec = st.secrets
+        v = sec.get(name) if hasattr(sec, "get") else None
+    except Exception:
+        return None
+    try:
+        return dict(v) if hasattr(v, "keys") else v
+    except Exception:
+        return None
+
+
+def _boot_config():
+    env = os.environ.get
+    store = dict(_sec("pulse_store") or {})
+    store.setdefault("repo", env("PULSE_STORE_REPO"))
+    store.setdefault("token", env("PULSE_STORE_TOKEN"))
+    mail = dict(_sec("pulse_mail") or {})
+    mail.setdefault("user", env("PULSE_MAIL_USER"))
+    mail.setdefault("app_password", env("PULSE_MAIL_APP_PASSWORD"))
+    push = dict(_sec("pulse_push") or {})
+    url = _sec("PULSE_URL") or (_sec("pulse_app") or {}).get("url") or env("PULSE_URL") or ""
+    if not url:                      # adres verilmediyse tarayıcının geldiği adresten
+        try:
+            host = (st.context.headers or {}).get("Host") or ""
+            if host and not host.startswith(("localhost", "127.", "0.0.0.0")):
+                url = "https://" + host
+        except Exception:
+            url = ""
+    bk.configure({"store": store, "mail": mail, "push": push, "app_url": url})
+    uw = _sec("UNUSUAL_WHALES_TOKEN") or _sec("UW_TOKEN") or (_sec("unusual_whales") or {}).get("token")
+    for k, v in (("FINNHUB_API_KEY", _sec("FINNHUB_API_KEY")), ("UNUSUAL_WHALES_TOKEN", uw),
+                 ("X_BEARER_TOKEN", _sec("X_BEARER_TOKEN") or _sec("TWITTER_BEARER_TOKEN")),
+                 ("REDDIT_CLIENT_ID", _sec("REDDIT_CLIENT_ID")), ("REDDIT_CLIENT_SECRET", _sec("REDDIT_CLIENT_SECRET"))):
+        if v and not os.environ.get(k):
+            os.environ[k] = str(v)
+
+
+_boot_config()
+
+
+@st.cache_resource(show_spinner=False)
+def _monitor_boot():
+    """Arka plan izleyicisi sunucu başına bir kez başlar (fiyat alarmı, bilanço, takvim bildirimleri)."""
+    return bk.start_monitor(md)
+
+
+_monitor_boot()
 
 # ======================================================================
 # Tasarım sabitleri
@@ -231,7 +294,10 @@ PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
            "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending",
-           "vp_cfg", "peer_ovr", "vtype_ovr", "auth", "cal_ccy"] + WIDGET_KEYS
+           "vp_cfg", "peer_ovr", "vtype_ovr", "auth", "cal_ccy", "notify", "notes_last", "st_ov"] + WIDGET_KEYS
+# Hesaba bağlı, kalıcı saklanan ayarlar (giriş yapılan her cihazda aynı; arka plan bildirimleri de bunları okur)
+PROFILE_KEYS = ["watchlist", "alerts", "draws", "saved_filters", "theme", "vp_cfg", "peer_ovr", "vtype_ovr",
+                "cal_ccy", "ch_cfg", "ch_type", "acct", "notify", "bt_saved", "st_ov"]
 
 
 def _qp(key, default=None):
@@ -258,12 +324,50 @@ if not ss.get("_restored"):
     ss["_restored"] = True
 
 
+def _profile_of_session():
+    """Oturumdaki hesap ayarlarının JSON'a birebir çevrilebilen kısmı + imzası."""
+    prof = {}
+    for k in PROFILE_KEYS:
+        if k not in ss:
+            continue
+        try:
+            back = json.loads(json.dumps(ss[k]))
+        except (TypeError, ValueError):
+            continue
+        if back == ss[k]:
+            prof[k] = back
+    return prof, hashlib.md5(json.dumps(prof, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _profile_load(email):
+    """Girişte: hesabın kayıtlı ayarları oturuma yüklenir (izleme listesi, alarmlar, bildirimler …)."""
+    prof = bk.profile_get(email)
+    for k in PROFILE_KEYS:
+        if k in prof:
+            ss[k] = copy.deepcopy(prof[k])
+    if "theme" in prof:
+        ss.pop("w_theme", None)
+    for k in [k for k in ss.keys() if str(k).startswith("calccy_")]:
+        del ss[k]
+    ss["_prof_sig"] = _profile_of_session()[1] if prof else None
+
+
 def _save_state():
     try:
         STORE[SID] = {k: copy.deepcopy(ss[k]) for k in PERSIST if k in ss}
         if len(STORE) > 800:
             for k in list(STORE)[:200]:
                 STORE.pop(k, None)
+    except Exception:
+        pass
+    try:
+        a = ss.get("auth")
+        if isinstance(a, dict) and a.get("user"):
+            prof, sig = _profile_of_session()
+            if sig != ss.get("_prof_sig"):
+                bk.profile_put(a["user"], prof)
+                ss["_prof_sig"] = sig
+            bk.kv_flush_async()
     except Exception:
         pass
 
@@ -279,9 +383,10 @@ for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journa
                "flt_edit": False, "bt_extra": [], "bt_extra_ver": 0, "bt_ran": None, "bt_saved": [],
                "acct": 100000.0, "draws": {}, "alerts": {}, "ch_cfg": copy.deepcopy(ch.DEFAULT_CFG),
                "ch_type": "candles", "ch_rev": 1, "ch_n": None, "tf_pending": None, "ch_tfkey": "w_tf",
+               "w_stlb": "6M", "w_sttf": "1d",
                "theme": "gece", "notes": [], "notes_seen": 0, "notes_gone": [], "ai_auto": False,
                "saved_filters": [], "flt_pending": None, "vp_cfg": {}, "peer_ovr": {}, "vtype_ovr": {},
-               "ai_nonce": 0, "w_aiauto": False,
+               "ai_nonce": 0, "w_aiauto": False, "notify": dict(bk.NOTIFY_DEFAULT), "notes_last": 0, "st_ov": {},
                **BT_WIDGETS}.items():
     ss.setdefault(_k, copy.deepcopy(_v))
 # Streamlit, o çalıştırmada çizilmeyen widget'ın değerini siler (ör. filtre editörü kapalıyken).
@@ -549,7 +654,7 @@ def step_head(n, title, right=""):
 # ======================================================================
 H("""
 <style>
-.block-container{padding-top:3.2rem;padding-bottom:3rem;max-width:1480px}
+.block-container{padding-top:3.2rem;padding-bottom:3rem;max-width:1520px}
 header[data-testid="stHeader"]{background:transparent}
 .pulse-anchor{height:0;scroll-margin-top:72px}
 div[data-testid="stElementContainer"]:has(iframe[height="0"]),
@@ -654,7 +759,7 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
  font-family:ui-monospace,monospace}
 .kpigrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:8px}
 .kpitile .k{white-space:normal;line-height:1.3}
-.srstrip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;padding-bottom:4px}
+.srstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding-bottom:4px}
 .srstrip .tile{padding:9px 10px;line-height:1.3}
 .gapgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;padding-bottom:4px}
 .gapgrid .tile{padding:8px 10px;line-height:1.3;border-top-left-radius:4px;border-bottom-left-radius:4px}
@@ -830,6 +935,94 @@ a.opp-row *{text-decoration:none!important}
 [data-testid="stBaseButton-segmented_controlActive"]{background:#5B8CFF!important;color:#0A0B0D!important;
  border-color:#5B8CFF!important}
 [data-testid="stBaseButton-segmented_control"]{background:#0C0D10;color:#A3ABB8;border-color:#22262D}
+/* v4.0 — earnings card */
+.earn-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px;margin:8px 0 2px 0}
+.earn-box{background:#0C0D10;border:1px solid #22262D;border-radius:12px;padding:10px 12px;font-size:12.5px;
+ line-height:1.45;min-width:0}
+.earn-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.earn-k{font-size:10.5px;font-weight:800;letter-spacing:.09em;color:#8D96A5}
+.earn-cd{font-size:12px;font-weight:800;color:#C4CAD4}
+.earn-date{font-size:17px;font-weight:800;letter-spacing:-.01em;margin-top:2px}
+.earn-sub{font-size:11.5px;color:#8D96A5;margin-bottom:4px}
+.earn-r{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-top:1px solid #1C1F25}
+.earn-r>span:first-child{color:#A3ABB8;flex:none}
+.earn-r>span:last-child{text-align:right;font-family:ui-monospace,monospace;font-size:12px}
+.earn-v{font-size:13px;font-weight:900;letter-spacing:.08em;border:1px solid;border-radius:8px;padding:2px 12px}
+.earn-hot{border:2px solid #F87171;background:rgba(248,113,113,.10);box-shadow:0 0 0 3px rgba(248,113,113,.10)}
+.earn-hot,.earn-hot *{color:#F87171 !important}
+.earn-hot .earn-date{font-size:19px}
+.earn-hot .earn-cd{font-size:13px;background:#F87171;color:#0A0B0D !important;border-radius:6px;padding:1px 8px}
+.earn-hot .earn-r{border-top-color:rgba(248,113,113,.3)}
+/* v4.0 — weekly earnings calendar */
+.ecal-wrap{overflow-x:auto;margin-top:8px}
+.ecal{display:grid;grid-template-columns:repeat(5,minmax(186px,1fr));gap:8px;min-width:980px}
+.eday{background:#0C0D10;border:1px solid #1C1F25;border-radius:12px;overflow:hidden;min-width:0}
+.eday.etoday{border-color:#5B8CFF;box-shadow:inset 0 2px 0 #5B8CFF}
+.eday.epast{opacity:.82}
+.eday-h{display:flex;align-items:baseline;gap:7px;padding:8px 10px;border-bottom:1px solid #1C1F25;font-size:13px}
+.eday-h span{color:#8D96A5;font-size:12px}
+.eday-h .etag{background:#5B8CFF;color:#0A0B0D;font-weight:800;font-size:10px;border-radius:5px;padding:1px 6px}
+.eday-h .ecount{margin-left:auto;font-size:10.5px}
+.eslots{display:grid;grid-template-columns:1fr 1fr}
+.eslot{padding:6px 6px 8px 6px;min-width:0}
+.eslot+.eslot{border-left:1px solid #1C1F25}
+.eslot-h{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#8D96A5;
+ padding:2px 2px 6px 2px;white-space:nowrap}
+.esun{color:#F5B544}.emoon{color:#C4B5FD}
+a.eco{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:8px;text-decoration:none;color:#ECEEF1;
+ border:1px solid transparent;min-width:0}
+a.eco:hover{background:#171A1F}
+a.eco.ewl{border-color:#5B8CFF;background:rgba(91,140,255,.10)}
+a.eco .et{font-family:ui-monospace,monospace;font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
+a.eco .eres{margin-left:auto;font-size:10px}
+.enone{color:#3A404A;font-size:12px;padding:4px}
+.emore summary{cursor:pointer;font-size:11px;color:#5B8CFF;font-weight:700;padding:4px;list-style:none}
+.emore summary::-webkit-details-marker{display:none}
+.etbd{border-top:1px solid #1C1F25;padding:6px 8px;font-size:11px;display:flex;flex-wrap:wrap;gap:2px 4px;align-items:center}
+.etbd a.eco{padding:1px 3px}
+.etbd .av{display:none}
+/* v4.0 — Short Term flow + sentiment */
+.flow-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;border-top:1px solid #1C1F25;font-size:12.5px}
+.flow-r .aist{flex:none}
+.sent-bar{position:relative;height:8px;border-radius:6px;margin:12px 0 4px 0;
+ background:linear-gradient(90deg,#F87171 0%,#3A404A 50%,#3DDC97 100%)}
+.sent-mid{position:absolute;left:50%;top:-3px;width:1px;height:14px;background:#8D96A5}
+.sent-dot{position:absolute;top:-5px;width:18px;height:18px;border-radius:50%;margin-left:-9px;border:3px solid #0A0B0D}
+.sent-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;margin-top:8px}
+a.sent-post{display:flex;align-items:baseline;gap:7px;padding:4px 0;border-top:1px solid #1C1F25;font-size:12px;
+ color:#C4CAD4;text-decoration:none}
+a.sent-post:hover .sp-t{text-decoration:underline}
+a.sent-post .sp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* v4.0 — footer / Impressum */
+.pfoot{margin-top:26px;border-top:1px solid #1C1F25;padding:16px 2px 6px 2px;display:grid;
+ grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px 28px;font-size:12px;line-height:1.55;color:#8D96A5}
+.pfoot h4{margin:0 0 4px 0;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#C4CAD4}
+.pfoot a{color:#5B8CFF;text-decoration:none}
+.pfoot .pf-copy{grid-column:1/-1;border-top:1px solid #1C1F25;padding-top:8px;font-size:11px}
+/* v4.0 — compact layout: smaller vertical gaps between boxes (most visible on laptops) */
+.block-container{padding-top:2.4rem !important;padding-bottom:1.6rem !important}
+[data-testid="stVerticalBlock"]{gap:.6rem !important}
+[data-testid="stHorizontalBlock"]{gap:.7rem !important}
+[data-testid="stExpander"] details{margin:0}
+[data-testid="stPlotlyChart"]{margin-bottom:-6px}
+.sec-head{margin:2px 0 6px 0}
+.page-title{font-size:26px;margin:0 0 2px 0}
+.hdr-line{margin:4px 0 8px 0}
+/* boxes that share a row end at the same height (no holes under the shorter one) */
+[data-testid="stColumn"]{display:flex;flex-direction:column}
+[data-testid="stColumn"]>[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stColumn"]>[data-testid="stVerticalBlockBorderWrapper"]>div{flex:1 1 auto;display:flex;flex-direction:column}
+[data-testid="stColumn"]>[data-testid="stVerticalBlockBorderWrapper"]>div>[data-testid="stVerticalBlock"]{flex:1 1 auto}
+[data-testid="stColumn"]>[data-testid="stVerticalBlockBorderWrapper"]>div>[data-testid="stVerticalBlock"]>[data-testid="stVerticalBlockBorderWrapper"]:last-child{flex:1 1 auto}
+[data-testid="stColumn"]>[data-testid="stVerticalBlock"]{flex:1 1 auto}
+[data-testid="stColumn"]>[data-testid="stVerticalBlock"]>[data-testid="stLayoutWrapper"]:last-child{flex:1 1 auto;display:flex;flex-direction:column}
+[data-testid="stColumn"]>[data-testid="stVerticalBlock"]>[data-testid="stLayoutWrapper"]:last-child>[data-testid="stVerticalBlock"]{flex:1 1 auto}
+@media (max-height:900px),(max-width:1600px){
+ .block-container{padding-top:1.9rem !important}
+ [data-testid="stVerticalBlock"]{gap:.5rem !important}
+ .page-title{font-size:23px}
+ .tile{padding:8px 10px}
+}
 </style>
 """)
 
@@ -877,13 +1070,13 @@ chart_data = ch.chart_data   # tek kaynak: chart.py
 # ----------------------------------------------------------------------
 # Grafik bileşeni olayları (çizim, alarm, indikatör ayarı, grafik türü)
 # ----------------------------------------------------------------------
-def handle_chart_event(ev):
+def handle_chart_event(ev, nkey="ch_n"):
     if not isinstance(ev, dict):
         return
     n = ev.get("n")
-    if n is None or n == ss.get("ch_n"):
+    if n is None or n == ss.get(nkey):
         return
-    ss.ch_n = n
+    ss[nkey] = n
     sym = _SYM_RE.sub("", str(ev.get("sym") or ACTIVE)).upper()[:24] or ACTIVE
     kind = ev.get("kind")
     if kind == "draws":
@@ -914,8 +1107,9 @@ def apply_pending_tf(key):
         ss.tf_pending = None
 
 
-def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None):
-    """TradingView tarzı grafik; dosya eksikse Plotly'ye düşer."""
+def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None, ov_fn=None, comp_key="pulse_chart"):
+    """TradingView tarzı grafik; dosya eksikse Plotly'ye düşer.
+    ov_fn(payload) → katman (formasyon, order block, hacim işaretleri); yalnızca Short Term verir."""
     ss.ch_tfkey = tf_key
     if ch.missing_frontend():
         st.warning("`pulse_chart/index.html` is not uploaded — falling back to a simple chart. On GitHub, also upload "
@@ -929,9 +1123,15 @@ def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None):
     if not payload.get("ok"):
         H('<div class="muted">Could not load chart data for this symbol.</div>')
         return
+    ov = None
+    if ov_fn is not None:
+        try:
+            ov = ov_fn(payload)
+        except Exception:
+            ov = None          # katman hesaplanamazsa grafik yine çizilir
     ev = ch.render_chart(payload, ss.draws.get(sym, []), ss.alerts.get(sym, []),
-                         ss.ch_type, height=height, rev=ss.ch_rev, key="pulse_chart", light=LIGHT)
-    handle_chart_event(ev)
+                         ss.ch_type, height=height, rev=ss.ch_rev, key=comp_key, light=LIGHT, ov=ov)
+    handle_chart_event(ev, "ch_n" if comp_key == "pulse_chart" else "ch_n_" + comp_key)
 
 
 def candle_label(tf, intraday):
@@ -1194,14 +1394,14 @@ def panel(label, key):
 def notes_body():
     n = ss.notes
     H(f'<div style="font-size:13px;font-weight:800;margin-bottom:4px">Notifications</div>'
-      f'<div class="muted small">The AI scan posts here when it finds a fresh, confirmed breakout. '
-      f'It runs while the app is open; no scanning happens while it is closed.</div>')
+      f'<div class="muted small">Triggered price alerts, earnings of your watchlist, economic data and fresh '
+      f'breakouts from the AI scan.</div>')
     if not n:
         H('<div class="muted" style="padding:10px 0">No notifications yet.</div>')
     else:
         rows = ""
         for x in n[:20]:
-            rows += (f'<a class="nw" target="_self" href="{link(sec="Markets", sym=x["ticker"])}">'
+            rows += (f'<a class="nw" target="_self" href="{link(sec=x.get("sec") or "Markets", sym=x["ticker"] or ACTIVE)}">'
                      f'<span class="nwb"><b>{esc(x["title"])}</b>'
                      f'<span class="muted small nwm">{esc(x["body"])} · {esc(x["at"])}</span></span>'
                      f'<span class="nwx">→</span></a>')
@@ -1215,6 +1415,124 @@ def notes_body():
         ss.notes_gone = list(dict.fromkeys(gone))[-300:]
         ss.notes, ss.notes_seen = [], 0
         st.rerun()
+    notify_settings()
+
+
+NTF_KEYS = {"on": "ntf_on", "price": "ntf_price", "earn_up": "ntf_eup", "earn_res": "ntf_eres", "macro": "ntf_macro",
+            "macro_impact": "ntf_imp", "push": "ntf_push", "email": "ntf_email", "browser": "ntf_browser"}
+
+
+def notify_settings():
+    """Cihaza bildirim: hangi olaylar, hangi kanallar (push · e-posta · tarayıcı)."""
+    n = bk.notify_prefs({"notify": ss.get("notify")})
+    for k, wk in NTF_KEYS.items():
+        if wk not in ss:
+            ss[wk] = n[k]
+    with st.expander("Send to my device", expanded=False):
+        st.checkbox("Notifications on", key="ntf_on")
+        H('<div style="font-size:12px;font-weight:700;margin:6px 0 2px 0">What</div>')
+        st.checkbox("Price alerts (set in any chart with the bell tool)", key="ntf_price")
+        st.checkbox("Earnings ahead — watchlist companies, 5 days before and on the day", key="ntf_eup")
+        st.checkbox("Earnings results — Beat / Miss with a short summary", key="ntf_eres")
+        st.checkbox("Economic data when it is released (currencies chosen in the calendar)", key="ntf_macro")
+        st.selectbox("Economic data importance", ["High", "Medium +"], key="ntf_imp")
+        H('<div style="font-size:12px;font-weight:700;margin:6px 0 2px 0">Where</div>')
+        push = st.checkbox("Push to phone / computer (also when Pulse is closed)", key="ntf_push")
+        topic = n.get("topic") or ""
+        if push and not topic:
+            topic = bk.new_topic()
+        if push:
+            H(f'<div class="muted small">1. Install the free <b>ntfy</b> app (iPhone / Android) or open '
+              f'<span class="mono">{esc(bk.push_server().replace("https://", ""))}/app</span> on a computer.<br>'
+              f'2. Subscribe to this topic — it is your private channel, keep it to yourself:</div>'
+              f'<div class="mono" style="font-size:14px;font-weight:700;margin:4px 0 6px 0;user-select:all">'
+              f'{esc(topic)}</div>')
+        if bk.mail_ready():
+            st.checkbox(f"Email to {(ss.get('auth') or {}).get('user', '')}", key="ntf_email")
+        else:
+            H('<div class="muted small">Email: not set up for this app yet (owner → Account).</div>')
+        st.checkbox("Pop-up in this browser while Pulse is open", key="ntf_browser")
+        if ss.get("ntf_browser"):
+            st.button("Allow browser notifications", key="ntf_allow",
+                      help="Your browser asks once for permission. On iPhone use the push app instead.")
+        if button("Send a test notification", key="ntf_test"):
+            cur = {k: ss.get(wk) for k, wk in NTF_KEYS.items()}
+            cur["topic"] = topic
+            used = bk.deliver((ss.get("auth") or {}).get("user"), cur, "test", "Pulse test notification",
+                              "If you can read this, notifications reach this device.", tags=["bell"])
+            ss["_ntf_msg"] = "Test sent via: " + ", ".join({"inbox": "this page", "push": "push", "email": "email"}[u]
+                                                           for u in used)
+        if ss.get("_ntf_msg"):
+            H(f'<div class="gtext small">{esc(ss.pop("_ntf_msg"))}</div>')
+        ms = bk.monitor_status()
+        last = pd.Timestamp(ms["last"], unit="s", tz="UTC").tz_convert(md.TZ).strftime("%H:%M") if ms["last"] else "—"
+        H(f'<div class="muted small" style="margin-top:6px">Pulse checks every {bk.TICK_SEC // 60} minutes on the '
+          f'server ({"running" if ms["running"] else "starts with the next page load"}, last check {last}). '
+          f'Streamlit puts the app to sleep after about 12 hours without a visit; nothing is checked while it '
+          f'sleeps.</div>')
+    new = {k: ss.get(wk) for k, wk in NTF_KEYS.items()}
+    new["topic"] = topic if new.get("push") else (n.get("topic") or "")
+    if new != ss.get("notify"):
+        ss.notify = new
+
+
+_NTF_JS = """<script>
+(function(){
+  var P = window.parent;
+  if (!P.__pulseNtfHook) {
+    P.__pulseNtfHook = true;
+    P.document.addEventListener('click', function(e){
+      if (e.target && e.target.closest && e.target.closest('.st-key-ntf_allow')) {
+        try { if (P.Notification && P.Notification.permission !== 'granted') P.Notification.requestPermission(); }
+        catch (err) {}
+      }
+    }, true);
+  }
+  var items = __ITEMS__;
+  if (items.length && P.Notification && P.Notification.permission === 'granted') {
+    items.forEach(function(it){
+      try { new P.Notification(it.t, {body: it.b, tag: 'pulse-' + it.i}); } catch (err) {}
+    });
+  }
+})();
+</script>"""
+
+
+def notify_pull():
+    """Sunucunun bu hesap için ürettiği yeni bildirimleri sayfaya düşürür (zil listesi, toast, tarayıcı)."""
+    user = (ss.get("auth") or {}).get("user")
+    items = bk.inbox_since(user, ss.get("notes_last") or 0) if user else []
+    fresh = []
+    if items:
+        ss.notes_last = items[-1]["id"]
+        gone = set(ss.get("notes_gone") or [])
+        now = time.time()
+        for it in items:
+            k = f'{it["sym"]}|n{it["id"]}'
+            if k in gone:
+                continue
+            ss.notes.insert(0, {"ticker": it["sym"], "day": f'n{it["id"]}',
+                                "sec": "Markets" if it["sym"] else "Forex & News",
+                                "at": pd.Timestamp(it["ts"], unit="s", tz="UTC").tz_convert(md.TZ).strftime("%b %d %H:%M"),
+                                "title": it["title"], "body": it["body"]})
+            if now - it["ts"] < 900:
+                fresh.append(it)
+        del ss.notes[60:]
+        for it in fresh[-3:]:
+            st.toast(f'🔔 {it["title"]}')
+    show = fresh[-3:] if (ss.get("notify") or {}).get("browser", True) else []
+    js = json.dumps([{"t": it["title"], "b": it["body"], "i": it["id"]} for it in show]).replace("</", "<\\/")
+    components.html(_NTF_JS.replace("__ITEMS__", js), height=0)
+
+
+_frag0 = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+if _frag0 is not None:
+    try:
+        notify_live = _frag0(run_every=60)(notify_pull)        # sayfa açıkken dakikada bir bakar
+    except TypeError:
+        notify_live = notify_pull
+else:
+    notify_live = notify_pull
 
 
 def account_body():
@@ -1223,11 +1541,9 @@ def account_body():
       f'<div class="muted small" style="margin-top:2px">Settings are kept for this browser session; '
       f'if you share the link it opens with the same settings.</div>')
     au = ss.get("auth") or {}
-    cr = auth_load() or {}
-    where = {"file": "on this server (cleared when the app restarts — add it to Secrets to keep it)",
-             "secrets": "in the app's Secrets (permanent)"}.get(cr.get("where"), "—")
-    H(f'<div class="muted small" style="margin-top:6px">Signed in as <b>{esc(au.get("user") or "")}</b> · '
-      f'login stored {esc(where)} · you are signed out after {AUTH_IDLE // 60} minutes without activity</div>')
+    H(f'<div class="muted small" style="margin-top:6px">Signed in as <b>{esc(au.get("user") or "")}</b> · your '
+      f'watchlist, alerts and settings belong to this account and load on every device you sign in on · you are '
+      f'signed out after {AUTH_IDLE // 60} minutes without activity</div>')
     if button("Sign out", key="btn_signout"):
         ss.auth = None
         ss["auth_mode"] = None
@@ -1342,6 +1658,238 @@ def period_stats(df, dec):
             f'{pct(ch_)}</span></span>')
 
 
+# ======================================================================
+# v4.0 — Bilanço (earnings): şirket özetindeki kart + haftalık takvim
+# ======================================================================
+E_WHEN = {"bmo": "before the market opens", "amc": "after the market closes", "": "time of day not announced yet"}
+E_NOSTOCK = ("ETF", "INDEX", "CURRENCY", "CRYPTOCURRENCY", "FUTURE", "MUTUALFUND")
+
+
+def _eday(d):
+    try:
+        return pd.Timestamp(d).strftime("%a, %b %d, %Y")
+    except Exception:
+        return str(d)
+
+
+def _est_snapshot(sym, date=None):
+    """Açıklanmadan önce saklanan beklentiler (arka plan izleyicisi kaydeder)."""
+    try:
+        return ((bk.kv_get("state") or {}).get("earn_est") or {}).get(sym) or {}
+    except Exception:
+        return {}
+
+
+def earnings_card(sym, d=None, cur="USD"):
+    """Şirket özeti: sıradaki bilanço tarihi + beklentiler (≤ 5 gün: kırmızı) ve son bilançonun
+    beklentiyle karşılaştırması (Beat / Miss). Yalnızca kaynakların verdiği rakamlar gösterilir."""
+    qt = str((d or {}).get("quote_type") or "").upper()
+    if any(c in sym for c in "=^") or sym.endswith("-USD") or qt in E_NOSTOCK:
+        return
+    if (d or {}).get("src") == "mock":
+        H('<div class="earn-wrap"><div class="earn-box"><span class="earn-k">EARNINGS</span><div class="muted small">'
+          'Live company data is not reachable right now, so no earnings date is shown (sample data is never used '
+          'here).</div></div></div>')
+        return
+    info = md.get_earnings_info(sym)
+    if info.get("src") != "real":
+        H('<div class="earn-wrap"><div class="earn-box"><span class="earn-k">EARNINGS</span><div class="muted small">'
+          'No earnings date available from Nasdaq or Yahoo Finance for this symbol right now.</div></div></div>')
+        return
+    nx, ls = info.get("next"), info.get("last")
+    m = lambda x: big(x, cur)
+    box_n = ""
+    if nx:
+        days = nx.get("days")
+        hot = days is not None and 0 <= days <= 5
+        when = E_WHEN.get(nx.get("when") or "", "")
+        if days is None:
+            cd = ""
+        elif days < 0:
+            cd = "results due — waiting for the numbers"
+        elif days == 0:
+            cd = "TODAY"
+        elif days == 1:
+            cd = "TOMORROW"
+        else:
+            cd = f"in {days} days"
+        est = []
+        if en._ok(nx.get("eps_est")):
+            rng = (f' <span class="muted">({tr(nx["eps_low"], 2)} – {tr(nx["eps_high"], 2)}'
+                   f'{", " + str(nx["n"]) + " analysts" if nx.get("n") else ""})</span>'
+                   if en._ok(nx.get("eps_low")) and en._ok(nx.get("eps_high")) and nx["eps_low"] != nx["eps_high"]
+                   else (f' <span class="muted">({nx["n"]} analysts)</span>' if nx.get("n") else ""))
+            ya = nx.get("year_ago_eps")
+            yy = (f' <span class="muted">· a year ago {tr(ya, 2)} ({pct((nx["eps_est"] / ya - 1) * 100, 0)})</span>'
+                  if en._ok(ya) and ya > 0 else "")
+            est.append(("Expected EPS", f'<b>{tr(nx["eps_est"], 2)}</b>{rng}{yy}'))
+        if en._ok(nx.get("ni_est")):
+            est.append(("Expected net income", f'<b>{m(nx["ni_est"])}</b> <span class="muted">(EPS estimate × '
+                                               f'diluted shares)</span>'))
+        if en._ok(nx.get("rev_est")):
+            est.append(("Expected revenue", f'<b>{m(nx["rev_est"])}</b>'))
+        rows = "".join(f'<div class="earn-r"><span>{k}</span><span>{v}</span></div>' for k, v in est) or \
+            '<div class="muted small">No analyst estimates published for this quarter.</div>'
+        conf = (f'date confirmed · {esc(nx.get("source") or "")}' if nx.get("confirmed")
+                else f'expected date, not confirmed by the company yet · {esc(nx.get("source") or "")}')
+        box_n = (f'<div class="earn-box{" earn-hot" if hot else ""}"><div class="earn-top">'
+                 f'<span class="earn-k">{"⚠ EARNINGS SOON" if hot else "NEXT EARNINGS"}</span>'
+                 f'<span class="earn-cd">{esc(cd)}</span></div>'
+                 f'<div class="earn-date">{esc(_eday(nx["date"]))}</div>'
+                 f'<div class="earn-sub">{esc(when)} (US market time) · {conf}</div>{rows}</div>')
+    else:
+        box_n = ('<div class="earn-box"><span class="earn-k">NEXT EARNINGS</span><div class="muted small">'
+                 'The company has not announced the next date yet.</div></div>')
+    box_l = ""
+    if ls:
+        v = ls.get("verdict")
+        vc = {"Beat": UP, "Miss": DOWN}.get(v, NEU)
+        snap = _est_snapshot(sym)
+        rev_est = ls.get("rev_est") or (snap.get("rev_est") if snap.get("date") == ls.get("date") else None)
+        rows = []
+        if en._ok(ls.get("eps")):
+            s_ = f'<b>{tr(ls["eps"], 2)}</b>'
+            if en._ok(ls.get("eps_est")):
+                s_ += f' <span class="muted">vs {tr(ls["eps_est"], 2)} expected</span>'
+                if en._ok(ls.get("surprise_pct")):
+                    s_ += f' <b style="color:{vc}">{pct(ls["surprise_pct"], 1)}</b>'
+            if en._ok(ls.get("eps_yoy")):
+                s_ += f' <span class="muted">· {pct(ls["eps_yoy"], 0)} YoY</span>'
+            rows.append(("EPS" + (" (GAAP)" if ls.get("gaap") else ""), s_))
+        if en._ok(ls.get("ni_adj")) and en._ok(ls.get("ni_est")):
+            rows.append(("Net income", f'<b>{m(ls["ni_adj"])}</b> <span class="muted">vs {m(ls["ni_est"])} expected '
+                                       f'(EPS × diluted shares)</span>'))
+        if en._ok(ls.get("ni")):
+            rows.append(("Net income reported (GAAP)", f'<b>{m(ls["ni"])}</b>'))
+        if en._ok(ls.get("rev")):
+            s_ = f'<b>{m(ls["rev"])}</b>'
+            if en._ok(rev_est) and rev_est:
+                s_ += (f' <span class="muted">vs {m(rev_est)} expected</span> '
+                       f'<b style="color:{col(ls["rev"] - rev_est)}">{pct((ls["rev"] / rev_est - 1) * 100, 1)}</b>')
+            if en._ok(ls.get("rev_yoy")):
+                s_ += f' <span class="muted">· {pct(ls["rev_yoy"], 0)} YoY</span>'
+            rows.append(("Revenue", s_))
+        if en._ok(ls.get("reaction_pct")):
+            rows.append(("Stock since the report", f'<b style="color:{col(ls["reaction_pct"])}">'
+                                                   f'{pct(ls["reaction_pct"], 1)}</b>'))
+        rep = (f'reported {esc(_eday(ls["date"]))}' + (f', {E_WHEN[ls["when"]]}' if ls.get("when") else "")
+               if ls.get("date") else "")
+        per = f'quarter ending {pd.Timestamp(ls["period_end"]).strftime("%b %d, %Y")}' if not ls.get("fresh") else ""
+        badge = (f'<span class="earn-v" style="color:{vc};background:{vc}22;border-color:{vc}66">{esc(v.upper())}</span>'
+                 if v else '<span class="muted small">no estimate to compare with</span>')
+        box_l = (f'<div class="earn-box"><div class="earn-top"><span class="earn-k">LAST REPORT</span>{badge}</div>'
+                 f'<div class="earn-sub" style="margin-top:2px">{esc(" · ".join(x for x in (per, rep) if x))}</div>'
+                 + "".join(f'<div class="earn-r"><span>{k}</span><span>{s_}</span></div>' for k, s_ in rows)
+                 + '</div>')
+    H(f'<div class="earn-wrap">{box_n}{box_l}</div>'
+      f'<div class="muted" style="font-size:10.5px;margin:3px 0 0 2px">Sources: {esc(", ".join(info.get("sources") or []))} '
+      f'· checked {esc(info.get("checked") or "")} · “Beat” = reported EPS above the analyst consensus, “Miss” = '
+      f'below.</div>')
+
+
+ECAL_TOP = 8
+
+
+def _ecal_item(x, wl, past):
+    name = x.get("name") or md.company_name(x["sym"])
+    tip = [name]
+    if x.get("eps_est") is not None:
+        tip.append(f"EPS expected {tr(x['eps_est'], 2)}")
+    if x.get("cap"):
+        tip.append(f"market cap {big(x['cap'], 'USD')}")
+    mark = ""
+    if past and x.get("eps") is not None and x.get("eps_est") is not None:
+        v = md.earnings_verdict(x["eps"], x["eps_est"])
+        tip.append(f"reported {tr(x['eps'], 2)} — {v}")
+        mark = (f'<span class="eres" style="color:{UP if v == "Beat" else DOWN if v == "Miss" else MUT}">'
+                f'{"▲" if v == "Beat" else "▼" if v == "Miss" else "•"}</span>')
+    return (f'<a class="eco{" ewl" if x["sym"] in wl else ""}" target="_self" title="{esc(" · ".join(tip))}" '
+            f'href="{link(sec="Markets", sym=x["sym"], f="chart")}">{avatar(x["sym"], 24, name)}'
+            f'<span class="et">{esc(x["sym"])}</span>{mark}</a>')
+
+
+def _ecal_slot(rows, wl, past):
+    if not rows:
+        return '<div class="enone">—</div>'
+    rows = sorted(rows, key=lambda x: (x["sym"] not in wl, -(x.get("cap") or 0)))
+    top, rest = rows[:ECAL_TOP], rows[ECAL_TOP:ECAL_TOP + 40]
+    h = "".join(_ecal_item(x, wl, past) for x in top)
+    if rest:
+        h += (f'<details class="emore"><summary>+{len(rows) - ECAL_TOP} more</summary>'
+              + "".join(_ecal_item(x, wl, past) for x in rest) + '</details>')
+    return h
+
+
+def render_earnings_week():
+    """Markets: haftalık bilanço takvimi — 5 işlem günü, gün başına Before Open / After Close."""
+    offs = list(range(-4, 5))
+    base = md.earnings_week_start(0)
+
+    def _lab(o):
+        mon = base + pd.Timedelta(days=7 * o)
+        fri = mon + pd.Timedelta(days=4)
+        rng = f'{mon.strftime("%b %d")} – {fri.strftime("%b %d") if fri.month != mon.month else fri.strftime("%d")}'
+        name = {0: "Current week", 1: "Next week", -1: "Last week"}.get(o) or \
+            (f"In {o} weeks" if o > 0 else f"{-o} weeks ago")
+        return f"{name} · {rng}"
+    if ss.get("w_earnwk") not in offs:
+        ss["w_earnwk"] = 0
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 1.25], vertical_alignment="center")
+        with c1:
+            H('<div class="sec-head" style="margin:0"><h3>Earnings Calendar</h3><span class="muted small">'
+              'largest companies first · your watchlist is outlined · click a company for its chart</span></div>')
+        with c2:
+            off = st.selectbox("Earnings week", offs, key="w_earnwk", format_func=_lab,
+                               label_visibility="collapsed")
+        monday = base + pd.Timedelta(days=7 * int(off or 0))
+        wk = md.get_earnings_week(str(monday.date()))
+        if wk["src"] != "real":
+            H('<div class="muted" style="padding:14px 2px">The earnings calendar cannot be loaded right now (Nasdaq '
+              'did not answer). It is retried automatically in a few minutes.</div>')
+            return
+        today = md.us_today()
+        wl = set(ss.watchlist)
+        cols = ""
+        for day in wk["days"]:
+            dts = pd.Timestamp(day["date"])
+            past = dts < today
+            is_today = dts == today
+            n = len(day["bmo"]) + len(day["amc"]) + len(day["tbd"])
+            tbd = sorted(day["tbd"], key=lambda x: (x["sym"] not in wl, -(x.get("cap") or 0)))[:6]
+            tb = (f'<div class="etbd"><span class="muted">Time not announced:</span> '
+                  + "".join(_ecal_item(x, wl, past) for x in tbd)
+                  + (f'<span class="muted"> +{len(day["tbd"]) - 6}</span>' if len(day["tbd"]) > 6 else "")
+                  + '</div>') if tbd else ""
+            body = (f'<div class="eslots"><div class="eslot"><div class="eslot-h"><span class="esun">☀</span> Before '
+                    f'Open</div>{_ecal_slot(day["bmo"], wl, past)}</div>'
+                    f'<div class="eslot"><div class="eslot-h"><span class="emoon">☾</span> After Close</div>'
+                    f'{_ecal_slot(day["amc"], wl, past)}</div></div>{tb}') if day["ok"] else \
+                '<div class="muted small" style="padding:10px">not available</div>'
+            cols += (f'<div class="eday{" etoday" if is_today else ""}{" epast" if past else ""}">'
+                     f'<div class="eday-h"><b>{dts.strftime("%a")}</b><span>{dts.strftime("%b %d")}</span>'
+                     f'{"<span class=etag>today</span>" if is_today else ""}'
+                     f'<span class="ecount" title="companies reporting">{n} reports</span></div>{body}</div>')
+        H(f'<div class="ecal-wrap"><div class="ecal">{cols}</div></div>'
+          f'<div class="muted" style="font-size:10.5px;margin-top:6px">Source: Nasdaq earnings calendar · US trading '
+          f'days · ▲ beat / ▼ miss of the EPS consensus on days already reported · the current week stays in view '
+          f'until Friday evening and switches on Saturday.</div>')
+
+
+def _next_earn_txt(sym, d):
+    """Key stats satırı: bilanço kartıyla aynı kaynaktan (rastgele / eski tarih gösterilmez)."""
+    if d.get("src") == "mock" or any(c in sym for c in "=^") or sym.endswith("-USD"):
+        return "—"
+    try:
+        nx = (md.get_earnings_info(sym) or {}).get("next")
+    except Exception:
+        nx = None
+    return pd.Timestamp(nx["date"]).strftime("%b %d, %Y") if nx and nx.get("date") else "—"
+
+
+CHART_H = 780        # Markets ana grafiği (v4.0: tam genişlik ve daha yüksek)
+
+
 def render_chart_panel(sym):
     """Grafik paneli. Teknik özet ve destek/direnç için günlük geçmişi döndürür."""
     d = md.get_company_detail(sym)
@@ -1387,6 +1935,7 @@ def render_chart_panel(sym):
     if en_sum and (d.get("desc") or len(en_sum) > 260):
         with st.expander("About the company — details (Yahoo Finance)"):
             H(f'<div class="desc" style="margin:0">{esc(en_sum)}</div>')
+    earnings_card(sym, d, cur)
     anchor("chart")
     if SECTOR and md.sector_by_etf(SECTOR):
         H(f'<div class="small" style="margin:6px 0 -4px 0"><a class="lnk" target="_self" '
@@ -1395,14 +1944,17 @@ def render_chart_panel(sym):
     full, bars, intr = chart_data(sym, tf, lb)
     df = full.tail(bars)
     note = ch.lookback_note(full, tf, lb, bars, intr)
-    H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:10px 0 6px 0">'
-      f'{period_stats(df, dec)}'
-      f'<span class="muted">{esc(ch.LOOKBACKS[ch.norm_lb(lb)]["name"])} · {candle_label(tf, intr)}</span>'
-      f'<span style="flex:1"></span>'
-      f'<span class="muted small">wheel / double-click: zoom in · right-click or ＋− buttons: zoom out · '
-      f'drag: pan (also up / down) · ▲ ▼ · ↑ ↓ or Shift + wheel: scroll up / down · trackpad: two fingers · click a drawing: colour · “Fullscreen”</span></div>'
-      + (f'<div class="muted small" style="color:{WARN};margin-bottom:6px">{esc(note)}</div>' if note else ""))
-    render_big_chart(sym, tf, height=620, tf_key="w_tf", lb=lb)
+    if note:
+        H(f'<div class="muted small" style="color:{WARN};margin:4px 0">{esc(note)}</div>')
+    render_big_chart(sym, tf, height=CHART_H, tf_key="w_tf", lb=lb)
+    with st.expander("Chart controls · period statistics"):
+        H(f'<div style="display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;margin:2px 0 6px 0">'
+          f'{period_stats(df, dec)}'
+          f'<span class="muted">{esc(ch.LOOKBACKS[ch.norm_lb(lb)]["name"])} · {candle_label(tf, intr)}</span></div>'
+          f'<div class="muted small">wheel / double-click: zoom in · right-click or ＋− buttons: zoom out · '
+          f'drag: pan (also up / down) · ▲ ▼ · ↑ ↓ or Shift + wheel: scroll up / down · trackpad: two fingers · '
+          f'click a drawing: colour · “Fullscreen” · the value legend (OHLC, averages) can be switched on in '
+          f'the indicator menu.</div>')
     fired = ch.check_alerts(ss.alerts.get(sym, []), daily)
     for a in fired:
         st.toast(f"🔔 {sym}: {ch.alert_text(a)} — triggered")
@@ -1413,7 +1965,7 @@ def render_chart_panel(sym):
                  ("52W range", f'{tr(d["low_52w"], dec)} – {tr(d["high_52w"], dec)}'), ("Beta", tr(d["beta"])),
                  ("Dividends", f'{money(d["dividend"], cur)} ({tr(d["div_yield"])}%)' if d["dividend"] else "—"),
                  ("Analysts", d["analysts"]), ("Price target", money(d["price_target"], cur)),
-                 ("Earnings", d["earnings_date"].strftime("%b %d, %Y") if d.get("earnings_date") is not None else "—")]
+                 ("Next earnings", _next_earn_txt(sym, d))]
         for i, (k, v) in enumerate(items):
             with g[i % 4]:
                 H(f'<div class="stat-row"><span class="lbl">{esc(k)}</span><span class="mono">{esc(v)}</span></div>')
@@ -1526,40 +2078,40 @@ def render_tech(df, tf="1A", sym=""):
     H(f'<div class="muted small" style="margin:8px 0 4px 0">{esc(hint)}</div>')
 
 
+SR_GAP_MAX = 12.0     # fiyata bundan uzak boşluklar gösterilmez (%)
+
+
 def render_sr(df, sym):
+    """En önemli 3–4 bölge: pivot (P), en yakın direnç (R1), en yakın destek (S1) ve fiyata en yakın
+    kapanmamış boşluk. Uzak / ikincil seviyeler gösterilmez."""
     levels, price = pivots(df)
     dec = pdec(sym, price)
-    cells = "".join(f'<div class="tile"><span class="k" style="color:{fg};font-weight:800">{k}</span>'
+    name = {"P": "Pivot", "R1": "Resistance R1", "S1": "Support S1"}
+    order = {"R1": 0, "P": 1, "S1": 2}
+    keep = sorted([x for x in levels if x[0] in name], key=lambda x: order[x[0]])
+    cells = "".join(f'<div class="tile"><span class="k" style="color:{fg};font-weight:800">{name[k]}</span>'
                     f'<span class="v">{tr(v, dec)}</span><span class="mono" style="font-size:11px;color:{MUT}">'
-                    f'{pct((v / price - 1) * 100)}</span></div>' for k, v, fg in levels)
-    H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">'
-      f'<span class="panel-title">Support &amp; Resistance</span>'
-      f'<span class="muted small srcap">Classic pivots · daily · last price {tr(price, dec)}</span></div>'
-      f'<div class="srstrip">{cells}</div>')
+                    f'{pct((v / price - 1) * 100)}</span></div>' for k, v, fg in keep)
     try:
-        gaps = en.price_gaps(df, lookback=260, max_n=6)
+        gaps = en.price_gaps(df, lookback=260, max_n=8)
     except Exception:
         gaps = []
-    if gaps:
-        gaps = sorted(gaps, key=lambda g: -g["hi"])          # yukarıdan aşağıya: direnç → destek
-        gc = ""
-        for g in gaps:
-            fg = DOWN if g["kind"] == "res" else UP
-            role = "Resistance" if g["kind"] == "res" else "Support"
-            arrow = "▲ gap up" if g["dir"] == "up" else "▼ gap down"
-            when = pd.Timestamp(g["date"]).strftime("%b %d, %Y")
-            gc += (f'<div class="tile gaptile" style="border-left:3px solid {fg}">'
-                   f'<span class="k" style="color:{fg};font-weight:800">{role} · {arrow}</span>'
-                   f'<span class="v" style="font-size:13px">{tr(g["lo"], dec)} – {tr(g["hi"], dec)}</span>'
-                   f'<span class="mono" style="font-size:11px;color:{MUT}">{pct(g["dist"], 1)} · {when} · '
-                   f'size {tr(g["pct"], 1)}%</span></div>')
-        H(f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:12px 0 6px 0">'
-          f'<span style="font-size:12px;font-weight:700;color:{SOFT}">Unfilled price gaps</span>'
-          f'<span class="muted small">daily · last 12 months · a gap below price acts as support, above as '
-          f'resistance · partly filled gaps shrink</span></div><div class="gapgrid">{gc}</div>')
-    else:
-        H('<div class="muted small" style="margin-top:10px">No unfilled price gaps in the last 12 months.</div>')
-    H('<div style="height:6px"></div>')   # kutunun alt kenarına değmesin
+    gaps = sorted([g for g in gaps if abs(g["dist"]) <= SR_GAP_MAX], key=lambda g: abs(g["dist"]))[:1]
+    for g in gaps:
+        fg = DOWN if g["kind"] == "res" else UP
+        role = "Gap · resistance" if g["kind"] == "res" else "Gap · support"
+        when = pd.Timestamp(g["date"]).strftime("%b %d, %Y")
+        cells += (f'<div class="tile gaptile" style="border-left:3px solid {fg}">'
+                  f'<span class="k" style="color:{fg};font-weight:800">{role}</span>'
+                  f'<span class="v">{tr(g["lo"], dec)} – {tr(g["hi"], dec)}</span>'
+                  f'<span class="mono" style="font-size:11px;color:{MUT}">{pct(g["dist"], 1)} · open since {when}'
+                  f'</span></div>')
+    H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">'
+      f'<span class="panel-title">Support &amp; Resistance</span>'
+      f'<span class="muted small srcap">the key zones only · classic pivots (daily) and the nearest unfilled gap '
+      f'· last price {tr(price, dec)}</span></div>'
+      f'<div class="srstrip">{cells}</div>')
+    H('<div style="height:2px"></div>')
 
 
 def news_link(it):
@@ -1770,15 +2322,19 @@ def render_piyasalar():
               f'<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:10px"><div>'
               f'<div class="mono" style="font-size:18px;font-weight:600">{tr(idx["last"])}</div>'
               f'<div class="mono" style="font-size:12px;font-weight:600;color:{cc}">{pct(idx["change_pct"])}</div>'
-              f'</div>{svg_spark(idx["series"], cc)}</div></div></a>')
-    H("<div style='height:14px'></div>")
+              f'</div>{svg_spark(idx["series"], cc, w=150, h=46)}</div></div></a>')
+    H("<div style='height:6px'></div>")
+    with st.container(border=True):                     # grafik tam genişlikte
+        daily, tf_sel, tf_df = render_chart_panel(ACTIVE)
     left, right = st.columns([2.15, 1], gap="medium")
     with left:
-        with st.container(border=True):
-            daily, tf_sel, tf_df = render_chart_panel(ACTIVE)
         if daily is not None:
             with st.container(border=True):
                 render_sr(daily, ACTIVE)
+        with st.container(border=True):
+            render_sector_block()
+        with st.container(border=True):
+            render_movers()
     with right:
         if daily is not None:
             with st.container(border=True):
@@ -1786,13 +2342,7 @@ def render_piyasalar():
                             tf_sel if tf_df is not None and len(tf_df) >= 30 else "1A", ACTIVE)
         with st.container(border=True):
             render_watchlist_compact()
-    b1, b2 = st.columns([2.15, 1], gap="medium")
-    with b1:
-        with st.container(border=True):
-            render_sector_block()
-    with b2:
-        with st.container(border=True):
-            render_movers()
+    render_earnings_week()     # tam genişlik: 5 gün × (Before Open · After Close)
     render_sector_map()        # tam genişlik — dar sütunun altında sıkışmasın
     c1, c2 = st.columns([2.15, 1], gap="medium")
     with c1:
@@ -1905,7 +2455,7 @@ def value_bundle(sym, token, peer_ovr=()):
             "wk": wk, "tnx_w": tnx_w,
             "dcf": dcfv, "rdcf": rdcf, "g_lt": g_lt, "is_cyc": is_cyc, "drop_hist": drop_hist,
             "g_yoy_rep": yoy_rep, "g_rev": g_rev,
-            "dhist": en.driver_hist(f, an, wc, rf) if f else None,
+            "dhist": en.driver_hist(f, an, wc, rf, basis=md.get_latest_basis(sym)) if f else None,
             "eps_last": eps_last, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
             "px": px.tail(1300) if px is not None else None,
             "bench": bench.tail(1300) if bench is not None else None,
@@ -1929,14 +2479,39 @@ def vp_state(b, sym):
         peak0 = int(min(PEAK_MAX, max(0, et["fy"] - fy0)))      # döngü zamanlamasının kâr zirvesi tahmini
     dh = b.get("drop_hist")
     dhist = b.get("dhist")
-    if dhist:   # sürücü modeli: düşüş = ciro düşüşü (kâr düşüşünün kabaca yarısı)
-        drop0 = float(round(min(60.0, max(10.0, (dh if en._ok(dh) else 50.0) * 0.5)) / 5) * 5) if b["is_cyc"] else 25.0
+    origin = {}
+    if dhist:   # sürücü modeli: düşüş = şirketin raporladığı en büyük ciro düşüşü (yoksa kâr düşüşünün yarısı)
+        rd = en.hist_rev_drop(dhist.get("rev_hist"))
+        hy = dhist.get("hist_years") or []
+        span = f'{hy[0]}–{hy[-1]}' if len(hy) >= 2 else "the reported years"
+        if rd >= 5:
+            drop0 = float(round(min(70.0, max(5.0, rd)) / 5) * 5)
+            origin["drop"] = f"largest revenue decline the company reported ({span}): {rd:.0f}%"
+        else:
+            drop0 = float(round(min(60.0, max(10.0, (dh if en._ok(dh) else 40.0) * 0.5)) / 5) * 5)
+            origin["drop"] = (f"no revenue decline in the reported years ({span}); set to half of the largest "
+                              f"EPS decline — an assumption, adjust it")
+        if not b["is_cyc"]:
+            drop0 = max(drop0, 5.0)
     else:
         drop0 = float(round(min(80.0, max(30.0, dh if en._ok(dh) else 45.0)) / 5) * 5) if b["is_cyc"] else 45.0
     md_ = en.driver_margin_defaults(dhist, an, fy0) if dhist else {"last": 15.0, "peak": 25.0, "trough": 5.0}
     g_rev = b.get("g_rev") if en._ok(b.get("g_rev")) else 6.0
-    if dhist:   # döngüselde uzun vade = dip sonrası trend büyümesi; yükseliş büyümesi = analist ivmesi
-        glt0 = min(g_rev, 5.0) if b["is_cyc"] else g_rev
+    if dhist:   # döngüselde uzun vade = raporlanan ciroların uzun dönem bileşik büyümesi (dip sonrası trend)
+        cg = en.hist_cagr(dhist.get("rev_hist"))
+        hy = dhist.get("hist_years") or []
+        if b["is_cyc"] and en._ok(cg):
+            glt0 = max(0.0, min(15.0, cg))
+            origin["glt"] = (f"revenue growth per year the company actually reported over {hy[0]}–{hy[-1]}: "
+                             f"{cg:.1f}%" if len(hy) >= 2 else f"reported revenue growth: {cg:.1f}%")
+        else:
+            glt0 = g_rev
+            origin["glt"] = "revenue growth of the last analyst year (consensus); else the last reported year"
+        ms_, my_ = dhist.get("op_m_hist") or [], dhist.get("op_m_years") or []
+        if ms_ and len(my_) == len(ms_):
+            i_hi, i_lo = int(np.argmax(ms_)), int(np.argmin(ms_))
+            origin["mpk"] = f"highest operating margin reported: {ms_[i_hi]:.1f}% (FY{my_[i_hi]})"
+            origin["mtr"] = f"lowest operating margin reported: {ms_[i_lo]:.1f}% (FY{my_[i_lo]})"
     else:
         glt0 = b["g_lt"]
     defaults = {"cyc": bool(b["is_cyc"]), "peak": int(min(PEAK_MAX, peak0)), "drop": drop0,
@@ -1970,7 +2545,7 @@ def vp_state(b, sym):
     keys = {k: f"vp_{k}_{sym}" for k in defaults}
     cur = {k: (ss[wk] if wk in ss else saved[k]) for k, wk in keys.items()}
     return {"fy0": fy0, "keys": keys, "saved": saved, "cur": cur, "n_est": len(est), "dh": dh, "gov": gov,
-            "defaults": defaults, "driver": bool(dhist)}
+            "defaults": defaults, "driver": bool(dhist), "origin": origin}
 
 
 def vp_kwargs(b, st_):
@@ -2040,6 +2615,34 @@ def _vg_reset(sym):
     ss.vp_cfg = allc
     for k in [k for k in ss.keys() if str(k).startswith(f"vg_{sym}_")]:
         del ss[k]
+
+
+def render_basis(dh, origin, cur, cyc):
+    """Modelin başlangıç verileri: her rakamın değeri, dönemi ve resmî kaynağı."""
+    fmt = {"money": lambda v: big(v, cur), "pct": lambda v: f"{tr(v, 1)}%", "num": lambda v: big(v, "")}
+    rows = "".join(
+        f'<tr><td class="lbl">{esc(r["label"])}</td><td>{fmt[r["fmt"]](r["val"]) if en._ok(r["val"]) else "—"}</td>'
+        f'<td class="muted" style="text-align:left">{esc(r["as_of"])}</td>'
+        f'<td class="muted" style="text-align:left">{esc(r["source"])}</td></tr>' for r in dh.get("basis") or [])
+    src = {"sec": "the company's latest SEC filings (10-Q / 10-K)", "yahoo": "the company's latest reports via "
+           "Yahoo Finance"}.get(dh.get("basis_src"), "the company's last annual report")
+    with st.expander("Data basis — the reported company figures the model starts from", expanded=False):
+        H(f'<div class="muted small">Starting values come from {src}. Nothing here is estimated or generated: if '
+          f'a figure is not in the filings, the model falls back to the last annual report and says so.</div>'
+          f'<div class="dtab-wrap"><table class="ptab dtab"><thead><tr><th></th><th>Value</th>'
+          f'<th style="text-align:left">Period</th><th style="text-align:left">Source</th></tr></thead>'
+          f'<tbody>{rows}</tbody></table></div>')
+        names = [("glt", "Long-term growth"), ("drop", "Revenue drop after peak"), ("mpk", "Peak operating margin"),
+                 ("mtr", "Trough operating margin")]
+        o = "".join(f'<div class="flow-r"><span style="font-weight:700;min-width:170px">{n}</span>'
+                    f'<span class="muted small">{esc(origin[k])}</span></div>' for k, n in names
+                    if origin.get(k) and (cyc or k == "glt"))
+        if o:
+            H(f'<div style="font-size:12px;font-weight:700;margin:10px 0 2px 0">Where the default settings come from'
+              f'</div>{o}')
+        H('<div class="muted small" style="margin-top:8px">Future years: analyst consensus where it exists (marked '
+          '“analyst” in the tables); the years after that follow the settings above — those are your assumptions, '
+          'not company data.</div>')
 
 
 G_SRC = {"analyst": "analyst estimate", "upswing": "upswing growth", "downturn": "post-peak decline",
@@ -2141,6 +2744,8 @@ def value_cfg(b, sym):
                 st.selectbox("Valuation lens", en.LENSES, key=keys["lens"],
                              help="P/E: EPS × multiple. EV/EBIT: (EBIT × multiple − net debt) / shares — debt and "
                                   "cash count directly. Blend: average of both.")
+        if drv:
+            render_basis(b["dhist"], st_.get("origin") or {}, b["d"].get("currency") or "USD", bool(cyc))
     cur = {k: ss.get(wk) for k, wk in keys.items()}
     allc = dict(ss.get("vp_cfg") or {})
     cur["gov"] = dict(((allc.get(sym) or {}).get("gov")) or {})
@@ -2559,6 +3164,12 @@ def render_value():
         return
     d, f, r = b["d"], b["f"], b["r"]
     render_value_head(b, sym)
+    if d.get("src") == "mock":        # v4.0: örnek verilerle değerleme yapılmaz
+        st.error("Live company data is not reachable right now (the data source did not answer). The valuation is "
+                 "paused, because it is only calculated from real, current company figures — sample data is never "
+                 "used here. Please try again in a few minutes.")
+        return
+    earnings_card(sym, d, d.get("currency") or "USD")
     if not f:
         st.warning("No financial statements came back for this symbol (ETFs, indices and FX pairs don't publish "
                    "statements; for stocks the source may be temporarily empty). "
@@ -3317,6 +3928,266 @@ def opp_chart(df, o):
 # ======================================================================
 # YAPAY ZEKA TRADE FIRSATLARI
 # ======================================================================
+# ======================================================================
+# v4.0 — Short Term: büyük grafik (formasyon çizgileri, order block'lar, yüksek hacimli alım/satım,
+#        Unusual Whales dark-pool seviyeleri) + kurumsal akış kutusu + topluluk duyarlılığı
+# ======================================================================
+ST_OV_DEF = {"patterns": True, "obs": True, "marks": True, "prints": True}
+ST_CHART_H = 700
+PAT_COL = "#F5B544"
+
+
+def _pl(pts):
+    return [[int(i), float(p)] for i, p in pts]
+
+
+def st_overlay(payload, sym, best=None, levels=None):
+    """Grafik katmanı ve özet. Hesaplar grafikte görünen barların kendisinden yapılır (aynı konumlar).
+    Döner: (ov, info)  info = {'geo', 'obs', 'marks', 'uw', 'df'}"""
+    bars = payload.get("bars") or []
+    df = pd.DataFrame(bars, columns=["t", "Open", "High", "Low", "Close", "Volume"])
+    show = {**ST_OV_DEF, **{k: bool(v) for k, v in (ss.get("st_ov") or {}).items() if k in ST_OV_DEF}}
+    ov = {"show": show, "patterns": [], "obs": [], "marks": [], "prints": []}
+    info = {"geo": None, "obs": [], "marks": [], "uw": None, "df": df}
+    if len(df) < 30:
+        return ov, info
+    last = len(df) - 1
+    daily = str(payload.get("interval") or "1d") == "1d"
+    geo = en.setup_geometry(df, (best or {}).get("key")) if (best and daily) else None
+    if geo:
+        info["geo"] = geo
+        ov["patterns"].append({"label": geo["label"], "color": PAT_COL, "at": _pl([geo["at"]])[0],
+                               "lines": [{"pts": _pl(ln["pts"]), "dash": bool(ln.get("dash")), "w": ln.get("w", 2)}
+                                         for ln in geo["lines"]],
+                               "dots": _pl(geo["dots"]), "fill": _pl(geo["fill"]) if geo.get("fill") else None})
+    x0 = max(0, last - 45)
+    for lab, y, c_ in levels or []:                     # işlem planı: seviye / stop / hedefler
+        if en._ok(y):
+            ov["patterns"].append({"label": f"{lab} {tr(y)}", "color": c_, "at": [last, float(y)],
+                                   "lines": [{"pts": [[x0, float(y)], [last, float(y)]], "dash": True, "w": 1.3}]})
+    obs = en.order_blocks(df)
+    info["obs"] = obs
+    for o in obs:
+        nm = "Bullish order block" if o["kind"] == "bull" else "Bearish order block"
+        ov["obs"].append({"kind": o["kind"], "start": o["i"], "lo": o["lo"], "hi": o["hi"], "end": o["end"],
+                          "label": nm + (f' · volume {tr(o["vol_x"], 1)}×' if o.get("vol_x") else "")})
+    marks = en.volume_spikes(df)
+    info["marks"] = marks
+    ov["marks"] = [{"i": m["i"], "side": m["side"], "label": f'{tr(m["ratio"], 1)}×'} for m in marks]
+    if md.uw_token():
+        uw = md.get_uw_darkpool(sym)
+        info["uw"] = uw
+        if uw.get("src") == "uw" and uw.get("levels"):
+            top = max(lv["premium"] for lv in uw["levels"]) or 1.0
+            for lv in uw["levels"][:5]:
+                side = "buy" if lv["buy"] > lv["sell"] * 1.5 else "sell" if lv["sell"] > lv["buy"] * 1.5 else None
+                ov["prints"].append({"price": lv["price"], "side": side, "w": lv["premium"] / top, "i": None,
+                                     "label": f'Dark pool {big(lv["premium"], "USD")} @ {tr(lv["price"])}'})
+    return ov, info
+
+
+def _bar_date(df, i):
+    try:
+        return pd.Timestamp(int(df["t"].iloc[int(i)]), unit="ms").strftime("%b %d")
+    except Exception:
+        return ""
+
+
+def render_flow_box(sym, info):
+    """Order block'lar + yüksek hacimli alım/satımlar + Unusual Whales dark pool özeti."""
+    df = info.get("df")
+    with st.container(border=True):
+        H('<div class="panel-title">Order Blocks &amp; Institutional Activity</div><div class="muted small">'
+          'Zones where a strong, high-volume move started, and the bars that traded far above normal volume.</div>')
+        obs = info.get("obs") or []
+        if obs:
+            rows = ""
+            for o in obs:
+                c_ = UP if o["kind"] == "bull" else DOWN
+                rows += (f'<div class="flow-r"><span class="aist" style="color:{c_};background:{c_}22">'
+                         f'{"BULLISH OB" if o["kind"] == "bull" else "BEARISH OB"}</span>'
+                         f'<span class="mono" style="font-weight:700">{tr(o["lo"])} – {tr(o["hi"])}</span>'
+                         f'<span class="muted small">{pct(o["dist"], 1)} from price · since {_bar_date(df, o["i"])}'
+                         f'{" · volume " + tr(o["vol_x"], 1) + "×" if o.get("vol_x") else ""}'
+                         f' · move {tr(o["move_atr"], 1)} ATR'
+                         f'{" · tested " + str(o["tests"]) + "×" if o["tests"] else " · untested"}</span></div>')
+            H(f'<div style="margin-top:8px">{rows}</div>')
+        else:
+            H('<div class="muted small" style="margin-top:8px">No open order block near the price in this window.</div>')
+        marks = info.get("marks") or []
+        if marks:
+            nb = sum(1 for m in marks if m["side"] == "buy")
+            ns = len(marks) - nb
+            tone = ("accumulation — more high-volume buying than selling" if nb > ns else
+                    "distribution — more high-volume selling than buying" if ns > nb else "balanced")
+            last5 = sorted(marks, key=lambda m: -m["i"])[:5]
+            rows = "".join(
+                f'<div class="flow-r"><span class="aist" style="color:{UP if m["side"] == "buy" else DOWN};'
+                f'background:{UP_BG if m["side"] == "buy" else DOWN_BG}">{"BUY" if m["side"] == "buy" else "SELL"}'
+                f'</span><span class="mono" style="font-weight:700">{tr(m["ratio"], 1)}× volume</span>'
+                f'<span class="muted small">{_bar_date(df, m["i"])} · {pct(m["chg"], 1)} on the day · closed in the '
+                f'{"upper" if m["side"] == "buy" else "lower"} part of the range</span></div>' for m in last5)
+            H(f'<div style="font-size:12px;font-weight:700;margin:10px 0 2px 0">High-volume bars '
+              f'<span class="muted" style="font-weight:500">· {nb} buying / {ns} selling → {tone}</span></div>{rows}')
+        else:
+            H('<div class="muted small" style="margin-top:8px">No bar with at least twice the average volume in '
+              'this window.</div>')
+        uw = info.get("uw")
+        H('<div style="font-size:12px;font-weight:700;margin:10px 0 2px 0">Unusual Whales · dark pool</div>')
+        if not md.uw_token():
+            H('<div class="muted small">Not connected. Unusual Whales sells this data through a paid API — once you '
+              'have a token, add <span class="mono">UNUSUAL_WHALES_TOKEN = "…"</span> to the app\'s Secrets and the '
+              'large off-exchange prints appear here and as levels in the chart. Until then the markers above come '
+              'from exchange volume only.</div>')
+        elif not uw or uw.get("src") == "error":
+            H(f'<div class="small" style="color:{WARN}">{esc((uw or {}).get("err") or md.uw_status()["err"] or "No answer from Unusual Whales")}.</div>')
+        elif not uw.get("prints"):
+            H('<div class="muted small">No large dark-pool prints in the last 5 trading days.</div>')
+        else:
+            buy = sum(d_["buy"] for d_ in uw["by_day"].values())
+            sell = sum(d_["sell"] for d_ in uw["by_day"].values())
+            lv = "".join(f'<div class="flow-r"><span class="mono" style="font-weight:700">{tr(x["price"])}</span>'
+                         f'<span class="muted small">{big(x["premium"], "USD")} in {x["n"]} prints</span></div>'
+                         for x in uw["levels"][:4])
+            H(f'<div class="muted small">Last 5 trading days, prints ≥ $250k: <b style="color:{SOFT}">'
+              f'{big(uw["total"], "USD")}</b> · at / above the ask <b style="color:{UP}">{big(buy, "USD")}</b> · '
+              f'at / below the bid <b style="color:{DOWN}">{big(sell, "USD")}</b></div>{lv}')
+
+
+SENT_COL = {"Bullish": UP, "Bearish": DOWN, "Neutral": NEU, "Not enough posts": MUT}
+HYPE_COL = {"Extreme": DOWN, "Elevated": WARN, "Normal": ACCENT, "Low": MUT, "Unknown": MUT}
+
+
+def render_sentiment_box(sym):
+    """Topluluk duyarlılığı: Reddit · StockTwits · X → Bullish / Bearish / Neutral + hype göstergeleri."""
+    s = md.get_sentiment(sym)
+    with st.container(border=True):
+        lab = s.get("label") or "Not enough posts"
+        c_ = SENT_COL.get(lab, MUT)
+        hy = s.get("hype") or {}
+        hl = hy.get("level") or "Unknown"
+        H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+          f'<span class="panel-title">Community Sentiment</span>'
+          f'<span class="earn-v" style="color:{c_};background:{c_}22;border-color:{c_}66">{esc(lab.upper())}</span>'
+          f'</div><div class="muted small">What people post about {esc(sym)} right now · rescanned every 10 minutes '
+          f'· last scan {esc(s.get("checked") or "—")}</div>')
+        if s.get("src") != "real":
+            H('<div class="muted small" style="margin-top:8px">None of the sources answered right now (Reddit, '
+              'StockTwits). It is retried automatically.</div>')
+            return
+        sc = float(s.get("score") or 0)
+        pos = max(0.0, min(100.0, (sc + 100) / 2))
+        n = int(s.get("n") or 0)
+        H(f'<div class="sent-bar"><span class="sent-mid"></span><span class="sent-dot" style="left:{pos:.1f}%;'
+          f'background:{c_}"></span></div>'
+          f'<div style="display:flex;justify-content:space-between;font-size:10.5px" class="muted"><span>Bearish −100'
+          f'</span><span style="color:{c_};font-weight:800;font-size:13px">{sc:+.0f}</span><span>+100 Bullish</span>'
+          f'</div><div class="muted small" style="margin-top:2px">{n} posts scored: <b style="color:{UP}">'
+          f'{s.get("bull", 0)} bullish</b> · <b style="color:{DOWN}">{s.get("bear", 0)} bearish</b> · '
+          f'{s.get("neutral", 0)} neutral</div>')
+        # ---- hype
+        tiles = [("Hype", f'<span style="color:{HYPE_COL.get(hl, MUT)}">{esc(hl)}</span>', "")]
+        if hy.get("mentions") is not None:
+            ch_ = hy.get("change_pct")
+            tiles.append(("Reddit mentions · 24h", tr(hy["mentions"], 0),
+                          (pct(ch_, 0) + " vs the day before") if en._ok(ch_) else ""))
+        if hy.get("rank") is not None:
+            rp = hy.get("rank_prev")
+            tiles.append(("Reddit rank", f'#{int(hy["rank"])}',
+                          (f'was #{int(rp)}' if en._ok(rp) else "") or ""))
+        if hy.get("watchers") is not None:
+            tiles.append(("StockTwits watchers", big(hy["watchers"], ""), ""))
+        H('<div class="sent-tiles">' + "".join(
+            f'<div class="tile"><span class="k">{k}</span><span class="v" style="font-size:15px">{v}</span>'
+            f'<span class="muted" style="font-size:10.5px">{esc(sub)}</span></div>' for k, v, sub in tiles) + '</div>')
+        # ---- kaynaklar
+        rows = ""
+        for key in ("reddit", "stocktwits", "x"):
+            v = (s.get("sources") or {}).get(key)
+            if not v:
+                continue
+            if v.get("ok"):
+                lc = SENT_COL.get(md.sentiment_label(v["score"], v["n"]), MUT)
+                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:92px">{esc(v["name"])}</span>'
+                         f'<span class="mono" style="color:{lc};font-weight:700">{v["score"]:+.0f}</span>'
+                         f'<span class="muted small">{v["n"]} posts ({v.get("last24h", 0)} in 24h) · {v["bull"]} bullish '
+                         f'/ {v["bear"]} bearish</span></div>')
+            else:
+                msg = v.get("err") or "no answer"
+                if key == "x" and msg == "not connected":
+                    msg = ('not connected — X has no free read access; with a paid X API key add '
+                           'X_BEARER_TOKEN to Secrets')
+                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:92px">{esc(v["name"])}</span>'
+                         f'<span class="muted small">{esc(msg)}</span></div>')
+        H(f'<div style="margin-top:8px">{rows}</div>')
+        top = [p for p in (s.get("top") or []) if p.get("url")][:3]
+        if top:
+            H('<div style="font-size:12px;font-weight:700;margin:8px 0 2px 0">Most discussed</div>' + "".join(
+                f'<a class="sent-post" target="_blank" rel="noopener" href="{esc(p["url"])}">'
+                f'<span style="color:{UP if p["sent"] > 0 else DOWN if p["sent"] < 0 else MUT}">'
+                f'{"▲" if p["sent"] > 0 else "▼" if p["sent"] < 0 else "•"}</span>'
+                f'<span class="sp-t">{esc(p["title"])}</span><span class="muted" style="flex:none;font-size:10.5px">'
+                f'{esc(p["src"])}{" · r/" + esc(p["sub"]) if p.get("sub") else ""}</span></a>' for p in top))
+        H('<div class="muted" style="font-size:10.5px;margin-top:6px">Score: share of bullish minus bearish posts, '
+          'weighted by likes and comments (StockTwits: the authors\' own Bullish / Bearish tag; other posts: finance '
+          'word list). ≥ +20 Bullish, ≤ −20 Bearish. Hype: Reddit mentions and rank from ApeWisdom. A mood '
+          'reading, not a trade signal.</div>')
+
+
+def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
+    """Seçili şirket: büyük grafik (katmanlarla) + kurumsal akış + topluluk duyarlılığı."""
+    anchor("stchart")
+    info = {"obs": [], "marks": [], "uw": None, "df": None}
+    with st.container(border=True):
+        h1, h2 = st.columns([2.2, 2.6], vertical_alignment="center")
+        with h1:
+            H(f'<div style="display:flex;align-items:center;gap:11px">{avatar(sym, 38)}'
+              f'<div style="min-width:0"><a class="plain" target="_self" href="{link(sec="Markets", sym=sym)}">'
+              f'<b style="font-size:18px">{esc(sym)}</b></a> {chip}'
+              f'<div class="muted small">{esc(name or md.company_name(sym))} · '
+              f'<a target="_self" href="{link(f=back)}" style="color:{ACCENT};'
+              f'text-decoration:none">↑ back to the list</a></div></div></div>')
+        with h2:
+            cur = {**ST_OV_DEF, **(ss.get("st_ov") or {})}
+            t = st.columns(4)
+            new = {}
+            for col_, (k, lab, hlp) in zip(t, (
+                    ("patterns", "Pattern", "Draws the pattern from the table (triangle, rectangle, staircase, "
+                                            "breakout) with its pivots, plus the plan levels."),
+                    ("obs", "Order blocks", "Last opposite candle before a strong, high-volume move — the zone "
+                                            "stays until price closes through it."),
+                    ("marks", "Volume buys / sells", "Bars with at least twice the 20-bar average volume: ▲ bought "
+                                                     "(closed high), ▼ sold (closed low)."),
+                    ("prints", "Dark pool", "Unusual Whales: price levels with the largest off-exchange prints "
+                                            "(needs an API token)."))):
+                with col_:
+                    if f"w_stov_{k}" not in ss:
+                        ss[f"w_stov_{k}"] = bool(cur.get(k, True))
+                    new[k] = bool(st.checkbox(lab, key=f"w_stov_{k}", help=hlp))
+            if new != ss.get("st_ov"):
+                ss.st_ov = new
+        lb, tf = range_controls("w_stlb", "w_sttf")
+
+        def _ov(payload):
+            ov, inf = st_overlay(payload, sym, best, levels)
+            info.update(inf)
+            return ov
+        render_big_chart(sym, tf, height=ST_CHART_H, tf_key="w_sttf", lb=lb, ov_fn=_ov, comp_key="pulse_chart_st")
+        g = info.get("geo")
+        H(f'<div class="muted small" style="margin-top:4px">'
+          + (f'<b style="color:{PAT_COL}">{esc(g["label"])}</b> is drawn with its pivot points. ' if g else
+             ('The pattern is drawn on daily candles — switch the candle interval back to Daily to see it. '
+              if best and tf != "1d" else ""))
+          + f'<span style="color:{UP}">▲</span> / <span style="color:{DOWN}">▼</span> = bought / sold on at least '
+            f'2× the average volume · shaded boxes = order blocks · dotted lines = dark-pool levels (Unusual '
+            f'Whales).</div>')
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        render_flow_box(sym, info)
+    with c2:
+        render_sentiment_box(sym)
+
+
 AI_STATE_STYLE = {"breakout": (UP, UP_BG, "BREAKOUT"), "retest": (ACCENT, ACC_BG, "RETEST"),
                   "forming": (WARN, WARN_BG, "FORMING")}
 C15_STYLE = {"confirmed": (UP, UP_BG), "pending": (WARN, WARN_BG),
@@ -3488,15 +4359,19 @@ def render_ai_opps():
                 '<span class="r">Price</span><span class="r">Volume</span><span>15 min</span>'
                 '<span class="r">Stop</span><span class="r">R/R</span><span>Score</span></div>')
         body = ""
+        trend = md.get_reddit_trending().get("map") or {}
         for r in rows:
             b, p, c = r["best"], r["plan"], r.get("c15") or {}
+            hv = md.hype_level(trend[r["ticker"]]) if r["ticker"] in trend else ""
+            hype = (f' <span title="Reddit hype: {hv}" style="font-size:11px">{"🔥🔥" if hv == "Extreme" else "🔥"}'
+                    f'</span>' if hv in ("Extreme", "Elevated") else "")
             sfg, sbg, slab = AI_STATE_STYLE.get((b or {}).get("state"), (MUT, NEU_BG, "—"))
             cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
             sc = UP if r["score"] >= 70 else ACCENT if r["score"] >= 55 else WARN
             body += (f'<a class="opp-grid ai-grid opp-row{" sel" if r["ticker"] == sel["ticker"] else ""}" '
-                     f'target="_self" href="{link(aip=r["ticker"], f="ai")}">'
+                     f'target="_self" href="{link(aip=r["ticker"], f="stchart")}">'
                      f'<span class="cellsym">{avatar(r["ticker"], 32)}'
-                     f'<span style="min-width:0"><b style="font-size:13.5px">{esc(r["ticker"])}</b>'
+                     f'<span style="min-width:0"><b style="font-size:13.5px">{esc(r["ticker"])}</b>{hype}'
                      f'<div class="nm" title="{esc(r["name"])}">{esc(r["name"])}</div></span></span>'
                      f'<span class="cellstk"><span class="aist" style="color:{sfg};background:{sbg}">'
                      f'{slab}</span><span class="sub" title="{esc((b or {}).get("name", "no pattern"))}">'
@@ -3516,6 +4391,16 @@ def render_ai_opps():
           f'<span style="margin-left:auto">The top {cfg["top"]} stocks by volume are evaluated</span></div></div>')
     with right:
         render_ai_detail(sel)
+    b, p = sel.get("best"), sel.get("plan")
+    lv = []
+    if b:
+        lv.append(("Level", b["level"], ACCENT))
+    if p:
+        lv += [("Stop", p["stop"], DOWN), ("TP1", p["tp1"], UP), ("TP2", p["tp2"], "#6EE7B7")]
+    sfg, sbg, slab = AI_STATE_STYLE.get((b or {}).get("state"), (MUT, NEU_BG, "—"))
+    render_st_focus(sel["ticker"], sel["name"], b, lv,
+                    chip=(f'<span class="aist" style="color:{sfg};background:{sbg}">{slab}</span> <span class="muted '
+                          f'small">{esc(b["name"])}</span>') if b else "")
     if ss.get("ai_auto"):
         components.html(_AUTO_JS % 180, height=0)
         H('<div class="muted small" style="margin-top:8px">Intraday refresh is on — the page reloads every '
@@ -3538,8 +4423,6 @@ def render_ai_detail(r):
           f'href="{link(sec="Markets", sym=r["ticker"])}"><b style="font-size:17px">{esc(r["ticker"])}</b></a>'
           f'<div class="muted small">{esc(r["name"])}{" · " + esc(r["sector"]) if r["sector"] else ""}</div></div>'
           f'<span class="aist" style="color:{sfg};background:{sbg}">{slab}</span></div>')
-        if r.get("df") is not None and len(r["df"]) > 10:
-            plot(ai_chart(r["df"], r), key=f'aic_{r["ticker"]}')
         if b:
             H(f'<div class="muted small" style="margin-top:2px"><b style="color:{SOFT}">{esc(b["name"])}</b> — '
               f'{esc(b["note"])} · confidence {tr(b["conf"] * 100, 0)}% · volume {tr(b["vol_x"], 1)}x</div>')
@@ -3694,7 +4577,7 @@ def render_own_filter():
                     f'{int(ed)}D</span>' if ed == ed and ed is not None and 0 <= ed <= 10 else "")
             sc = UP if o["score"] >= 75 else ACCENT if o["score"] >= 65 else WARN
             rows += (f'<a class="opp-grid opp-row{" sel" if sel and o["ticker"] == sel["ticker"] else ""}" '
-                     f'target="_self" href="{link(opp=o["ticker"], f="opps")}">'
+                     f'target="_self" href="{link(opp=o["ticker"], f="stchart")}">'
                      f'<span class="cellsym">{avatar(o["ticker"], 34)}'
                      f'<span style="min-width:0"><b style="font-size:14px">{esc(o["ticker"])}</b>{earn}'
                      f'<div class="nm" title="{esc(o["name"])}">{esc(o["name"])}</div></span></span>'
@@ -3723,7 +4606,6 @@ def render_own_filter():
                   f'<b style="font-size:17px">{esc(sel["ticker"])}</b></a><div class="muted small">{esc(sel["name"])} · '
                   f'{esc(sel["sector"])}</div></div><span class="pill" style="color:{sfg};background:{sbg}">'
                   f'{esc(sel["setup"])}</span></div>')
-                plot(opp_chart(hist[sel["ticker"]], sel), key=f"opp_{sel['ticker']}")
                 risk_p = (sel["mid"] - sel["stop"]) / sel["mid"] * 100
                 rew_p = (sel["target"] - sel["mid"]) / sel["mid"] * 100
                 H(f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'
@@ -3779,7 +4661,15 @@ def render_own_filter():
             with st.container(border=True):
                 H('<div class="muted">No opportunity selected.</div>')
 
-    # ---- Açık işlemlerim: swing fırsatlarının hemen altında, pozisyon büyüklüğünün yanında ----
+    if sel:
+        pats = en.setup_patterns(hist[sel["ticker"]]) if sel["ticker"] in hist else []
+        sfg, sbg = SETUP_STYLE[sel["setup"]]
+        render_st_focus(sel["ticker"], sel["name"], pats[0] if pats else None,
+                        [("Entry", sel["mid"], ACCENT), ("Stop", sel["stop"], DOWN), ("Target", sel["target"], UP)],
+                        chip=(f'<span class="pill" style="color:{sfg};background:{sbg}">{esc(sel["setup"])}</span>'
+                              + (f' <span class="muted small">{esc(pats[0]["name"])}</span>' if pats else "")),
+                        back="opps")
+    # ---- Açık işlemlerim ----
     with left:
         render_journal(hist)
 
@@ -4533,6 +5423,14 @@ ENTRY_CSS = ("<style>"
              + _ecss(' [data-testid="stExpander"] details', "background:#0C131C !important;border-color:#243042 !important")
              + _ecss(' [data-testid="stExpander"] summary p', "color:#B9C4D2 !important;font-size:13px")
              + ".entry-foot{text-align:center;font-size:13px;color:#94A3B8;margin-top:4px}"
+             ".pfoot-entry{position:relative;z-index:2;max-width:1100px;margin:38px auto 0 auto;display:grid;"
+             "grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px 28px;font-size:11.5px;line-height:1.5;"
+             "color:#7B8798;border-top:1px solid #1E2838;padding:16px 18px 20px 18px;"
+             "font-family:Inter,'Helvetica Neue',Arial,sans-serif}"
+             ".pfoot-entry h4{margin:0 0 4px 0;font-size:11.5px;font-weight:600;letter-spacing:.06em;"
+             "text-transform:uppercase;color:#B9C4D2}"
+             ".pfoot-entry a{color:#3DDC97;text-decoration:none}"
+             ".pfoot-entry .pf-copy{grid-column:1/-1;border-top:1px solid #1E2838;padding-top:8px;font-size:11px}"
              ".entry-foot b{color:#3DDC97;font-weight:600}"
              "</style>")
 
@@ -4557,73 +5455,95 @@ def _entry_bg():
 AUTH_FILE = os.environ.get("PULSE_AUTH_FILE") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                              ".pulse_auth.json")
 AUTH_IDLE = 15 * 60          # bu kadar işlem yapılmazsa yeniden giriş (yeni sekme / yeni açılış zaten giriş ister)
-_CODE_ABC = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _pw_norm(pw):
+    return unicodedata.normalize("NFC", str(pw or ""))
 
 
 def _pw_hash(pw, it=240_000):
     salt = secrets.token_bytes(16)
-    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, it)
+    dk = hashlib.pbkdf2_hmac("sha256", _pw_norm(pw).encode("utf-8"), salt, it)
     return f"pbkdf2_sha256${it}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
 
 
-def _pw_check(pw, stored):
+def _pw_check_raw(pw, stored):
     try:
         algo, it, salt, h = str(stored).split("$")
         if algo != "pbkdf2_sha256":
             return False
-        dk = hashlib.pbkdf2_hmac("sha256", str(pw).encode("utf-8"), base64.b64decode(salt), int(it))
-        return hmac.compare_digest(base64.b64encode(dk).decode(), h)
+        dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), base64.b64decode(salt), int(it))
+        return hmac.compare_digest(base64.b64encode(dk).decode().encode(), h.encode())
     except Exception:
         return False
 
 
+def _pw_check(pw, stored):
+    """Şifre kontrolü. Aynı şifrenin farklı cihazlarda farklı kodlanması (Unicode birleşik / ayrık harfler,
+    klavyenin / otomatik doldurmanın eklediği baş-son boşluk) girişi bozmasın diye bu biçimler de denenir."""
+    pw = str(pw or "")
+    seen = []
+    for v in (pw, _pw_norm(pw), unicodedata.normalize("NFKC", pw), unicodedata.normalize("NFD", pw),
+              pw.strip(), _pw_norm(pw.strip())):
+        if v and v not in seen:
+            seen.append(v)
+            if _pw_check_raw(v, stored):
+                return True
+    return False
+
+
+def _same(a, b):
+    return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
+
+
 def _norm_email(e):
-    return str(e or "").strip().lower()
-
-
-def _norm_code(c):
-    return re.sub(r"[^A-Z0-9]", "", str(c or "").upper())
-
-
-def _new_code():
-    raw = "".join(secrets.choice(_CODE_ABC) for _ in range(16))
-    return "-".join(raw[i:i + 4] for i in range(0, 16, 4))
+    return unicodedata.normalize("NFKC", str(e or "")).strip().lower()
 
 
 def _rec(d, role=None):
     return {"email": _norm_email(d.get("email")), "password_hash": str(d.get("password_hash") or ""),
-            "recovery_hash": str(d.get("recovery_hash") or ""), "role": role or str(d.get("role") or "user"),
+            "role": role or str(d.get("role") or "user"),
             "must_change": bool(d.get("must_change")), "created": str(d.get("created") or "")}
 
 
+def _users_of(d, legacy_owner=True):
+    """Kayıt sözlüğünden kullanıcı listesi (v2: users listesi, v1: tek kayıt → owner)."""
+    if not isinstance(d, dict):
+        return []
+    users = [_rec(u) for u in d.get("users", [])] if "users" in d else \
+        ([_rec(d, "owner")] if (legacy_owner and d.get("email")) else [])
+    users = [u for u in users if u["email"] and u["password_hash"]]
+    if users and not any(u["role"] == "owner" for u in users):
+        users[0]["role"] = "owner"
+    return users
+
+
 def auth_store():
-    """Kayıtlı kullanıcılar: önce dosya (v2: users listesi, v1: tek kayıt → owner), yoksa Secrets
-    ([[pulse_users]] listesi ya da eski [pulse_auth] tek kayıt). Hiçbiri yoksa None → ilk kurulum."""
+    """Kayıtlı kullanıcılar ve nerede durdukları.
+      1) kalıcı depo (GitHub — [pulse_store] ayarlıysa): yeniden başlatmalardan etkilenmez
+      2) sunucudaki dosya (.pulse_auth.json) — Streamlit Cloud'da yeniden başlatınca silinir
+      3) Secrets ([[pulse_users]] ya da eski [pulse_auth]) — elle eklenmiş, değişiklikleri izlemez
+    Hiçbiri yoksa None → ilk kurulum."""
+    if bk.store_mode() == "github":
+        users = _users_of(bk.kv_get("auth"))
+        if users:
+            return {"users": users, "where": "store"}
     try:
         with open(AUTH_FILE, encoding="utf-8") as fh:
-            d = json.load(fh)
-        users = [_rec(u) for u in d.get("users", [])] if "users" in d else \
-            ([_rec(d, "owner")] if d.get("email") else [])
-        users = [u for u in users if u["email"] and u["password_hash"]]
+            users = _users_of(json.load(fh))
         if users:
-            if not any(u["role"] == "owner" for u in users):
-                users[0]["role"] = "owner"
             return {"users": users, "where": "file"}
     except (OSError, ValueError, AttributeError):
         pass
     try:
-        sec = st.secrets if hasattr(st, "secrets") else {}
-        lst = sec.get("pulse_users") if hasattr(sec, "get") else None
+        lst = _sec("pulse_users")
         users = []
         if lst:
-            users = [_rec(dict(u)) for u in lst]
-        elif hasattr(sec, "get") and sec.get("pulse_auth"):
-            users = [_rec(dict(sec["pulse_auth"]), "owner")]
-        users = [u for u in users if u["email"] and u["password_hash"]]
+            users = _users_of({"users": [dict(u) for u in lst]})
+        elif _sec("pulse_auth"):
+            users = _users_of(dict(_sec("pulse_auth")))
         if users:
-            if not any(u["role"] == "owner" for u in users):
-                users[0]["role"] = "owner"
             return {"users": users, "where": "secrets"}
     except Exception:
         pass
@@ -4642,29 +5562,36 @@ def auth_load():
 def auth_user(email):
     stv = auth_store()
     e = _norm_email(email)
-    return next((u for u in (stv or {}).get("users", []) if hmac.compare_digest(u["email"], e)), None)
+    return next((u for u in (stv or {}).get("users", []) if _same(u["email"], e)), None)
 
 
 def _auth_write(users):
-    tmp = AUTH_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"v": 2, "users": users}, fh)
+    """Kullanıcıları kaydeder: kalıcı depo ayarlıysa oraya (hemen), ayrıca sunucudaki dosyaya."""
+    where = None
+    if bk.store_mode() == "github":
+        where = bk.kv_put("auth", {"v": 2, "users": users}, sync=True)
     try:
-        os.chmod(tmp, 0o600)
+        tmp = AUTH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"v": 2, "users": users}, fh)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, AUTH_FILE)
     except OSError:
-        pass
-    os.replace(tmp, AUTH_FILE)
+        if where is None:
+            raise
+    return where or "file"
 
 
-def auth_upsert(email, pw, role=None, old_email=None, must_change=False, new_code=True):
-    """Kullanıcı ekler / günceller. Yeni kurtarma kodunu döndürür (new_code=False ise None)."""
+def auth_upsert(email, pw, role=None, old_email=None, must_change=False):
+    """Kullanıcı ekler / günceller; kaydı döndürür."""
     stv = auth_store() or {"users": []}
     users = [dict(u) for u in stv["users"]]
     key = _norm_email(old_email or email)
     cur = next((u for u in users if u["email"] == key), None)
-    code = _new_code() if new_code else None
     rec = {"email": _norm_email(email), "password_hash": _pw_hash(pw),
-           "recovery_hash": _pw_hash(_norm_code(code)) if code else (cur or {}).get("recovery_hash", ""),
            "role": role or (cur or {}).get("role") or ("owner" if not users else "user"),
            "must_change": bool(must_change), "created": (cur or {}).get("created") or
            pd.Timestamp.now(tz="UTC").isoformat()}
@@ -4672,47 +5599,45 @@ def auth_upsert(email, pw, role=None, old_email=None, must_change=False, new_cod
     users.append(rec)
     users.sort(key=lambda u: (u["role"] != "owner", u["created"]))
     _auth_write(users)
-    return code, rec
+    if cur and key != rec["email"]:              # e-posta değişti → ayarlar yeni adrese taşınır
+        prof = bk.profile_get(key)
+        if prof:
+            bk.profile_put(rec["email"], prof)
+            bk.profile_remove(key)
+    return rec
 
 
 def auth_remove(email):
     stv = auth_store() or {"users": []}
     users = [u for u in stv["users"] if u["email"] != _norm_email(email) or u["role"] == "owner"]
     _auth_write(users)
+    bk.profile_remove(email)
 
 
 def auth_save(email, pw):
     """İlk kurulum: owner hesabı."""
-    code, rec = auth_upsert(email, pw, role="owner")
-    return code, rec
+    return auth_upsert(email, pw, role="owner")
 
 
 def owner_key():
     """Uygulama sahibinin anahtarı (Streamlit Secrets'ta, yalnızca sahibi görür):
     [pulse_admin] key = "…"  ya da  PULSE_ADMIN_KEY = "…"."""
-    try:
-        sec = st.secrets if hasattr(st, "secrets") else {}
-        k = None
-        if hasattr(sec, "get"):
-            adm = sec.get("pulse_admin")
-            k = (adm.get("key") if hasattr(adm, "get") else None) or sec.get("PULSE_ADMIN_KEY")
-        k = k or os.environ.get("PULSE_ADMIN_KEY")
-        return str(k) if k and len(str(k)) >= 8 else None
-    except Exception:
-        return os.environ.get("PULSE_ADMIN_KEY") or None
+    k = (_sec("pulse_admin") or {}).get("key") if isinstance(_sec("pulse_admin"), dict) else None
+    k = k or _sec("PULSE_ADMIN_KEY") or os.environ.get("PULSE_ADMIN_KEY")
+    return str(k) if k and len(str(k)) >= 8 else None
 
 
 def _temp_password():
-    return "".join(secrets.choice(_CODE_ABC.lower() + "23456789") for _ in range(12))
+    return "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(12))
 
 
 def secrets_snippet(rec=None):
-    """Tüm kullanıcılar için kalıcı Secrets bloğu (yalnızca karmalar)."""
+    """Tüm kullanıcılar için Secrets bloğu (yalnızca karmalar) — kalıcı depo kurulmadıysa yedek yol."""
     stv = auth_store() or {"users": [rec] if rec else []}
     out = []
     for u in stv["users"]:
         out.append(f'[[pulse_users]]\nemail = "{u["email"]}"\nrole = "{u["role"]}"\n'
-                   f'password_hash = "{u["password_hash"]}"\nrecovery_hash = "{u["recovery_hash"]}"\n'
+                   f'password_hash = "{u["password_hash"]}"\n'
                    + ('must_change = true\n' if u.get("must_change") else ""))
     return "\n".join(out)
 
@@ -4728,9 +5653,9 @@ def _auth_locked():
     now = time.time()
     g["fails"] = [t for t in g["fails"] if now - t < 900]
     n = len(g["fails"])
-    if n < 5:
+    if n < 8:
         return 0
-    wait = min(900, 30 * 2 ** (n - 5)) - (now - g["fails"][-1])
+    wait = min(900, 30 * 2 ** (n - 8)) - (now - g["fails"][-1])
     return int(max(0, wait))
 
 
@@ -4759,8 +5684,9 @@ def auth_valid():
     if a.get("tag") and tag and a["tag"] != tag:
         ss.auth = None
         return False
-    u = auth_user(a["user"]) if auth_store() else None
-    if auth_store() and (u is None or u.get("must_change")):      # silindi ya da şifresi sıfırlandı
+    stv = auth_store()
+    u = auth_user(a["user"]) if stv else None
+    if stv and (u is None or u.get("must_change")):      # silindi ya da şifresi sıfırlandı
         ss.auth = None
         return False
     if u:
@@ -4778,6 +5704,14 @@ def _sign_in(email):
                "last": time.time(), "tag": _client_tag(), "role": u.get("role", "user")}
     ss["_boot"] = True            # ilk yüklemede açılış ekranı
     ss["_cred_store"] = True      # tarayıcı şifre yöneticisine kaydetmeyi önersin
+    try:
+        stv = auth_store()
+        if stv and stv["where"] != "store" and bk.store_mode() == "github" and bk.store_status()["ok"] \
+                and bk.kv_get("auth") is None:
+            _auth_write(stv["users"])           # kalıcı depo yeni kuruldu → mevcut girişler oraya taşınır
+        _profile_load(ss.auth["user"])
+    except Exception:
+        pass
 
 
 # Tarayıcının otomatik doldurduğu değerler, kullanıcı "Sign in"e basana kadar sayfaya verilmez (güvenlik).
@@ -4838,14 +5772,53 @@ def _auth_msg(kind, text):
 def _set_mode(m):
     ss["auth_mode"] = m
     ss.pop("_auth_err", None)
+    if m != "reset":
+        ss.pop("_rst_email", None)
 
 
 def _btn_link():
     return {"type": "tertiary"} if "tertiary" in str(inspect.signature(st.button)) else {}
 
 
+def _mask_email(e):
+    name, _, dom = str(e).partition("@")
+    return (name[:2] + "•" * max(1, len(name) - 2)) + "@" + dom
+
+
+def _send_code(email):
+    """Sıfırlama kodunu e-postayla yollar. Döner: hata metni ya da None."""
+    code, why = bk.otp_issue(email)
+    if code is None:
+        return f"A code was just sent — you can request a new one in {why.split(':')[-1]} s."
+    ok, err = bk.send_mail(
+        email, f"Pulse — your code: {code}",
+        f"Your Pulse code is {code}\n\nEnter it on the sign-in page to choose a new password. The code is valid "
+        f"for 15 minutes and works once.\n\nIf you did not ask for it, you can ignore this email — your password "
+        f"stays as it is.",
+        f'<div style="font-family:Arial,sans-serif;font-size:15px;color:#111">Your Pulse code is'
+        f'<div style="font-size:30px;font-weight:700;letter-spacing:6px;margin:14px 0">{code}</div>'
+        f'Enter it on the sign-in page to choose a new password. The code is valid for 15 minutes and works '
+        f'once.<br><br><span style="color:#666">If you did not ask for it, you can ignore this email — your '
+        f'password stays as it is.</span></div>')
+    if not ok:
+        bk.otp_cancel(email)
+        return err
+    return None
+
+
+def _where_hint(stv):
+    """Giriş başarısız olduğunda: kayıtların nereden geldiği (yeniden başlatma sonrası eski kayıtlar)."""
+    w = (stv or {}).get("where")
+    if w == "secrets":
+        return (" Logins were restored from the app's Secrets after a restart, so passwords changed later are "
+                "not known any more — use “Forgot password?” to choose a new one.")
+    if w == "file":
+        return " If you are sure it is right, use “Forgot password?” to choose a new one."
+    return " Use “Forgot password?” to choose a new one."
+
+
 def render_auth():
-    """Giriş kapısı: ilk kurulum · giriş · şifre değiştirme (geçici şifreden sonra) · sıfırlama · kurtarma kodu."""
+    """Giriş kapısı: ilk kurulum · giriş · şifre değiştirme (geçici şifreden sonra) · e-posta koduyla sıfırlama."""
     st.markdown(ENTRY_CSS, unsafe_allow_html=True)
     st.markdown(_entry_bg(), unsafe_allow_html=True)
     stv = auth_store()
@@ -4856,6 +5829,16 @@ def render_auth():
         mode = "setup"
     err = ss.pop("_auth_err", None)
     ok_ = ss.pop("_auth_ok", None)
+    if not stv and bk.store_mode() == "github" and not bk.kv_loaded("auth"):
+        # Kalıcı depo okunamadı: "ilk kurulum" ekranı açılırsa mevcut girişlerin üzerine yazılabilir → beklet
+        _, mid, _ = st.columns([1, 1.05, 1])
+        with mid:
+            _auth_header("Pulse", "The login storage is not reachable right now")
+            _auth_msg("err", (bk.store_status()["err"] or "GitHub did not answer") + ". Existing logins are safe; "
+                      "please try again in a minute.")
+            st.button("Try again", key="auth_retry", type="primary", **_wkw(st.button))
+        st.markdown(imprint_html(entry=True), unsafe_allow_html=True)
+        return
     _, mid, _ = st.columns([1, 1.05, 1])
     with mid:
         try:
@@ -4863,9 +5846,6 @@ def render_auth():
         except TypeError:          # eski Streamlit: key yok → :has() seçicisi devreye girer
             card = st.container()
         with card:
-            if mode == "code":
-                _auth_code_screen()
-                return
             if mode == "setup":
                 _auth_header("Pulse", "First start — choose the email and password you will sign in with")
                 if err:
@@ -4879,8 +5859,8 @@ def render_auth():
                                        key="setup_pw2", autocomplete="new-password")
                     go_ = st.form_submit_button("Create login", type="primary", **_wkw(st.form_submit_button))
                 st.markdown('<div class="entry-foot">This is done once and makes you the <b>owner</b>: you can '
-                            'later add friends and reset their logins. From then on Pulse asks for your email and '
-                            'password every time it is opened.</div>', unsafe_allow_html=True)
+                            'later add friends and reset their logins. Use a real email address — if you forget '
+                            'the password, the reset code is sent there.</div>', unsafe_allow_html=True)
                 if go_:
                     e = _norm_email(em)
                     if not _EMAIL_RE.match(e):
@@ -4894,19 +5874,16 @@ def render_auth():
                         ss["auth_mode"] = "login"
                     else:
                         try:
-                            code, rec = auth_save(e, p1)
+                            auth_save(e, p1)
                         except OSError:
                             ss["_auth_err"] = "The login could not be saved on the server (write access denied)."
                         else:
-                            ss["_new_code"], ss["_new_rec"], ss["_code_next"] = code, rec, "app"
-                            ss["auth_mode"] = "code"
+                            ss["auth_mode"] = None
                             _sign_in(e)
-                            ss["_hold_auth"] = ss.auth      # önce kurtarma kodu gösterilir
-                            ss.auth = None
                     st.rerun()
             elif mode == "change":
                 who = ss.get("_chg_user") or ""
-                _auth_header("New password", f"{who} — your password was reset, choose a new one")
+                _auth_header("New password", f"{who} — choose your own password")
                 if err:
                     _auth_msg("err", err)
                 with st.form("entry_change", border=False):
@@ -4927,69 +5904,13 @@ def render_auth():
                     elif p1 != p2:
                         ss["_auth_err"] = "The two passwords do not match."
                     else:
-                        code, rec = auth_upsert(who, p1, old_email=who, must_change=False)
+                        auth_upsert(who, p1, old_email=who, must_change=False)
                         ss.pop("_chg_ok", None)
-                        ss["_new_code"], ss["_new_rec"], ss["_code_next"] = code, rec, "app"
-                        ss["auth_mode"] = "code"
+                        ss["auth_mode"] = None
                         _sign_in(who)
-                        ss["_hold_auth"] = ss.auth
-                        ss.auth = None
                     st.rerun()
             elif mode == "reset":
-                _auth_header("Reset login", "Forgot your email or password? Use your recovery code")
-                if err:
-                    _auth_msg("err", err)
-                wait = _auth_locked()
-                with st.form("entry_reset", border=False):
-                    rc = st.text_input("Recovery code (or owner key)", placeholder="XXXX-XXXX-XXXX-XXXX",
-                                       key="reset_code", type="password", autocomplete="off")
-                    em = st.text_input("New email", placeholder="you@example.com", key="reset_email",
-                                       autocomplete="username")
-                    p1 = st.text_input("New password", type="password", placeholder="At least 8 characters",
-                                       key="reset_pw", autocomplete="new-password")
-                    p2 = st.text_input("Repeat new password", type="password", key="reset_pw2",
-                                       autocomplete="new-password")
-                    go_ = st.form_submit_button("Reset and save", type="primary", **_wkw(st.form_submit_button))
-                st.button("← Back to sign in", key="reset_back", on_click=_set_mode, args=("login",), **_btn_link())
-                st.markdown('<div class="entry-foot">Use the recovery code you got when your login was created. '
-                            'No code? Ask the app owner — they can reset your login in <b>Account → Users</b>. '
-                            'The owner can also reset the owner login here with the owner key from the app\'s '
-                            'Secrets.</div>', unsafe_allow_html=True)
-                if go_:
-                    e = _norm_email(em)
-                    target = None
-                    if wait:
-                        ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
-                    else:
-                        okey = owner_key()
-                        if okey and hmac.compare_digest(str(rc or "").strip(), okey):
-                            target = next((u for u in stv["users"] if u["role"] == "owner"), None)
-                        else:
-                            nc = _norm_code(rc)
-                            target = next((u for u in stv["users"] if u.get("recovery_hash") and
-                                           _pw_check(nc, u["recovery_hash"])), None) if nc else None
-                        if target is None:
-                            _auth_fail()
-                            ss["_auth_err"] = "This recovery code (or owner key) is not correct."
-                    if target is not None:
-                        if not _EMAIL_RE.match(e):
-                            ss["_auth_err"] = "Please enter a valid email address."
-                        elif len(p1 or "") < 8:
-                            ss["_auth_err"] = "The new password needs at least 8 characters."
-                        elif p1 != p2:
-                            ss["_auth_err"] = "The two passwords do not match."
-                        elif e != target["email"] and auth_user(e):
-                            ss["_auth_err"] = "Another account already uses this email."
-                        else:
-                            try:
-                                code, rec = auth_upsert(e, p1, old_email=target["email"])
-                            except OSError:
-                                ss["_auth_err"] = "The new login could not be saved on the server."
-                            else:
-                                ss["_new_code"], ss["_new_rec"], ss["_code_next"] = code, rec, "login"
-                                ss["_was_secrets"] = stv.get("where") == "secrets"
-                                ss["auth_mode"] = "code"
-                    st.rerun()
+                _render_reset(stv, err, ok_)
             else:
                 _auth_header("Pulse", "Sign in to open your dashboard")
                 if ok_:
@@ -5003,12 +5924,15 @@ def render_auth():
                     pw = st.text_input("Password", type="password", placeholder="Enter your password",
                                        key="login_pw", autocomplete="current-password")
                     go_ = st.form_submit_button("Sign in", type="primary", **_wkw(st.form_submit_button))
-                st.button("Forgot email or password?", key="login_forgot", on_click=_set_mode, args=("reset",),
+                st.button("Forgot password?", key="login_forgot", on_click=_set_mode, args=("reset",),
                           **_btn_link())
                 if go_:
-                    u = auth_user(em)
+                    e = _norm_email(em)
+                    u = auth_user(e)
                     if wait:
                         ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
+                    elif not e or not pw:
+                        ss["_auth_err"] = "Please enter your email and your password."
                     elif u and _pw_check(pw, u["password_hash"]):
                         if u.get("must_change"):
                             ss["_chg_user"], ss["_chg_ok"] = u["email"], True
@@ -5016,56 +5940,164 @@ def render_auth():
                         else:
                             ss["auth_mode"] = None
                             _sign_in(u["email"])
+                    elif u is None:
+                        _auth_fail()
+                        ss["_auth_err"] = (f"There is no login for {e} on this app. Check the address for typos, "
+                                           f"or ask the owner to add you.")
                     else:
                         _auth_fail()
-                        ss["_auth_err"] = "Email or password is not correct."
+                        ss["_auth_err"] = f"The password for {e} is not correct." + _where_hint(stv)
                     st.rerun()
+    st.markdown(imprint_html(entry=True), unsafe_allow_html=True)
     components.html(_AUTOFILL_JS, height=0)
 
 
-def _auth_code_screen():
-    code, rec = ss.get("_new_code"), ss.get("_new_rec")
-    nxt = ss.get("_code_next", "login")
-    if not code or not rec:
-        ss["auth_mode"] = None
-        st.rerun()
+def _render_reset(stv, err, ok_):
+    """Şifre sıfırlama: e-postaya 6 haneli kod → kod + yeni şifre. Owner ayrıca owner anahtarını kullanabilir."""
+    target = ss.get("_rst_email")
+    okey = owner_key()
+    if not target:
+        _auth_header("Reset password", "We send a 6-digit code to your email address")
+        if err:
+            _auth_msg("err", err)
+        if not bk.mail_ready():
+            _auth_msg("info", "Sending emails is not set up for this app yet. The owner can switch it on in the "
+                              "app's Secrets ([pulse_mail]); until then the owner resets passwords in "
+                              "Account → Users.")
+        with st.form("entry_reset", border=False):
+            em = st.text_input("Email", placeholder="you@example.com", key="reset_email", autocomplete="username")
+            go_ = st.form_submit_button("Send code", type="primary", **_wkw(st.form_submit_button))
+        st.button("← Back to sign in", key="reset_back", on_click=_set_mode, args=("login",), **_btn_link())
+        if go_:
+            e = _norm_email(em)
+            wait = _auth_locked()
+            if wait:
+                ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
+            elif not _EMAIL_RE.match(e):
+                ss["_auth_err"] = "Please enter the email address of your login."
+            elif not auth_user(e):
+                _auth_fail()
+                ss["_auth_err"] = f"There is no login for {e} on this app."
+            elif not bk.mail_ready():
+                ss["_auth_err"] = ("Emails cannot be sent yet — ask the owner to reset your password in "
+                                   "Account → Users.")
+            else:
+                bad = _send_code(e)
+                if bad:
+                    ss["_auth_err"] = bad
+                else:
+                    ss["_rst_email"] = e
+                    ss["_auth_ok"] = f"Code sent to {_mask_email(e)}. It can take a minute — check spam too."
+            st.rerun()
+        if okey:
+            with st.expander("Owner: reset the owner login with the owner key"):
+                with st.form("entry_reset_owner", border=False):
+                    ok_key = st.text_input("Owner key (from the app's Secrets)", key="reset_okey", autocomplete="off")
+                    oe = st.text_input("New owner email", placeholder="you@example.com", key="reset_oemail",
+                                       autocomplete="username")
+                    o1 = st.text_input("New password", type="password", placeholder="At least 8 characters",
+                                       key="reset_opw", autocomplete="new-password")
+                    o2 = st.text_input("Repeat new password", type="password", key="reset_opw2",
+                                       autocomplete="new-password")
+                    og = st.form_submit_button("Reset owner login", **_wkw(st.form_submit_button))
+                if og:
+                    e = _norm_email(oe)
+                    owner = next((u for u in stv["users"] if u["role"] == "owner"), None)
+                    wait = _auth_locked()
+                    if wait:
+                        ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
+                    elif not _same(str(ok_key or "").strip(), okey):
+                        _auth_fail()
+                        ss["_auth_err"] = "This owner key is not correct."
+                    elif not _EMAIL_RE.match(e):
+                        ss["_auth_err"] = "Please enter a valid email address."
+                    elif len(o1 or "") < 8:
+                        ss["_auth_err"] = "The new password needs at least 8 characters."
+                    elif o1 != o2:
+                        ss["_auth_err"] = "The two passwords do not match."
+                    elif owner and e != owner["email"] and auth_user(e):
+                        ss["_auth_err"] = "Another account already uses this email."
+                    else:
+                        try:
+                            auth_upsert(e, o1, role="owner", old_email=owner["email"] if owner else None)
+                        except OSError:
+                            ss["_auth_err"] = "The new login could not be saved on the server."
+                        else:
+                            ss["auth_mode"] = "login"
+                            ss["_auth_ok"] = "Owner login updated — sign in with the new email and password."
+                    st.rerun()
         return
-    _auth_header("Recovery code", "Save it now — it is shown only once")
-    st.markdown(f'<div class="entry-code">{esc(code)}</div>'
-                '<div class="entry-foot" style="text-align:left">If you ever forget your email or password, '
-                '<b>Forgot email or password?</b> on the sign-in screen lets you set new ones with this code. '
-                'Keep it somewhere safe (password manager, printout).</div>', unsafe_allow_html=True)
-    st.download_button("Download code (.txt)", data=f"Pulse recovery code: {code}\nLogin email: {rec['email']}\n",
-                       file_name="pulse-recovery-code.txt", key="code_dl", **_wkw(st.download_button))
-    if ss.get("_was_secrets"):
-        st.markdown('<div class="entry-foot" style="text-align:left;color:#F5B544">Logins were stored in the '
-                    'app\'s Secrets. Replace the [[pulse_users]] / [pulse_auth] block there with the lines below, '
-                    'otherwise the old login returns after the next app restart.</div>', unsafe_allow_html=True)
-    if rec.get("role") == "owner" or ss.get("_was_secrets"):
-        with st.expander("Keep the logins after app restarts (recommended on Streamlit Cloud)"):
-            st.markdown('<div class="entry-foot" style="text-align:left">On Streamlit Community Cloud the saved '
-                        'login file is cleared when the app restarts or is redeployed — Pulse would then show the '
-                        'first-start screen again. Paste these lines into <b>App settings → Secrets</b> to make it '
-                        'permanent. They contain only salted hashes, not passwords.</div>', unsafe_allow_html=True)
-            st.code(secrets_snippet(rec), language="toml")
-    saved = st.checkbox("I have saved my recovery code", key="code_saved")
-    if st.button("Continue to Pulse" if nxt == "app" else "Continue to sign in", key="code_go", type="primary",
-                 disabled=not saved, **_wkw(st.button)):
-        for k in ("_new_code", "_new_rec", "_was_secrets", "_code_next"):
-            ss.pop(k, None)
-        if nxt == "app" and ss.get("_hold_auth"):
-            ss.auth = ss.pop("_hold_auth")
-            ss.auth["last"] = time.time()
-            ss["auth_mode"] = None
+    _auth_header("Enter the code", f"Sent to {_mask_email(target)} · valid for 15 minutes")
+    if ok_:
+        _auth_msg("ok", ok_)
+    if err:
+        _auth_msg("err", err)
+    with st.form("entry_reset2", border=False):
+        st.text_input("Email", value=target, key="reset_email_ro", autocomplete="username", disabled=True)
+        rc = st.text_input("Code from the email", placeholder="6 digits", key="reset_code", max_chars=12,
+                           autocomplete="one-time-code")
+        p1 = st.text_input("New password", type="password", placeholder="At least 8 characters",
+                           key="reset_pw", autocomplete="new-password")
+        p2 = st.text_input("Repeat new password", type="password", key="reset_pw2", autocomplete="new-password")
+        go_ = st.form_submit_button("Save new password", type="primary", **_wkw(st.form_submit_button))
+    again = st.button("Send a new code", key="reset_again", **_btn_link())
+    st.button("← Back to sign in", key="reset_back2", on_click=_set_mode, args=("login",), **_btn_link())
+    if again:
+        bad = _send_code(target)
+        if bad:
+            ss["_auth_err"] = bad
         else:
-            ss.pop("_hold_auth", None)
-            ss["auth_mode"] = "login"
-            ss["_auth_ok"] = "Login updated — sign in with your new email and password."
+            ss["_auth_ok"] = f"New code sent to {_mask_email(target)}."
         st.rerun()
+    if go_:
+        wait = _auth_locked()
+        if wait:
+            ss["_auth_err"] = f"Too many attempts — try again in {wait} s."
+        elif len(p1 or "") < 8:
+            ss["_auth_err"] = "The new password needs at least 8 characters."
+        elif p1 != p2:
+            ss["_auth_err"] = "The two passwords do not match."
+        elif not auth_user(target):
+            ss["_auth_err"] = "This login does not exist any more."
+            _set_mode("login")
+        else:
+            res = bk.otp_check(target, rc)
+            if res == "ok":
+                try:
+                    auth_upsert(target, p1, old_email=target, must_change=False)
+                except OSError:
+                    ss["_auth_err"] = "The new password could not be saved on the server."
+                else:
+                    for k in ("reset_code", "reset_pw", "reset_pw2", "_rst_email"):
+                        ss.pop(k, None)
+                    ss["auth_mode"] = "login"
+                    ss["_auth_ok"] = "Password updated — sign in with your new password."
+            elif res == "bad":
+                _auth_fail()
+                ss["_auth_err"] = "This code is not correct. Check the newest email from Pulse."
+            else:
+                ss.pop("_rst_email", None)
+                ss["_auth_err"] = ("The code has expired or was entered wrongly too often — request a new one."
+                                   if res == "expired" else "Too many wrong codes — request a new one.")
+        st.rerun()
+
+
+def _mail_temp_pw(email, tmp, new):
+    """Geçici şifreyi (e-posta ayarlıysa) kullanıcıya yollar. Döner: gönderildi mi."""
+    if not bk.mail_ready():
+        return False
+    url = bk.CFG.get("app_url") or ""
+    ok, _ = bk.send_mail(
+        email, "Pulse — your login" if new else "Pulse — your password was reset",
+        (f"You were added to Pulse.\n\n" if new else "Your Pulse password was reset by the owner.\n\n")
+        + f"Email: {email}\nTemporary password: {tmp}\n\n"
+        + (f"Sign in here: {url}\n" if url else "")
+        + "At the first sign-in you choose your own password.")
+    return ok
 
 
 def users_admin():
-    """Owner: kullanıcı ekle, şifre sıfırla (geçici şifre), kaldır, kalıcı Secrets bloğu."""
+    """Owner: kullanıcı ekle, şifre sıfırla (geçici şifre), kaldır."""
     stv = auth_store() or {"users": [], "where": "file"}
     users = stv["users"]
     H('<div style="font-size:12px;font-weight:700;margin:14px 0 4px 0">Users <span class="muted" '
@@ -5084,11 +6116,12 @@ def users_admin():
         if button("Reset password", key="adm_reset", help="Creates a temporary password; they choose a new "
                                                            "one at the next sign-in."):
             tmp = _temp_password()
-            auth_upsert(pick, tmp, old_email=pick, must_change=True, new_code=False)
+            auth_upsert(pick, tmp, old_email=pick, must_change=True)
+            sent = _mail_temp_pw(pick, tmp, new=False)
             ss["_adm_result"] = (f'Temporary password for <b>{esc(pick)}</b>: <span class="mono" '
-                                 f'style="font-size:14px">{tmp}</span><br><span class="muted small">Give it to '
-                                 f'them — at the next sign-in they must choose a new password. Shown only now.'
-                                 f'</span>')
+                                 f'style="font-size:14px">{tmp}</span><br><span class="muted small">'
+                                 f'{"Sent to them by email. " if sent else "Give it to them. "}At the next sign-in '
+                                 f'they must choose a new password. Shown only now.</span>')
             st.rerun()
         if button("Remove user", key="adm_remove"):
             auth_remove(pick)
@@ -5105,19 +6138,114 @@ def users_admin():
             ss["_adm_result"] = f"{esc(e)} already has a login — use Reset password."
         else:
             tmp = _temp_password()
-            auth_upsert(e, tmp, role="user", must_change=True, new_code=False)
+            auth_upsert(e, tmp, role="user", must_change=True)
+            sent = _mail_temp_pw(e, tmp, new=True)
             ss["_adm_result"] = (f'Added <b>{esc(e)}</b>. Temporary password: <span class="mono" style="font-size:14px">'
-                                 f'{tmp}</span><br><span class="muted small">They choose their own password at the '
+                                 f'{tmp}</span><br><span class="muted small">'
+                                 f'{"Sent to them by email. " if sent else ""}They choose their own password at the '
                                  f'first sign-in. Shown only now.</span>')
         st.rerun()
-    with st.expander("Keep logins after app restarts"):
-        H('<div class="muted small">On Streamlit Cloud the login file is cleared on restart / redeploy. Paste this '
-          'into <b>App settings → Secrets</b> (hashes only). Optional owner key for emergencies: add '
-          '<span class="mono">[pulse_admin]</span> <span class="mono">key = "…"</span> (at least 8 characters) — it '
-          'resets the owner login from the sign-in screen.</div>')
-        st.code(secrets_snippet(), language="toml")
-    H(f'<div class="muted small">Logins stored {"on this server" if stv.get("where") == "file" else "in Secrets"} · '
+    setup_status()
+
+
+def setup_status():
+    """Owner: kalıcı depo ve e-posta kurulumu (durum + adım adım)."""
+    stt = bk.store_status()
+    stv = auth_store() or {}
+    H('<div style="font-size:12px;font-weight:700;margin:14px 0 4px 0">Storage &amp; email <span class="muted" '
+      'style="font-weight:500">· owner only</span></div>')
+    if stt["mode"] == "github" and stt["ok"]:
+        H(f'<div class="muted small"><span style="color:{UP}">●</span> Logins, watchlists, alerts and settings are '
+          f'stored permanently in <span class="mono">{esc(stt["repo"])}</span> — they survive restarts.</div>')
+    elif stt["mode"] == "github":
+        H(f'<div class="small" style="color:{WARN}">● Permanent storage is configured but not working: '
+          f'{esc(stt["err"])}. Until this is fixed, changes are kept only until the next restart.</div>')
+    else:
+        H(f'<div class="small" style="color:{WARN}">● Logins and settings are kept on this server only. Streamlit '
+          f'Cloud clears them whenever the app restarts or goes to sleep — after that a password can suddenly '
+          f'be “wrong” or the first-start screen returns. Set up permanent storage once:</div>')
+        with st.expander("Set up permanent storage (5 minutes)"):
+            H('<div class="muted small">1. On GitHub create a new <b>private</b> repository, e.g. '
+              '<span class="mono">pulse-data</span>, and tick “Add a README”.<br>'
+              '2. GitHub → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → '
+              'Generate new token. Repository access: <b>Only select repositories</b> → pulse-data. Permissions → '
+              'Repository permissions → <b>Contents: Read and write</b>. Copy the token.<br>'
+              '3. Streamlit → your app → Settings → <b>Secrets</b>, add the lines below, save. The app restarts '
+              'and from then on keeps everything.</div>')
+            st.code('[pulse_store]\nrepo = "YOUR-GITHUB-NAME/pulse-data"\ntoken = "github_pat_…"', language="toml")
+            if stv.get("users"):
+                H('<div class="muted small">Without GitHub you can instead paste the current logins into Secrets '
+                  '(hashes only). This is a snapshot: passwords changed later are lost at the next restart.</div>')
+                st.code(secrets_snippet(), language="toml")
+    if bk.mail_ready():
+        H(f'<div class="muted small" style="margin-top:6px"><span style="color:{UP}">●</span> Email is set up '
+          f'(sender <span class="mono">{esc(bk.CFG["mail"].get("user", ""))}</span>): “Forgot password?” sends a '
+          f'code, and notifications can go out by email.</div>')
+    else:
+        H(f'<div class="small" style="color:{WARN};margin-top:6px">● Email is not set up, so “Forgot password?” '
+          f'cannot send codes yet.</div>')
+        with st.expander("Set up email with Gmail (3 minutes)"):
+            H('<div class="muted small">1. In the Google account that should send the emails switch on '
+              '<b>2-Step Verification</b> (myaccount.google.com → Security).<br>'
+              '2. Open <span class="mono">myaccount.google.com/apppasswords</span>, create an app password named '
+              '“Pulse” and copy the 16 letters.<br>'
+              '3. Streamlit → Settings → <b>Secrets</b>, add:</div>')
+            st.code('[pulse_mail]\nuser = "your.address@gmail.com"\napp_password = "abcd efgh ijkl mnop"',
+                    language="toml")
+    H(f'<div class="muted small" style="margin-top:6px">Logins currently come from: '
+      f'{ {"store": "permanent storage", "file": "this server (temporary)", "secrets": "the Secrets snapshot"}.get(stv.get("where"), "—")} · '
       f'owner key {"set" if owner_key() else "not set"}.</div>')
+
+
+IMPRINT_EMAILS = ("jan.erik.goebecke@gowu.de", "ardakyoroglu@gmail.com")
+
+
+def imprint_html(entry=False):
+    """Impressum (§ 5 DDG) + Haftungsausschluss + Datenschutz-Kurzinfo. Name und Anschrift kommen aus
+    Secrets → [pulse_imprint] (name, address, phone, responsible); die Kontakt-E-Mails stehen immer da."""
+    imp = _sec("pulse_imprint") or {}
+    imp = imp if isinstance(imp, dict) else {}
+    mails = [m for m in (imp.get("emails") or IMPRINT_EMAILS) if m]
+    ml = " · ".join(f'<a href="mailto:{esc(m)}">{esc(m)}</a>' for m in mails)
+    who = ""
+    if imp.get("name"):
+        who += f'<b style="color:#C4CAD4">{esc(str(imp["name"]))}</b><br>'
+    if imp.get("address"):
+        who += "<br>".join(esc(x.strip()) for x in str(imp["address"]).replace("\n", ",").split(",") if x.strip()) + "<br>"
+    if imp.get("phone"):
+        who += f'Telefon: {esc(str(imp["phone"]))}<br>'
+    resp = imp.get("responsible") or imp.get("name")
+    year = pd.Timestamp.now(tz=md.TZ).year
+    return (f'<div class="pfoot{" pfoot-entry" if entry else ""}">'
+            f'<div><h4>Impressum</h4>Angaben gemäß § 5 DDG<br>Pulse — Market &amp; Swing Intelligence<br>{who}'
+            f'Kontakt: {ml}'
+            + (f'<br>Verantwortlich für den Inhalt (§ 18 Abs. 2 MStV): {esc(str(resp))}' if resp else "")
+            + '</div>'
+            '<div><h4>Haftungsausschluss</h4>Pulse ist ein Informations- und Analysewerkzeug. Die Inhalte sind '
+            '<b style="color:#C4CAD4">keine Anlageberatung</b>, keine Anlageempfehlung und keine Aufforderung zum '
+            'Kauf oder Verkauf von Finanzinstrumenten. Kurse, Kennzahlen, Schätzungen und Signale stammen von '
+            'Dritten und aus eigenen Modellrechnungen; sie können verzögert, unvollständig oder fehlerhaft sein. '
+            'Für Richtigkeit, Vollständigkeit und Aktualität wird keine Gewähr übernommen. Der Handel mit '
+            'Wertpapieren ist mit Risiken bis hin zum Totalverlust verbunden; Entscheidungen trifft jede Nutzerin '
+            'und jeder Nutzer in eigener Verantwortung. Für Inhalte verlinkter fremder Seiten sind ausschließlich '
+            'deren Betreiber verantwortlich.</div>'
+            '<div><h4>Daten &amp; Datenschutz</h4>Datenquellen: Yahoo Finance, Nasdaq, SEC EDGAR, ForexFactory, '
+            'TradingView, CNN; optional Unusual Whales. Marken und Logos gehören den jeweiligen Inhabern. '
+            'Gespeichert werden nur die Anmelde-E-Mail, ein Passwort-Hash und die eigenen Einstellungen '
+            '(Watchlist, Alarme, Benachrichtigungen). Es gibt keine Werbe- oder Tracking-Cookies. '
+            'Benachrichtigungen werden nur auf eigenen Wunsch über ntfy bzw. E-Mail versendet. Auskunft oder '
+            'Löschung: E-Mail an die oben genannten Adressen.</div>'
+            f'<div class="pf-copy">© {year} Pulse · Alle Angaben ohne Gewähr.</div></div>')
+
+
+def render_footer():
+    H(imprint_html())
+    if is_owner() and not (_sec("pulse_imprint") or {}).get("address"):
+        H('<div class="muted" style="font-size:11px;margin-top:4px">Owner note (only you see this): a German '
+          'Impressum is only complete with the full name and a postal address of the person responsible. Add them '
+          'in Streamlit → Settings → Secrets as <span class="mono">[pulse_imprint]</span> with '
+          '<span class="mono">name = "…"</span>, <span class="mono">address = "Street 1, 12345 City"</span> and '
+          'optionally <span class="mono">phone</span> — they then appear here automatically.</div>')
 
 
 LOADING_HTML = """<div class="p-load-wrap"><style>
@@ -5158,10 +6286,12 @@ def main():
     if boot is not None:
         boot.markdown(LOADING_HTML, unsafe_allow_html=True)     # sayfa hesaplanırken açılış ekranı
     try:
+        notify_live()            # yeni bildirimler zil sayacına başlık çizilmeden önce girsin
         render_header()
         {"Markets": render_piyasalar, "Valuation": render_value, "Long Term": render_longterm,
          "Short Term": render_short, "Backtest": render_backtest,
          "Forex & News": render_forex}[SEC]()
+        render_footer()
     finally:
         if boot is not None:
             boot.empty()
@@ -5601,7 +6731,7 @@ def render_value_future(b):
         ss[k_q] = "Full year"
     sel_fy = lab_fy[ss[k_fy]]
     sel_q = None if ss[k_q] == "Full year" else int(ss[k_q][1])
-    c1, c2 = st.columns([1.7, 1], gap="medium")
+    c1 = st.container()          # v4.0: grafik tam genişlikte, iki tablo altında yan yana (boşluk kalmaz)
     with c1:
         with st.container(border=True):
             n_an = an.get("n") or max([e.get("n") or 0 for e in est] or [0])
@@ -5665,7 +6795,8 @@ def render_value_future(b):
             else:
                 H(f'<div class="gtext">The base-case value is highest in <b>FY{pk_y}</b> at <b>{tr(pk_v, dec)}</b> '
                   f'({pct(up)} vs today).</div>')
-    with c2:
+    t1, t2 = st.columns(2, gap="small")
+    with t1:
         with st.container(border=True):
             H('<div class="panel-title">Year by Year</div>')
             rows = ""
@@ -5682,6 +6813,8 @@ def render_value_future(b):
             H(f'<table class="ptab"><thead><tr><th>FY</th><th>Value <span class="muted" style="font-weight:400">'
               f'base · bear–bull</span></th><th>YoY</th><th>vs today</th><th>P/E</th></tr></thead>'
               f'<tbody>{rows}</tbody></table>')
+    with t2:
+        with st.container(border=True):
             erows = ""
             tagmap = {"analyst": ('analyst', "#6EE7B7"), "held": ("held", "#F5B544"),
                       "post-peak": ("post-peak", "#F5B544"), "capped": ("post-peak", "#F5B544"),
@@ -5696,7 +6829,7 @@ def render_value_future(b):
                           f'style="font-size:10.5px">{tr(e["eps"]["bear"], 2)} – {tr(e["eps"]["bull"], 2)}</div></td>'
                           f'<td style="color:{col(g_) if g_ is not None else MUT}">'
                           f'{pct(g_) if g_ is not None else "—"}</td><td>{tag}</td></tr>')
-            H(f'<div class="panel-title" style="margin-top:12px">EPS (fiscal year)</div>'
+            H(f'<div class="panel-title">EPS (fiscal year)</div>'
               f'<table class="ptab"><thead><tr><th>FY</th><th>EPS <span class="muted" style="font-weight:400">'
               f'base · bear–bull</span></th><th>YoY</th><th></th></tr></thead><tbody>{erows}</tbody></table>'
               f'<div class="muted small" style="margin-top:6px">Start: last fiscal-year EPS '
