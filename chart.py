@@ -27,7 +27,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "3.9"
+CHART_VERSION = "4.0"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -87,9 +87,11 @@ DEFAULT_CFG = {
     "sup": {"on": False, "n": 10, "mult": 3.0, "cu": "#26A69A", "cd": "#EF5350"},
     "vidya": {"on": False, "len": 10, "mom": 20, "mult": 2.0, "cu": "#26A69A", "cd": "#EF5350"},
     "vstop": {"on": False, "n": 20, "mult": 2.0, "cu": "#26A69A", "cd": "#EF5350"},
-    "zones": {"on": True, "lookback": 300, "left": 8, "right": 8, "merge": 0.6, "max": 8,
+    # v4.0: yalnızca en önemli 3–4 bölge (uzak / ikincil seviyeler çizilmez)
+    "zones": {"on": True, "lookback": 300, "left": 8, "right": 8, "merge": 0.6, "max": 4,
               "cs": "#26A69A", "cr": "#EF5350"},
-    "gaps": {"on": True, "lookback": 260, "min": 0.25, "max": 8, "cs": "#26A69A", "cr": "#EF5350"},
+    "gaps": {"on": True, "lookback": 260, "min": 0.25, "max": 2, "cs": "#26A69A", "cr": "#EF5350"},
+    "legend": {"on": False},
     "vol": {"on": True, "cu": "#26A69A", "cd": "#EF5350"},
     "rsi": {"on": True, "len": 14, "ob": 70, "os": 30, "c": "#C4B5FD"},
     "macd": {"on": False, "f": 12, "s": 26, "sig": 9, "c": "#5B8CFF", "cs": "#F5B544"},
@@ -145,10 +147,10 @@ def merge_cfg(user):
     out["rsi"]["len"] = int(min(100, max(2, out["rsi"]["len"])))
     out["macd"]["s"] = int(max(out["macd"]["f"] + 1, out["macd"]["s"]))
     out["zones"]["lookback"] = int(min(1200, max(60, out["zones"]["lookback"])))
-    out["zones"]["max"] = int(min(20, max(2, out["zones"]["max"])))
+    out["zones"]["max"] = int(min(4, max(2, out["zones"]["max"])))
     out["gaps"]["lookback"] = int(min(2000, max(20, out["gaps"]["lookback"])))
     out["gaps"]["min"] = float(min(10.0, max(0.05, out["gaps"]["min"])))
-    out["gaps"]["max"] = int(min(30, max(1, out["gaps"]["max"])))
+    out["gaps"]["max"] = int(min(3, max(1, out["gaps"]["max"])))
     out["nw"]["h"] = float(min(100.0, max(1.0, out["nw"]["h"])))
     out["boll"]["n"] = int(min(200, max(2, out["boll"]["n"])))
     out["stoch"]["k"] = int(min(100, max(2, out["stoch"]["k"])))
@@ -397,7 +399,8 @@ def build_payload(sym, tf, cfg_json, data_token, max_bars=900, lb=None):
     zones = []
     if cfg["zones"]["on"]:
         z = cfg["zones"]
-        zones = en.ranked_sr_zones(df, z["lookback"], z["left"], z["right"], z["merge"], z["max"])
+        zones = key_zones(en.ranked_sr_zones(df, z["lookback"], z["left"], z["right"], z["merge"], 14),
+                          float(df["Close"].iloc[-1]), z["max"])
     gaps = []
     if cfg["gaps"]["on"]:
         g = cfg["gaps"]
@@ -424,6 +427,30 @@ def build_payload(sym, tf, cfg_json, data_token, max_bars=900, lb=None):
             "visible": bars_n, "lookback": norm_lb(lb) if lb is not None else ""}
 
 
+ZONE_MAX_DIST = 18.0     # fiyata bundan uzak bantlar çizilmez (%)
+
+
+def key_zones(zones, px, n=4):
+    """En önemli n bant: fiyatın hemen üstündeki direnç ve hemen altındaki destek her zaman,
+    kalan yerler güce göre. Zayıf ("Weak") ve uzak bantlar elenir."""
+    n = int(max(1, n))
+    mid = lambda z: (z["lo"] + z["hi"]) / 2.0
+    near = [z for z in zones if px > 0 and abs(mid(z) / px - 1) * 100 <= ZONE_MAX_DIST]
+    strong = [z for z in near if not z.get("weak")] or near
+    pick = []
+    above = sorted([z for z in strong if mid(z) >= px], key=lambda z: mid(z))
+    below = sorted([z for z in strong if mid(z) < px], key=lambda z: -mid(z))
+    for grp in (above, below):
+        if grp:
+            pick.append(grp[0])
+    for z in sorted(strong, key=lambda z: -z.get("pct", 0)):
+        if len(pick) >= n:
+            break
+        if z not in pick:
+            pick.append(z)
+    return sorted(pick[:n], key=lambda z: -z.get("pct", 0))
+
+
 def data_token(sym, tf, lb=None):
     """Fiyat verisi değişince payload önbelleği yenilensin."""
     full, n, _ = chart_data(sym, tf, lb)
@@ -436,7 +463,7 @@ def data_token(sym, tf, lb=None):
 # ----------------------------------------------------------------------
 # Bileşen
 # ----------------------------------------------------------------------
-UI_VERSION = "3.7"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+UI_VERSION = "4.0"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
 
 
 def frontend_version():
@@ -464,12 +491,14 @@ def missing_frontend():
     return not os.path.isfile(_INDEX)
 
 
-def render_chart(payload, draws, alerts, chart_type="candles", height=640, rev=0, key="chart", light=False):
-    """Grafiği çizer. Kullanıcı bir şey değiştirdiyse olay sözlüğü döndürür."""
+def render_chart(payload, draws, alerts, chart_type="candles", height=640, rev=0, key="chart", light=False,
+                 ov=None):
+    """Grafiği çizer. Kullanıcı bir şey değiştirdiyse olay sözlüğü döndürür.
+    ov: isteğe bağlı katman (formasyon çizgileri, order block'lar, hacim işaretleri, dark pool seviyeleri)."""
     comp = _component()
     args = dict(payload)
     args.update({"draws": draws or [], "alerts": alerts or [], "type": chart_type,
-                 "height": int(height), "rev": int(rev), "light": bool(light)})
+                 "height": int(height), "rev": int(rev), "light": bool(light), "ov": ov})
     if comp is None:
         html = open(_INDEX, encoding="utf-8").read() if os.path.isfile(_INDEX) else ""
         if html:
