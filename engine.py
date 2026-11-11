@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.2"
+ENGINE_VERSION = "4.3"
 NAN = float("nan")
 
 
@@ -5154,3 +5154,160 @@ def volume_spikes(df, n=20, mult=2.0, lookback=160, max_n=14):
     out.sort(key=lambda m: -m["ratio"])
     out = sorted(out[:int(max_n)], key=lambda m: m["i"])
     return out
+
+
+# ======================================================================
+# v4.3 — Otomatik işlem botları: giriş / çıkış kararları (saf fonksiyonlar, veri çekmez)
+#   Giriş: AI filtresi (formasyon + EMA kapısı + 15 dk teyit + plan) ya da kullanıcının kendi filtresi.
+#   Çıkış: stop · TP1'de kısmi satış (stop girişe çekilir) · TP2 · ATR iz süren stop · süre sınırı.
+#   Karar 15 dakikalık mumlarla verilir; aynı mumda stop ve hedef görülürse stop varsayılır.
+# ======================================================================
+BOT_DEFAULT = {
+    "risk_pct": 1.0,       # işlem başına riske edilen hesap yüzdesi
+    "max_pos": 5,          # botun aynı anda taşıyabileceği pozisyon sayısı
+    "max_alloc": 20.0,     # tek pozisyonun hesap içindeki en büyük payı (%)
+    "min_rr": 1.5,         # TP1 için en az ödül / risk
+    "need_c15": True,      # 15 dakikalık teyit şart mı (AI botu)
+    "regime": True,        # SPY ve QQQ 50 EMA üstünde değilse alım yapma
+    "trail_atr": 2.0,      # iz süren stop: en yüksek − N × ATR (TP1'den sonra)
+    "max_days": 15,        # en fazla taşıma süresi (takvim günü)
+    "tp1_part": 0.40,      # TP1'de satılan pay
+    "max_chase": 1.0,      # fiyat girişin en fazla N × risk üstündeyse hâlâ alınır
+    "cooldown_days": 1,    # stop olduktan sonra aynı hisseye bekleme
+}
+BOT_LIMITS = {"risk_pct": (0.1, 5.0), "max_pos": (1, 20), "max_alloc": (2.0, 100.0), "min_rr": (0.5, 6.0),
+              "trail_atr": (0.5, 6.0), "max_days": (1, 120), "tp1_part": (0.1, 0.9), "max_chase": (0.0, 5.0),
+              "cooldown_days": (0, 30)}
+
+
+def bot_cfg(over=None):
+    c = dict(BOT_DEFAULT)
+    for k, v in (over or {}).items():
+        if k not in c:
+            continue
+        try:
+            v = type(BOT_DEFAULT[k])(v)
+        except (TypeError, ValueError):
+            continue
+        if k in BOT_LIMITS:
+            lo, hi = BOT_LIMITS[k]
+            v = type(BOT_DEFAULT[k])(min(max(v, lo), hi))
+        c[k] = v
+    return c
+
+
+def bot_signal_ai(r, cfg=None, regime_ok=True):
+    """ai_evaluate sonucu (15 dk teyidi işlenmiş) → (sinyal | None, neden).
+    sinyal: {'entry','stop','tp1','tp2','atr','why'}"""
+    c = bot_cfg(cfg)
+    if not r:
+        return None, "not enough price history"
+    if c["regime"] and not regime_ok:
+        return None, "market filter off (SPY / QQQ below the 50-day EMA)"
+    b, p, c15 = r.get("best"), r.get("plan"), r.get("c15")
+    if not r.get("ema_ok"):
+        return None, "price below the 21 / 50 EMA"
+    if not b or b.get("kind") != "bull":
+        return None, "no bullish pattern"
+    if b.get("state") not in ("breakout", "retest"):
+        return None, "pattern is still %s" % b.get("state")
+    if c["need_c15"] and not (c15 and c15.get("state") == "confirmed"):
+        return None, "15-minute confirmation: %s" % ((c15 or {}).get("state") or "missing")
+    if not p:
+        return None, "no trade plan"
+    px, risk = float(r["price"]), float(p["entry"]) - float(p["stop"])
+    if risk <= 0:
+        return None, "stop is not below the entry"
+    if p["rr1"] < c["min_rr"]:
+        return None, "reward / risk 1:%s is below 1:%s" % (fmt_num(p["rr1"], 1), fmt_num(c["min_rr"], 1))
+    if px > float(p["entry"]) + c["max_chase"] * risk:
+        return None, "price already ran away from the entry"
+    if px <= float(p["stop"]):
+        return None, "price is at / below the stop"
+    return ({"entry": px, "stop": float(p["stop"]), "tp1": float(p["tp1"]), "tp2": float(p["tp2"]),
+             "atr": float(p.get("atr") or 0.0),
+             "why": "%s — %s, 15-min %s, R/R 1:%s" % (b.get("name"), b.get("state"),
+                                                       (c15 or {}).get("state") or "n/a", fmt_num(p["rr1"], 1))},
+            "signal")
+
+
+def bot_signal_filter(o, cfg=None):
+    """en.scan satırı (kendi filtren) → (sinyal | None, neden). Giriş bölgesi içinde ya da hemen üstündeyse alınır."""
+    c = bot_cfg(cfg)
+    if not o:
+        return None, "no match"
+    px, stop, tgt = float(o.get("price") or 0), float(o.get("stop") or 0), float(o.get("target") or 0)
+    hi = float(o.get("entry_hi") or px)
+    risk = px - stop
+    if not (px > 0 and stop > 0 and tgt > px and risk > 0):
+        return None, "levels are not usable"
+    rr = (tgt - px) / risk
+    tp1 = px + (tgt - px) * 0.5
+    if (tp1 - px) / risk < c["min_rr"] / 2 or rr < c["min_rr"]:
+        return None, "reward / risk 1:%s is below 1:%s" % (fmt_num(rr, 1), fmt_num(c["min_rr"], 1))
+    if px > hi + c["max_chase"] * risk * 0.5:
+        return None, "price is above the entry zone"
+    return ({"entry": px, "stop": stop, "tp1": tp1, "tp2": tgt, "atr": float(o.get("atr") or 0.0),
+             "why": "%s — %d/%d filter conditions, R/R 1:%s" % (o.get("setup") or "Filter match",
+                                                               int(o.get("passes") or 0), int(o.get("n") or 0),
+                                                               fmt_num(rr, 1))}, "signal")
+
+
+def bot_size(equity, cash, price, stop, fx=1.0, cfg=None):
+    """Adet: (hesap × risk %) / (giriş − stop); tek pozisyon payı ve nakit ile sınırlı. fx: enstrüman → hesap kuru."""
+    c = bot_cfg(cfg)
+    risk_per = (float(price) - float(stop)) * fx
+    if not (risk_per > 0 and price > 0 and equity > 0):
+        return 0
+    q_risk = equity * c["risk_pct"] / 100.0 / risk_per
+    q_alloc = equity * c["max_alloc"] / 100.0 / (price * fx)
+    q_cash = max(0.0, cash) / (price * fx)
+    return int(max(0, np.floor(min(q_risk, q_alloc, q_cash) + 1e-9)))
+
+
+def bot_manage(pos, bars, cfg=None, now=None):
+    """Açık pozisyonu son kontrolden beri oluşan 15 dk mumlarıyla yönetir.
+    pos: {'qty','entry','stop','tp1','tp2','atr','tp1_done','hi','opened'(epoch)}
+    bars: [(ts, open, high, low, close)] eski → yeni. Döner: (olaylar, güncel pos alanları)
+    olay: {'qty','price','reason','ts'}"""
+    c = bot_cfg(cfg)
+    qty = float(pos.get("qty") or 0)
+    stop, tp1, tp2 = float(pos["stop"]), float(pos.get("tp1") or 0), float(pos.get("tp2") or 0)
+    entry, a = float(pos["entry"]), float(pos.get("atr") or 0)
+    hi = float(pos.get("hi") or entry)
+    done1 = bool(pos.get("tp1_done"))
+    ev = []
+    last_ts = pos.get("checked") or 0
+    for ts, o, h, l, cl in bars:
+        if qty <= 0:
+            break
+        last_ts = ts
+        if l <= stop:                                   # önce stop (aynı mumda ikisi de varsa temkinli taraf)
+            px = min(stop, o) if o < stop else stop     # boşlukla açıldıysa açılış fiyatı
+            ev.append({"qty": qty, "price": float(px), "ts": ts,
+                       "reason": ("Trailing stop" if done1 and stop > entry else
+                                  "Break-even stop" if done1 else "Stop-loss")})
+            qty = 0
+            break
+        if not done1 and tp1 > 0 and h >= tp1:
+            part = max(1.0, np.floor(qty * c["tp1_part"])) if qty >= 2 else qty
+            ev.append({"qty": float(part), "price": float(max(tp1, o) if o > tp1 else tp1), "ts": ts,
+                       "reason": "TP1 reached — partial exit, stop moved to entry"})
+            qty -= part
+            done1 = True
+            stop = max(stop, entry)
+        if qty > 0 and tp2 > 0 and h >= tp2:
+            ev.append({"qty": qty, "price": float(max(tp2, o) if o > tp2 else tp2), "ts": ts,
+                       "reason": "TP2 reached"})
+            qty = 0
+            break
+        hi = max(hi, h)
+        if done1 and a > 0:
+            stop = max(stop, hi - c["trail_atr"] * a)
+    if qty > 0 and now is not None and bars:
+        held = (float(now) - float(pos.get("opened") or now)) / 86400.0
+        if held >= c["max_days"]:
+            ev.append({"qty": qty, "price": float(bars[-1][4]), "ts": bars[-1][0],
+                       "reason": "Time exit after %d days" % int(c["max_days"])})
+            qty = 0
+    return ev, {"qty": qty, "stop": float(stop), "hi": float(hi), "tp1_done": done1, "checked": last_ts}
