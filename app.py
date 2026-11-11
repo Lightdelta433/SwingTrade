@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "4.1"
+APP_VERSION = "4.2"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -118,7 +118,9 @@ def _boot_config():
     uw = _sec("UNUSUAL_WHALES_TOKEN") or _sec("UW_TOKEN") or (_sec("unusual_whales") or {}).get("token")
     for k, v in (("FINNHUB_API_KEY", _sec("FINNHUB_API_KEY")), ("UNUSUAL_WHALES_TOKEN", uw),
                  ("X_BEARER_TOKEN", _sec("X_BEARER_TOKEN") or _sec("TWITTER_BEARER_TOKEN")),
-                 ("REDDIT_CLIENT_ID", _sec("REDDIT_CLIENT_ID")), ("REDDIT_CLIENT_SECRET", _sec("REDDIT_CLIENT_SECRET"))):
+                 ("REDDIT_CLIENT_ID", _sec("REDDIT_CLIENT_ID")), ("REDDIT_CLIENT_SECRET", _sec("REDDIT_CLIENT_SECRET")),
+                 # v4.2: haber tarayıcısı ve X için web araması (isteğe bağlı, ücretsiz katmanlar yeterli)
+                 ("ALPHAVANTAGE_API_KEY", _sec("ALPHAVANTAGE_API_KEY")), ("BRAVE_SEARCH_KEY", _sec("BRAVE_SEARCH_KEY"))):
         if v and not os.environ.get(k):
             os.environ[k] = str(v)
 
@@ -939,6 +941,16 @@ a.opp-row *{text-decoration:none!important}
 [data-testid="stBaseButton-segmented_controlActive"]{background:#5B8CFF!important;color:#0A0B0D!important;
  border-color:#5B8CFF!important}
 [data-testid="stBaseButton-segmented_control"]{background:#0C0D10;color:#A3ABB8;border-color:#22262D}
+/* v4.2 — quarter drill-down (valuation page) */
+.fd-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.fd-cat{font-size:20px;font-weight:800;letter-spacing:-.01em}
+.fd-fy{font-size:15px;font-weight:700;color:#5B8CFF}
+.fd-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-top:6px}
+.fdtab td,.fdtab th{padding:8px 10px}
+.fdtab th{font-size:12.5px}
+.fdtab tr.qsub td{font-size:11.5px;color:#8D96A5;padding-top:3px;padding-bottom:3px}
+.fdtab tr.qsub td:first-child{padding-left:22px}
+[class*="st-key-fd_close_"] button{white-space:nowrap}
 /* v4.1 — compact earnings strip (sits directly under the chart) */
 .earn-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:6px;margin:6px 0 0 0}
 .earn-box{background:#0C0D10;border:1px solid #22262D;border-radius:9px;padding:6px 9px;font-size:11.5px;
@@ -1004,6 +1016,32 @@ a.sent-post{display:flex;align-items:baseline;gap:7px;padding:4px 0;border-top:1
  color:#C4CAD4;text-decoration:none}
 a.sent-post:hover .sp-t{text-decoration:underline}
 a.sent-post .sp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* v4.2 — sentiment overall + hype */
+.mp-sub{display:flex;align-items:center;gap:8px;padding:2px 0}
+.mp-sub .mp-k{font-size:12px;font-weight:700;min-width:74px}
+.mp-sub .mp-bar{flex:1;min-width:60px}
+.mp-sub .mp-bar .sent-bar{margin:6px 0}
+.mp-sub .sent-dot{width:12px;height:12px;top:-3px;margin-left:-6px;border-width:2px}
+.hype-meter{position:relative;display:grid;grid-template-columns:22fr 20fr 20fr 18fr 20fr;gap:3px;height:10px;
+ margin:12px 0 4px 0}
+.hype-meter span{border-radius:3px}
+.hype-meter i{position:absolute;top:-5px;width:4px;height:20px;margin-left:-2px;border-radius:2px;background:#F2F4F7;
+ box-shadow:0 0 0 2px #0A0B0D}
+.hy-d{display:flex;gap:8px;align-items:baseline;font-size:12px;padding:3px 0;border-top:1px solid #1C1F25}
+.hy-d .hy-s{font-family:ui-monospace,monospace;font-weight:800;min-width:24px;text-align:right}
+.hype-banner{display:flex;gap:10px;align-items:center;padding:9px 13px;margin:2px 0 8px 0;border-radius:10px;
+ border:1px solid var(--hc);background:linear-gradient(90deg,color-mix(in srgb,var(--hc) 22%,transparent),transparent);
+ font-size:13px;color:#F2F4F7}
+.hype-banner .hb-ic{font-size:18px}
+.hype-banner.viral{animation:hypeglow 1.6s ease-in-out infinite}
+@keyframes hypeglow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--hc) 0%,transparent)}
+ 50%{box-shadow:0 0 18px 2px color-mix(in srgb,var(--hc) 55%,transparent)}}
+.hype-pulse{animation:hypeblink 1.4s ease-in-out infinite}
+@keyframes hypeblink{0%,100%{opacity:1}50%{opacity:.55}}
+@media (prefers-reduced-motion:reduce){.hype-banner.viral,.hype-pulse{animation:none}}
+.ntypes{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0 2px 0}
+.ntypes span{font-size:10.5px;font-weight:700;border:1px solid;border-radius:20px;padding:1px 7px}
+.ntag{flex:none;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;min-width:44px}
 /* v4.0 — footer / Impressum */
 .pfoot{margin-top:26px;border-top:1px solid #1C1F25;padding:16px 2px 6px 2px;display:grid;
  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px 28px;font-size:12px;line-height:1.55;color:#8D96A5}
@@ -1118,7 +1156,7 @@ def apply_pending_tf(key):
         ss.tf_pending = None
 
 
-def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None, ov_fn=None, comp_key="pulse_chart"):
+def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None, ov_fn=None, comp_key="pulse_chart", fit=None):
     """TradingView tarzı grafik; dosya eksikse Plotly'ye düşer.
     ov_fn(payload) → katman (formasyon, order block, hacim işaretleri); yalnızca Short Term verir."""
     ss.ch_tfkey = tf_key
@@ -1140,8 +1178,10 @@ def render_big_chart(sym, tf, height=600, tf_key="w_tf", lb=None, ov_fn=None, co
             ov = ov_fn(payload)
         except Exception:
             ov = None          # katman hesaplanamazsa grafik yine çizilir
+    fit = fit or {}
     ev = ch.render_chart(payload, ss.draws.get(sym, []), ss.alerts.get(sym, []),
-                         ss.ch_type, height=height, rev=ss.ch_rev, key=comp_key, light=LIGHT, ov=ov)
+                         ss.ch_type, height=height, rev=ss.ch_rev, key=comp_key, light=LIGHT, ov=ov,
+                         fit=fit.get("fit", 0.0), hmax=fit.get("hmax", 0), pmin=fit.get("pmin", 0))
     handle_chart_event(ev, "ch_n" if comp_key == "pulse_chart" else "ch_n_" + comp_key)
 
 
@@ -1430,7 +1470,7 @@ def notes_body():
 
 
 NTF_KEYS = {"on": "ntf_on", "price": "ntf_price", "earn_up": "ntf_eup", "earn_res": "ntf_eres", "macro": "ntf_macro",
-            "macro_impact": "ntf_imp", "ai": "ntf_ai", "push": "ntf_push", "email": "ntf_email",
+            "macro_impact": "ntf_imp", "ai": "ntf_ai", "hype": "ntf_hype", "push": "ntf_push", "email": "ntf_email",
             "browser": "ntf_browser"}
 
 
@@ -1464,6 +1504,7 @@ def notify_settings():
         st.checkbox("Economic data when it is released (currencies chosen in the calendar)", key="ntf_macro")
         st.selectbox("Economic data importance", ["High", "Medium +"], key="ntf_imp")
         st.checkbox("Impulse levels — fresh breakouts found by the AI scan", key="ntf_ai")
+        st.checkbox("Viral buzz — a watchlist company's hype indicator turns Viral", key="ntf_hype")
         H('<div style="font-size:12px;font-weight:700;margin:6px 0 2px 0">Where</div>')
         push = st.checkbox("Push to phone / computer (also when Pulse is closed)", key="ntf_push")
         topic = n.get("topic") or ""
@@ -1569,6 +1610,19 @@ if _frag0 is not None:
         notify_live = notify_pull
 else:
     notify_live = notify_pull
+
+
+def _pulse_live_impl(sym, info):
+    _pulse_section(sym, info)
+
+
+if _frag0 is not None:
+    try:
+        pulse_live = _frag0(run_every=600)(_pulse_live_impl)
+    except TypeError:
+        pulse_live = _pulse_live_impl
+else:
+    pulse_live = _pulse_live_impl
 
 
 def account_body():
@@ -2819,7 +2873,7 @@ def fin_bar_chart(f, keys, names, colors, height=240, pct=False, sel=None):
         vals = [v / 1e9 if not pct and en._ok(v) else v for v in f[k]]
         fig.add_trace(go.Bar(x=yrs, y=vals, name=n, marker_color=c,
                              hovertemplate="%{x}: %{y:.1f}" + ("%" if pct else " bn") + "<extra>" + n +
-                                           " · click for quarters</extra>"))
+                                           " · click to open the four quarters</extra>"))
     if sel is not None and str(sel) in yrs:
         i = yrs.index(str(sel))
         fig.add_vrect(x0=i - 0.5, x1=i + 0.5, fillcolor=rgba(ACCENT, 0.10), line_width=0)
@@ -3613,12 +3667,282 @@ def render_analyst_panel(sym, b):
                 H('<div class="muted small">No recent rating changes.</div>')
 
 
+# ---------------------------------------------------------------- v4.2 Fundamentals: çeyrek detayı (drill-down)
+FD_CATS = {
+    "inc": {"title": "Income Statement", "chart": "v_inc", "unit": "bn",
+            "bars": [("revenue", "Revenue", ACCENT), ("gross", "Gross profit", "#6EE7B7"),
+                     ("op_income", "Operating income", WARN), ("net_income", "Net income", VIOLET)],
+            "rows": [("Revenue", "revenue", "bn", "revenue"), ("Gross profit", "gross", "bn", "gross"),
+                     ("Operating income", "op_income", "bn", "op_income"),
+                     ("Net income", "net_income", "bn", "net_income"), ("EPS (diluted)", "eps", "eps", "eps")]},
+    "marg": {"title": "Margins", "chart": "v_marg", "unit": "%",
+             "bars": [("gross_m", "Gross", "#6EE7B7"), ("op_m", "Operating", WARN), ("net_m", "Net", VIOLET),
+                      ("fcf_m", "Free cash flow", ACCENT)],
+             "rows": [("Gross margin", "gross_m", "pct", "gross_m"), ("Operating margin", "op_m", "pct", "op_m"),
+                      ("Net margin", "net_m", "pct", "net_m"), ("Free-cash-flow margin", "fcf_m", "pct", "fcf_m")]},
+    "cf": {"title": "Cash Flow", "chart": "v_cf", "unit": "bn",
+           "bars": [("ocf", "Operating cash flow", ACCENT), ("capex", "Capital expenditure", DOWN),
+                    ("fcf", "Free cash flow", "#6EE7B7")],
+           "rows": [("Operating cash flow", "ocf", "bn", "ocf"), ("Capital expenditure", "capex", "bn", "capex"),
+                    ("Free cash flow", "fcf", "bn", "fcf")]},
+    "bs": {"title": "Balance Sheet", "chart": "v_bs", "unit": "bn",
+           "bars": [("assets", "Total assets", "#4A515C"), ("equity", "Equity", "#6EE7B7"),
+                    ("net_debt", "Net debt", DOWN)],
+           "rows": [("Total assets", "assets", "bn", "assets"), ("Equity", "equity", "bn", "equity"),
+                    ("Cash & short-term investments", "cash", "bn", "cash"), ("Debt", "debt", "bn", "debt"),
+                    ("Net debt (− = net cash)", "net_debt", "bn", "net_debt")]},
+}
+FD_ORDER = ["inc", "marg", "cf", "bs"]
+FD_STOCK = {"bs"}                         # bilanço: dönem sonu değeri (toplam değil)
+FD_PTS = {"gross_m", "op_m", "net_m", "fcf_m"}
+FD_ABS = {"net_debt"}                     # eksiye düşebilir: yüzde yerine fark
+
+
+def _fd_key(sym):
+    return f"fd_{sym}"
+
+
+def _fd_close(sym):
+    ss[_fd_key(sym)] = None
+    for c in FD_CATS.values():          # eski seçim, kapanınca görünümü tekrar açmasın
+        try:
+            ss.pop(c["chart"], None)
+        except Exception:
+            pass
+        ss["_pick_" + c["chart"]] = None
+
+
+def _fd_year_cb(sym, lab2fy):
+    v = ss.get(f"fd_y_{sym}")
+    if v is None or v not in lab2fy:      # seçili yıla tekrar tıklandı → kapat
+        _fd_close(sym)
+        return
+    d = dict(ss.get(_fd_key(sym)) or {})
+    d["fy"] = lab2fy[v]
+    ss[_fd_key(sym)] = d
+
+
+def _fd_cat_cb(sym):
+    d = dict(ss.get(_fd_key(sym)) or {})
+    d["cat"] = ss.get(f"fd_c_{sym}") or d.get("cat") or "inc"
+    ss[_fd_key(sym)] = d
+
+
+def _fd_chg(v, key, unit_bn):
+    """Değişim metni: marjlar puan, net borç mutlak, diğerleri yüzde."""
+    if not en._ok(v):
+        return "—"
+    if key in FD_PTS:
+        return f'<span style="color:{col(v)}">{v:+.1f} pts</span>'
+    if key in FD_ABS:
+        return f'<span style="color:{col(-v)}">{"+" if v >= 0 else "−"}{abs(v) / 1e9:,.2f} bn</span>'
+    c_ = col(-v) if key == "capex" else col(v)
+    return f'<span style="color:{c_}">{pct(v, 1)}</span>'
+
+
+def fd_fig(cat, y, prev, height=460):
+    """Seçili mali yılın Q1–Q4'ü: kategorinin kalemleri yan yana sütun; ilk kalem için geçen yılın aynı çeyreği."""
+    spec = FD_CATS[cat]
+    qs = y["quarters"]
+    cats = [f'Q{q["q"]} · {q["end"].strftime("%b %Y")}' for q in qs]
+    exp = [q["src"] != "reported" for q in qs]
+    pct_ = spec["unit"] == "%"
+    fig = go.Figure()
+    for key, name, c_ in spec["bars"]:
+        ys, txt = [], []
+        for q in qs:
+            v = q.get(key)
+            if key == "capex" and en._ok(v):
+                v = -abs(v)                         # yatırım harcaması: nakit çıkışı, aşağı sütun
+            val = (v if pct_ else (v / 1e9 if en._ok(v) else None)) if en._ok(v) else None
+            ys.append(val)
+            txt.append("" if val is None else (f"{val:.1f}%" if pct_ else f"{val:,.2f}"))
+        if not any(v is not None for v in ys):
+            continue
+        fig.add_trace(go.Bar(x=cats, y=ys, name=name, text=txt, textposition="outside",
+                             textfont=dict(size=11, color=SOFT), cliponaxis=False,
+                             marker=dict(color=[c_ if not e else rgba(c_, 0.33) for e in exp]),
+                             hovertemplate="%{x}<br>" + name + ": %{y:,.2f}" + ("%" if pct_ else " bn") +
+                                           "<extra></extra>"))
+    k0, n0, _ = spec["bars"][0]
+    if prev:
+        py = []
+        for q in prev["quarters"]:
+            v = q.get(k0)
+            py.append((v if pct_ else v / 1e9) if en._ok(v) else None)
+        if any(v is not None for v in py):
+            fig.add_trace(go.Scatter(x=cats, y=py, name=f"{n0} · same quarter a year earlier", mode="markers",
+                                     marker=dict(symbol="diamond-open", size=11, color=MUT, line=dict(width=2)),
+                                     hovertemplate="%{x}<br>a year earlier: %{y:,.2f}" + ("%" if pct_ else " bn") +
+                                                   "<extra></extra>"))
+    fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08, legend=dict(orientation="h", y=1.12, x=0),
+                      uniformtext=dict(minsize=9, mode="hide"))
+    fig.update_xaxes(type="category")
+    fig.update_yaxes(ticksuffix="%" if pct_ else " bn", zeroline=True, zerolinecolor=LINE)
+    if any(exp):
+        i0 = exp.index(True)
+        fig.add_vrect(x0=i0 - 0.5, x1=len(qs) - 0.5, fillcolor=rgba(MUT, 0.06), line_width=0, layer="below")
+        fig.add_annotation(x=(i0 + len(qs) - 1) / 2, y=1.0, yref="paper", yanchor="bottom", showarrow=False,
+                           text="expected · not reported yet", font=dict(size=10, color=MUT))
+    return _layout(fig, height, legend=True, margin=dict(l=6, r=10, t=44, b=6))
+
+
+def render_fund_drill(b, fq, sym, drill):
+    """Bir yıla tıklanınca 4 yıllık görünümün yerine: o yılın Q1–Q4'ü, yalnızca tıklanan kategori, tam genişlik."""
+    cat = drill.get("cat") if drill.get("cat") in FD_CATS else "inc"
+    fy = drill.get("fy")
+    spec = FD_CATS[cat]
+    f = b["f"]
+    yrs_ok = [y for y in sorted(fq) if any(q["src"] in ("reported", "expected") for q in fq[y]["quarters"])]
+    labs = {y: (f"FY{y} · in progress" if fq[y]["status"] == "in progress" else f"FY{y}") for y in yrs_ok}
+    lab2fy = {v: k for k, v in labs.items()}
+    with st.container(border=True, key=f"fd_box_{sym}") if "key" in str(inspect.signature(st.container)) \
+            else st.container(border=True):
+        h1, h2 = st.columns([3, 1.25], vertical_alignment="center")
+        with h1:
+            H(f'<div class="fd-head"><span class="fd-cat">{esc(spec["title"])}</span>'
+              f'<span class="fd-fy">FY{fy} · quarter by quarter</span></div>'
+              f'<div class="muted small">Replaces the 4-year overview while open · click the highlighted year '
+              f'again or “Close” to go back</div>')
+        with h2:
+            st.button("✕  Close · back to 4 years", key=f"fd_close_{sym}", on_click=_fd_close, args=(sym,),
+                      **_wkw(st.button))
+        ck = f"fd_c_{sym}"
+        ss[ck] = cat
+        yk = f"fd_y_{sym}"
+        if labs:
+            ss[yk] = labs.get(fy)
+        c1, c2 = st.columns([1.35, 2], vertical_alignment="center")
+        with c1:
+            if hasattr(st, "segmented_control"):
+                st.segmented_control("Category", FD_ORDER, key=ck, format_func=lambda k: FD_CATS[k]["title"],
+                                     label_visibility="collapsed", on_change=_fd_cat_cb, args=(sym,))
+            else:
+                st.radio("Category", FD_ORDER, key=ck, format_func=lambda k: FD_CATS[k]["title"], horizontal=True,
+                         label_visibility="collapsed", on_change=_fd_cat_cb, args=(sym,))
+        with c2:
+            if labs and hasattr(st, "segmented_control"):
+                st.segmented_control("Fiscal year", list(labs.values()), key=yk, label_visibility="collapsed",
+                                     on_change=_fd_year_cb, args=(sym, lab2fy))
+            elif labs:
+                st.radio("Fiscal year", list(labs.values()), key=yk, horizontal=True, label_visibility="collapsed",
+                         on_change=_fd_year_cb, args=(sym, lab2fy))
+        y = fq.get(fy)
+        if not y or fy not in labs:
+            H(f'<div class="muted" style="margin:14px 2px">No quarterly figures for FY{fy}. Yahoo Finance keeps only '
+              f'the last ~5 quarters; older years come from SEC filings (10-Q / 10-K), which are '
+              f'{"available for FY" + ", FY".join(str(v) for v in yrs_ok) if yrs_ok else "not available"} '
+              f'for this company.</div>')
+            return
+        keys = [k for k, _, _ in spec["bars"]] + [r[1] for r in spec["rows"]]
+        if not any(en._ok(q.get(k)) for q in y["quarters"] for k in keys):
+            H(f'<div class="muted" style="margin:14px 2px">The quarterly filings for FY{fy} do not contain '
+              f'{esc(spec["title"].lower())} figures in machine-readable form.</div>')
+            return
+        prev = fq.get(fy - 1)
+        plot(fd_fig(cat, y, prev), key=f"fd_chart_{sym}")
+        # ---- özet kutucukları: yıllık değer ve geçen yıla göre değişim
+        fyi = f["years"].index(fy) if fy in f["years"] else None
+        fyp = f["years"].index(fy - 1) if (fy - 1) in f["years"] else None
+        tiles = ""
+        for key, name, c_ in spec["bars"]:
+            av = f[key][fyi] if (fyi is not None and key in f) else None
+            pv = f[key][fyp] if (fyp is not None and key in f) else None
+            if not en._ok(av) and cat in FD_STOCK:
+                q4 = y["quarters"][-1]
+                av = q4.get(key)
+            if not en._ok(av):
+                continue
+            if key in FD_PTS:
+                vtxt = f"{av:.1f}%"
+                chg = (av - pv) if en._ok(pv) else None
+            elif key in FD_ABS:
+                vtxt = big(av)
+                chg = (av - pv) if en._ok(pv) else None
+            else:
+                vtxt = big(abs(av) if key == "capex" else av)
+                chg = (abs(av) / abs(pv) - 1) * 100 if (en._ok(pv) and pv) else None
+            tiles += (f'<div class="tile"><span class="k" style="color:{c_}">{esc(name)}</span>'
+                      f'<span class="v">{vtxt}</span><span class="mono" style="font-size:11px;color:{MUT}">'
+                      f'{"year-end" if cat in FD_STOCK else "full year"} · '
+                      f'{_fd_chg(chg, key, True) + " vs FY" + str(fy - 1) if en._ok(chg) else "no prior year"}'
+                      f'</span></div>')
+        if tiles:
+            H(f'<div class="fd-tiles">{tiles}</div>')
+        # ---- ayrıntı tablosu
+        qs = y["quarters"]
+        head = "".join(
+            f'<th>Q{q["q"]}<div class="muted" style="font-size:10.5px;font-weight:400">{q["end"].strftime("%b %d, %Y")}'
+            f'{" · expected" if q["src"] == "expected" else " · no estimate" if q["src"] == "no estimate" else ""}'
+            f'</div></th>' for q in qs)
+        head += (f'<th>FY{fy}<div class="muted" style="font-size:10.5px;font-weight:400">'
+                 f'{"year-end, annual report" if cat in FD_STOCK else "annual report"}</div></th>'
+                 f'<th>vs FY{fy - 1}</th>')
+        body = ""
+        for lab, k, kind, ak in spec["rows"]:
+            if not any(en._ok(q.get(k)) for q in qs):
+                continue
+            cells = ""
+            for q in qs:
+                v = q.get(k)
+                txt = _qv(abs(v) if (k == "capex" and en._ok(v)) else v, kind) if k not in FD_ABS else \
+                    (big(v) if en._ok(v) else "—")
+                der = k in q.get("derived", [])
+                cls = "qexp" if q["src"] == "expected" else ""
+                tip = ' title="derived: full year minus the first three quarters (or year-to-date difference)"' \
+                    if der else ""
+                cells += f'<td class="{cls}"{tip}>{txt}{"<sup class=muted>Δ</sup>" if der else ""}</td>'
+            av = f[ak][fyi] if (fyi is not None and ak in f) else None
+            pv = f[ak][fyp] if (fyp is not None and ak in f) else None
+            if k in FD_PTS:
+                atxt, chg = (f"{av:.1f}%" if en._ok(av) else "—"), ((av - pv) if (en._ok(av) and en._ok(pv)) else None)
+            elif k in FD_ABS:
+                atxt, chg = (big(av) if en._ok(av) else "—"), ((av - pv) if (en._ok(av) and en._ok(pv)) else None)
+            else:
+                a_ = abs(av) if (k == "capex" and en._ok(av)) else av
+                p_ = abs(pv) if (k == "capex" and en._ok(pv)) else pv
+                atxt = _qv(a_, kind)
+                chg = (a_ / p_ - 1) * 100 if (en._ok(a_) and en._ok(p_) and p_ > 0) else None
+            cells += f'<td class="fytot">{atxt}</td><td>{_fd_chg(chg, k, True)}</td>'
+            body += f'<tr><td>{esc(lab)}</td>{cells}</tr>'
+            # alt satırlar: QoQ ve YoY
+            for nm, suf in (("vs previous quarter", "_qoq"), ("vs same quarter a year earlier", "_yoy")):
+                vals = [q.get(k + suf) for q in qs]
+                if not any(en._ok(v) for v in vals):
+                    continue
+                sub = "".join(f'<td class="{"qexp" if q["src"] == "expected" else ""}">{_fd_chg(v, k, True)}</td>'
+                              for q, v in zip(qs, vals))
+                body += f'<tr class="qsub"><td>{nm}</td>{sub}<td></td><td></td></tr>'
+        H(f'<div style="overflow-x:auto;margin-top:8px"><table class="ptab qfin fdtab"><thead><tr><th></th>{head}'
+          f'</tr></thead><tbody>{body}</tbody></table></div>')
+        # ---- yorum
+        k0, n0, _ = spec["bars"][0]
+        rq = [q for q in qs if q["src"] == "reported" and en._ok(q.get(k0))]
+        note = ""
+        if len(rq) >= 2:
+            best = max(rq, key=lambda q: q[k0])
+            up = sum(1 for a_, b_ in zip(rq, rq[1:]) if b_[k0] > a_[k0])
+            vtxt = f'{best[k0]:.1f}%' if k0 in FD_PTS else big(best[k0])
+            note = (f'{esc(n0)} rose in <b>{up} of {len(rq) - 1}</b> quarter-to-quarter steps; the highest quarter '
+                    f'was <b>Q{best["q"]}</b> ({vtxt}).')
+            yy = best.get(k0 + "_yoy")
+            if en._ok(yy):
+                note += f' Against the same quarter a year earlier: {_fd_chg(yy, k0, True)}.'
+        src = y.get("src") or ""
+        H(f'<div class="gtext" style="margin-top:6px">{note}</div>' if note else "")
+        H(f'<div class="muted small" style="margin-top:4px">Source: {esc(src)} · Δ = derived (Q4 = full year minus '
+          f'Q1–Q3; cash flows from year-to-date figures) · faded / grey = analyst expectation, not reported yet · '
+          f'margins compare in percentage points'
+          + (' · balance-sheet values are as of each quarter end; debt = borrowings reported in the filing'
+             if cat in FD_STOCK else '') + '</div>')
+
+
 def render_value_fundamentals(b):
     f, r = b["f"], b["r"]
     sym = ACTIVE
     H('<div class="sec-head" style="margin-top:18px"><span class="sec-no">01</span>'
       '<h3>Fundamentals</h3><span class="muted">Statements for the last ' + str(f["n"]) + ' years · click a year '
-      'for its quarterly results</span></div>')
+      'in a chart to open its four quarters</span></div>')
     # çeyrek sonuçları: seçili yıl (grafiğe tıklama ya da aşağıdaki seçici)
     try:
         fq = en.fiscal_quarters(f["dates"], md.get_sec_quarterly(sym), md.get_yf_quarterly_fin(sym),
@@ -3633,11 +3957,20 @@ def render_value_fundamentals(b):
         rep_ = [fy for fy, v in fq.items() if any(q["src"] == "reported" for q in v["quarters"])
                 and v["status"] == "reported"]
         ss[k_y] = fy_labels[max(rep_) if rep_ else max(fq)]
-    for ck in ("v_inc", "v_marg", "v_cf", "v_bs"):        # önceki çalıştırmadaki tıklama
+    dk = _fd_key(sym)
+    for cat in FD_ORDER:                     # önceki çalıştırmadaki tıklama → o yılın çeyrek detayı
+        ck = FD_CATS[cat]["chart"]
         x = picked_x(ss.get(ck), ck) if _HAS_SELECT else None
-        if x and x.isdigit() and int(x) in fy_labels:
-            ss[k_y] = fy_labels[int(x)]
+        if x and x.isdigit():
+            ss[dk] = {"cat": cat, "fy": int(x)}
+            if int(x) in fy_labels:
+                ss[k_y] = fy_labels[int(x)]
     sel_fy = lab2fy.get(ss.get(k_y)) if fq else None
+    drill = ss.get(dk)
+    if isinstance(drill, dict) and drill.get("fy"):
+        render_fund_drill(b, fq, sym, drill)     # 4 yıllık görünümün yerine
+        _fund_rest(b, fq, fy_labels, k_y, f, r)
+        return
     c1, c2 = st.columns(2, gap="medium")
     with c1:
         with st.container(border=True):
@@ -3666,6 +3999,11 @@ def render_value_fundamentals(b):
             plot(fin_bar_chart(f, ["assets", "equity", "net_debt"],
                                ["Total assets", "Equity", "Net debt"],
                                ["#4A515C", "#6EE7B7", DOWN], sel=sel_fy), key="v_bs", select=True)
+    _fund_rest(b, fq, fy_labels, k_y, f, r)
+
+
+def _fund_rest(b, fq, fy_labels, k_y, f, r):
+    """Fundamentals'ın 4 yıllık grafiklerden sonraki bölümü (drill-down açıkken de aynen kalır)."""
     render_fund_quarters(b, fq, fy_labels, k_y)
     yrs = [str(y) for y in f["years"]]
     c5, c6, c7 = st.columns(3, gap="medium")
@@ -4074,6 +4412,9 @@ def opp_chart(df, o):
 # ======================================================================
 ST_OV_DEF = {"patterns": True, "obs": True, "marks": True, "prints": True}
 ST_CHART_H = 700
+# v4.2: Short Term grafiği ekran yüksekliğine göre büyür (görünür alanın %84'ü), fiyat paneli en az 470 px;
+# etiketler sığmazsa en fazla 1180 px'e kadar uzar
+ST_CHART_FIT = {"fit": 0.84, "hmax": 1180, "pmin": 470}
 PAT_COL = "#F5B544"
 # v4.1: her katman kendi rengini kullanır — dikdörtgen formasyonu, order block'lar ve destek-direnç
 # bantları kutu olarak çizildiği için birbirinden ayırt edilebilir olmalı.
@@ -4091,7 +4432,7 @@ def st_overlay(payload, sym, best=None, levels=None):
     bars = payload.get("bars") or []
     df = pd.DataFrame(bars, columns=["t", "Open", "High", "Low", "Close", "Volume"])
     show = {**ST_OV_DEF, **{k: bool(v) for k, v in (ss.get("st_ov") or {}).items() if k in ST_OV_DEF}}
-    ov = {"show": show, "patterns": [], "obs": [], "marks": [], "prints": []}
+    ov = {"show": show, "patterns": [], "obs": [], "marks": [], "prints": [], "levels": []}
     info = {"geo": None, "obs": [], "marks": [], "uw": None, "df": df}
     if len(df) < 30:
         return ov, info
@@ -4106,16 +4447,18 @@ def st_overlay(payload, sym, best=None, levels=None):
                                          for ln in geo["lines"]],
                                "dots": _pl(geo["dots"]), "fill": _pl(geo["fill"]) if geo.get("fill") else None})
     x0 = max(0, last - 45)
-    for lab, y, c_ in levels or []:                     # işlem planı: seviye / stop / hedefler
+    # v4.2: işlem planı (seviye / stop / hedefler) ayrı katman — etiketleri fiyat ekseninde, çakışmasız
+    for lab, y, c_ in levels or []:
         if en._ok(y):
-            ov["patterns"].append({"label": f"{lab} {tr(y)}", "color": c_, "at": [last, float(y)],
-                                   "lines": [{"pts": [[x0, float(y)], [last, float(y)]], "dash": True, "w": 1.3}]})
+            ov["levels"].append({"label": lab, "price": float(y), "color": c_, "from": x0})
     obs = en.order_blocks(df)
     info["obs"] = obs
     for o in obs:
         nm = "Bullish order block" if o["kind"] == "bull" else "Bearish order block"
         ov["obs"].append({"kind": o["kind"], "start": o["i"], "lo": o["lo"], "hi": o["hi"], "end": o["end"],
-                          "label": nm + (f' · volume {tr(o["vol_x"], 1)}×' if o.get("vol_x") else "")})
+                          "label": nm + (f' · volume {tr(o["vol_x"], 1)}×' if o.get("vol_x") else ""),
+                          "short": ("Bull OB" if o["kind"] == "bull" else "Bear OB")
+                                   + (f' {tr(o["vol_x"], 1)}×' if o.get("vol_x") else "")})
     marks = en.volume_spikes(df)
     info["marks"] = marks
     ov["marks"] = [{"i": m["i"], "side": m["side"], "label": f'{tr(m["ratio"], 1)}×'} for m in marks]
@@ -4127,7 +4470,8 @@ def st_overlay(payload, sym, best=None, levels=None):
             for lv in uw["levels"][:5]:
                 side = "buy" if lv["buy"] > lv["sell"] * 1.5 else "sell" if lv["sell"] > lv["buy"] * 1.5 else None
                 ov["prints"].append({"price": lv["price"], "side": side, "w": lv["premium"] / top, "i": None,
-                                     "label": f'Dark pool {big(lv["premium"], "USD")} @ {tr(lv["price"])}'})
+                                     "label": f'Dark pool {big(lv["premium"], "USD")} @ {tr(lv["price"])}',
+                                     "short": f'DP {big(lv["premium"], "USD")}'})
     return ov, info
 
 
@@ -4203,75 +4547,146 @@ SENT_COL = {"Bullish": UP, "Bearish": DOWN, "Neutral": NEU, "Not enough posts": 
 HYPE_COL = {"Extreme": DOWN, "Elevated": WARN, "Normal": ACCENT, "Low": MUT, "Unknown": MUT}
 
 
-def render_sentiment_box(sym):
-    """Topluluk duyarlılığı: Reddit · StockTwits · X → Bullish / Bearish / Neutral + hype göstergeleri."""
-    s = md.get_sentiment(sym)
+HYPE2_COL = {"Viral": "#FF4D6D", "High": "#FF8A3D", "Elevated": "#F5B544", "Normal": ACCENT, "Quiet": MUT,
+             "Unknown": MUT}
+NTYPE_COL = {"News": ACCENT, "Press release": "#A78BFA", "Blog / analysis": "#22D3EE", "Filing": "#F5B544"}
+NEWS_NOTE = {"av": "not connected — a free Alpha Vantage key (ALPHAVANTAGE_API_KEY in Secrets) adds scored "
+                   "news sentiment",
+             "brave": "not connected — a Brave Search key (BRAVE_SEARCH_KEY in Secrets) adds web news search and "
+                      "filters X posts when the X API is closed",
+             "finnhub": "not connected — FINNHUB_API_KEY in Secrets adds Finnhub company news",
+             "x_web": "not connected — with BRAVE_SEARCH_KEY in Secrets, X posts are found by web search when the "
+                      "X API is closed"}
+
+
+def _sbar(score, col, h=8):
+    pos = max(0.0, min(100.0, (float(score or 0) + 100) / 2))
+    return (f'<div class="sent-bar" style="height:{h}px"><span class="sent-mid"></span><span class="sent-dot" '
+            f'style="left:{pos:.1f}%;background:{col}"></span></div>')
+
+
+def render_market_pulse(sym):
+    """v4.2: genel piyasa duyarlılığı (haber + topluluk → Bullish / Bearish / Neutral) ve ayrı hype göstergesi."""
+    mp = md.get_market_pulse(sym)
+    ov, hy, nw, so = mp["overall"], mp["hype"], mp["news"], mp["social"]
+    lvl = hy.get("level") or "Unknown"
+    hc = HYPE2_COL.get(lvl, MUT)
+    if hy.get("viral") or lvl in ("Viral", "High"):
+        top = " · ".join(d["text"] for d in (hy.get("drivers") or [])[:2])
+        H(f'<div class="hype-banner{" viral" if lvl == "Viral" else ""}" style="--hc:{hc}">'
+          f'<span class="hb-ic">{"🔥" if lvl == "Viral" else "⚡"}</span>'
+          f'<span><b>{esc(lvl.upper())} BUZZ</b> — {esc(sym)} is drawing unusual attention right now'
+          f'{": " + esc(top) if top else ""}</span></div>')
+    with st.container(border=True, key=f"mpulse_{sym}"):
+        c1, c2 = st.columns([1.15, 1], gap="medium")
+        with c1:
+            lab = ov.get("label") or "Not enough data"
+            col = SENT_COL.get(lab, MUT)
+            H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+              f'<span class="panel-title">Market Sentiment</span>'
+              f'<span class="earn-v" style="color:{col};background:{col}22;border-color:{col}66">{esc(lab.upper())}'
+              f'</span></div><div class="muted small">News + community for {esc(sym)} in one score · rescanned '
+              f'every 10 minutes · last scan {esc(mp.get("checked") or "—")}</div>')
+            if mp.get("src") != "real":
+                H('<div class="muted small" style="margin-top:8px">No news or community source answered right now. '
+                  'Every source is retried automatically.</div>')
+            else:
+                sc = float(ov.get("score") or 0)
+                H(_sbar(sc, col, 9)
+                  + f'<div style="display:flex;justify-content:space-between;font-size:10.5px" class="muted">'
+                    f'<span>Bearish −100</span><span style="color:{col};font-weight:800;font-size:15px">{sc:+.0f}'
+                    f'</span><span>+100 Bullish</span></div>')
+                rows = ""
+                for nm, part, w, unit in (("News", nw, ov.get("w_news", 0), "articles"),
+                                          ("Community", so, ov.get("w_social", 0), "posts")):
+                    pl = part.get("label") or "—"
+                    pc = SENT_COL.get(pl, MUT)
+                    rows += (f'<div class="mp-sub"><span class="mp-k">{nm}</span>'
+                             f'<span class="mp-bar">{_sbar(part.get("score", 0), pc, 6)}</span>'
+                             f'<span class="mono" style="color:{pc};font-weight:800;min-width:34px;text-align:right">'
+                             f'{float(part.get("score") or 0):+.0f}</span>'
+                             f'<span class="muted" style="font-size:10.5px;min-width:118px">{int(part.get("n") or 0)} '
+                             f'{unit} · weight {float(w or 0) * 100:.0f}%</span></div>')
+                conf = ov.get("conf") or "Low"
+                H(f'<div style="margin-top:6px">{rows}</div><div class="muted" style="font-size:10.5px;margin-top:4px">'
+                  f'Confidence: <b>{esc(conf)}</b>'
+                  + (" — news and community agree" if ov.get("agree") else
+                     " — news and community point different ways" if ov.get("w_news") and ov.get("w_social")
+                     else "") + '</div>')
+        with c2:
+            hs = hy.get("score")
+            H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+              f'<span class="panel-title">Hype</span>'
+              f'<span class="earn-v{" hype-pulse" if lvl in ("Viral", "High") else ""}" style="color:{hc};'
+              f'background:{hc}22;border-color:{hc}66">{esc(lvl.upper())}</span></div>'
+              f'<div class="muted small">Excitement and viral spread — separate from bullish / bearish</div>')
+            if hs is None:
+                H('<div class="muted small" style="margin-top:8px">No attention data yet (Reddit rank, news flow, '
+                  'X and StockTwits activity). Retried automatically.</div>')
+            else:
+                segs = "".join(f'<span style="background:{HYPE2_COL[k]};opacity:{1 if hs >= lo else .18}"></span>'
+                               for k, lo in (("Quiet", 0), ("Normal", 22), ("Elevated", 42), ("High", 62),
+                                             ("Viral", 80)))
+                H(f'<div class="hype-meter">{segs}<i style="left:{max(0, min(100, hs)):.0f}%"></i></div>'
+                  f'<div style="display:flex;justify-content:space-between;font-size:10.5px" class="muted">'
+                  f'<span>quiet</span><span style="color:{hc};font-weight:800;font-size:15px">{int(hs)}/100</span>'
+                  f'<span>viral</span></div>')
+                H('<div style="margin-top:4px">' + "".join(
+                    f'<div class="hy-d"><span class="hy-s" style="color:{HYPE2_COL["Viral"] if d["score"] >= 80 else HYPE2_COL["High"] if d["score"] >= 62 else HYPE2_COL["Elevated"] if d["score"] >= 42 else MUT}">'
+                    f'{int(d["score"])}</span><span>{esc(d["text"])}</span></div>'
+                    for d in (hy.get("drivers") or [])[:5]) + '</div>')
+    return mp
+
+
+def render_sentiment_box(sym, mp=None):
+    """Haberler + topluluk ayrıntıları: canlı haber akışı (tür etiketiyle), topluluk sayıları, kaynak durumu."""
+    mp = mp or md.get_market_pulse(sym)
+    s, nw = mp["social"], mp["news"]
     with st.container(border=True):
-        lab = s.get("label") or "Not enough posts"
-        c_ = SENT_COL.get(lab, MUT)
-        hy = s.get("hype") or {}
-        hl = hy.get("level") or "Unknown"
         H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
-          f'<span class="panel-title">Community Sentiment</span>'
-          f'<span class="earn-v" style="color:{c_};background:{c_}22;border-color:{c_}66">{esc(lab.upper())}</span>'
-          f'</div><div class="muted small">What people post about {esc(sym)} right now · rescanned every 10 minutes '
-          f'· last scan {esc(s.get("checked") or "—")}</div>')
-        if s.get("src") != "real":
-            H('<div class="muted small" style="margin-top:8px">None of the sources answered right now (Reddit, '
-              'StockTwits). It is retried automatically.</div>')
-            return
-        sc = float(s.get("score") or 0)
-        pos = max(0.0, min(100.0, (sc + 100) / 2))
-        n = int(s.get("n") or 0)
-        H(f'<div class="sent-bar"><span class="sent-mid"></span><span class="sent-dot" style="left:{pos:.1f}%;'
-          f'background:{c_}"></span></div>'
-          f'<div style="display:flex;justify-content:space-between;font-size:10.5px" class="muted"><span>Bearish −100'
-          f'</span><span style="color:{c_};font-weight:800;font-size:13px">{sc:+.0f}</span><span>+100 Bullish</span>'
-          f'</div><div class="muted small" style="margin-top:2px">{n} posts scored: <b style="color:{UP}">'
-          f'{s.get("bull", 0)} bullish</b> · <b style="color:{DOWN}">{s.get("bear", 0)} bearish</b> · '
-          f'{s.get("neutral", 0)} neutral</div>')
-        # ---- hype
-        tiles = [("Hype", f'<span style="color:{HYPE_COL.get(hl, MUT)}">{esc(hl)}</span>', "")]
+          f'<span class="panel-title">Live News &amp; Community</span>'
+          f'<span class="muted small">{int(nw.get("n24") or 0)} articles in 24 h</span></div>')
+        # ---- haber akışı
+        items = [i for i in (nw.get("items") or []) if i.get("title")][:7]
+        if items:
+            tcount = nw.get("types") or {}
+            H('<div class="ntypes">' + "".join(
+                f'<span style="color:{NTYPE_COL[k]};border-color:{NTYPE_COL[k]}55">{esc(k)} {int(tcount.get(k, 0))}'
+                f'</span>' for k in md.NEWS_TYPES if tcount.get(k)) + '</div>')
+            H("".join(
+                f'<a class="sent-post" target="_blank" rel="noopener" href="{esc(i["url"])}">'
+                f'<span style="flex:none;width:11px;text-align:center;color:{UP if i["sent"] > 0 else DOWN if i["sent"] < 0 else MUT}">'
+                f'{"▲" if i["sent"] > 0 else "▼" if i["sent"] < 0 else "•"}</span>'
+                f'<span class="ntag" style="color:{NTYPE_COL.get(i["type"], MUT)}">{esc(i["type"].split(" ")[0])}</span>'
+                f'<span class="sp-t">{esc(i["title"])}</span><span class="muted" style="flex:none;font-size:10.5px">'
+                f'{esc(i["source"])[:22]} · {esc(i.get("age") or "")}</span></a>' for i in items))
+        else:
+            H('<div class="muted small" style="margin-top:6px">No fresh news found for this company in the last 7 '
+              'days.</div>')
+        # ---- topluluk
+        hy = s.get("hype") or {}
+        tiles = []
+        if s.get("src") == "real":
+            sl = s.get("label") or "Not enough posts"
+            tiles.append(("Community", f'<span style="color:{SENT_COL.get(sl, MUT)}">{float(s.get("score") or 0):+.0f}'
+                                       f'</span>', f'{s.get("bull", 0)} bull · {s.get("bear", 0)} bear'))
         if hy.get("mentions") is not None:
             ch_ = hy.get("change_pct")
             tiles.append(("Reddit mentions · 24h", tr(hy["mentions"], 0),
                           (pct(ch_, 0) + " vs the day before") if en._ok(ch_) else ""))
         if hy.get("rank") is not None:
             rp = hy.get("rank_prev")
-            tiles.append(("Reddit rank", f'#{int(hy["rank"])}',
-                          (f'was #{int(rp)}' if en._ok(rp) else "") or ""))
+            tiles.append(("Reddit rank", f'#{int(hy["rank"])}', (f'was #{int(rp)}' if en._ok(rp) else "") or ""))
         if hy.get("x_mentions") is not None:
             tiles.append(("X posts · 7d", tr(hy["x_mentions"], 0),
                           f'{tr(hy.get("x_last24h"), 0)} in 24h' if en._ok(hy.get("x_last24h")) else ""))
         if hy.get("watchers") is not None:
             tiles.append(("StockTwits watchers", big(hy["watchers"], ""), ""))
-        H('<div class="sent-tiles">' + "".join(
-            f'<div class="tile"><span class="k">{k}</span><span class="v" style="font-size:15px">{v}</span>'
-            f'<span class="muted" style="font-size:10.5px">{esc(sub)}</span></div>' for k, v, sub in tiles) + '</div>')
-        # ---- kaynaklar
-        rows = ""
-        srcs = s.get("sources") or {}
-        for key in ("reddit", "stocktwits", "x", "fh_twitter", "fh_reddit"):
-            v = srcs.get(key)
-            if not v:
-                continue
-            if v.get("ok"):
-                lc = SENT_COL.get(md.sentiment_label(v["score"], v["n"]), MUT)
-                unit = "posts" if v.get("kind") == "posts" else "mentions"
-                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:104px">{esc(v["name"])}</span>'
-                         f'<span class="mono" style="color:{lc};font-weight:700">{v["score"]:+.0f}</span>'
-                         f'<span class="muted small">{v["n"]} {unit} ({v.get("last24h", 0)} in 24h) · {v["bull"]} '
-                         f'bullish / {v["bear"]} bearish</span></div>')
-            else:
-                msg = v.get("err") or "no answer"
-                if msg == "not connected":
-                    msg = {"x": "not connected — X has no free read access; with a paid X API key add "
-                                "X_BEARER_TOKEN to Secrets",
-                           "fh_twitter": "not connected — a Finnhub key (FINNHUB_API_KEY in Secrets) also "
-                                         "delivers X and Reddit sentiment without the X API"}.get(key, msg)
-                rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:104px">{esc(v["name"])}</span>'
-                         f'<span class="muted small">{esc(msg)}</span></div>')
-        H(f'<div style="margin-top:8px">{rows}</div>')
+        if tiles:
+            H('<div class="sent-tiles">' + "".join(
+                f'<div class="tile"><span class="k">{k}</span><span class="v" style="font-size:15px">{v}</span>'
+                f'<span class="muted" style="font-size:10.5px">{esc(sub)}</span></div>' for k, v, sub in tiles)
+              + '</div>')
         top = [p for p in (s.get("top") or []) if p.get("url")][:3]
         if top:
             H('<div style="font-size:12px;font-weight:700;margin:8px 0 2px 0">Most discussed</div>' + "".join(
@@ -4280,12 +4695,67 @@ def render_sentiment_box(sym):
                 f'{"▲" if p["sent"] > 0 else "▼" if p["sent"] < 0 else "•"}</span>'
                 f'<span class="sp-t">{esc(p["title"])}</span><span class="muted" style="flex:none;font-size:10.5px">'
                 f'{esc(p["src"])}{" · r/" + esc(p["sub"]) if p.get("sub") else ""}</span></a>' for p in top))
-        H('<div class="muted" style="font-size:10.5px;margin-top:6px">Score: share of bullish minus bearish posts, '
-          'weighted by likes and comments (StockTwits: the authors\' own Bullish / Bearish tag; Finnhub: its own '
-          'counts of positive and negative mentions, weighted a little lower; other posts: finance word list). '
-          '≥ +20 Bullish, ≤ −20 Bearish. Hype: Reddit mentions and rank from ApeWisdom. A source that is '
-          'unreachable is retried automatically — the others keep the reading alive in the meantime. A mood '
-          'reading, not a trade signal.</div>')
+        # ---- kaynaklar
+        with st.expander("Sources & status", expanded=False):
+            rows = ""
+            for key, v in (nw.get("sources") or {}).items():
+                if v.get("ok"):
+                    rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:120px">{esc(v["name"])}'
+                             f'</span><span class="muted small">{int(v.get("n") or 0)} relevant articles</span></div>')
+                else:
+                    msg = v.get("err") or "no answer"
+                    msg = NEWS_NOTE.get(key, msg) if msg == "not connected" else msg
+                    rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:120px">{esc(v["name"])}'
+                             f'</span><span class="muted small">{esc(msg)}</span></div>')
+            srcs = s.get("sources") or {}
+            for key in ("reddit", "stocktwits", "x", "x_web", "fh_twitter", "fh_reddit"):
+                v = srcs.get(key)
+                if not v:
+                    continue
+                if v.get("ok"):
+                    lc = SENT_COL.get(md.sentiment_label(v["score"], v["n"]), MUT)
+                    unit = "posts" if v.get("kind") == "posts" else "mentions"
+                    rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:120px">{esc(v["name"])}</span>'
+                             f'<span class="mono" style="color:{lc};font-weight:700">{v["score"]:+.0f}</span>'
+                             f'<span class="muted small">{v["n"]} {unit} ({v.get("last24h", 0)} in 24h) · {v["bull"]} '
+                             f'bullish / {v["bear"]} bearish</span></div>')
+                else:
+                    msg = v.get("err") or "no answer"
+                    if msg == "not connected":
+                        msg = {"x": "not connected — X has no free read access; with a paid X API key add "
+                                    "X_BEARER_TOKEN to Secrets",
+                               "fh_twitter": "not connected — a Finnhub key (FINNHUB_API_KEY in Secrets) also "
+                                             "delivers X and Reddit sentiment without the X API"}.get(key, NEWS_NOTE.get(key, msg))
+                    rows += (f'<div class="flow-r"><span style="font-weight:700;min-width:120px">{esc(v["name"])}</span>'
+                             f'<span class="muted small">{esc(msg)}</span></div>')
+            ag = []
+            if (md.get_reddit_trending() or {}).get("src") == "real":
+                ag.append("ApeWisdom (Reddit mention ranks)")
+            if (md.get_wsb_top() or {}).get("src") == "real":
+                ag.append("Tradestie (r/wallstreetbets top-50)")
+            if (md.get_stocktwits_trending() or {}).get("src") == "real":
+                ag.append("StockTwits trending list")
+            H(rows + (f'<div class="muted small" style="margin-top:6px">Aggregators answering: {esc(", ".join(ag))}'
+                      f'</div>' if ag else ""))
+            H('<div class="muted" style="font-size:10.5px;margin-top:6px">News score: every headline is scored for '
+              'phrases such as "beats estimates", "raises guidance", "downgrade", "cuts outlook", "probe" (Alpha '
+              'Vantage articles add their own model score), weighted by freshness (half-life ≈ 1 day) and type — '
+              'press releases count a little less because companies write them. 8-K filings are read by item '
+              '(e.g. 2.05 restructuring, 4.02 restated financials). Community score: bullish minus bearish posts '
+              'weighted by likes and comments. Overall = both, weighted by how much data each side has; ≥ +15 '
+              'Bullish, ≤ −15 Bearish. Hype is separate: Reddit rank and mention growth, the WSB top-50, news flow '
+              'versus its 7-day pace (Google News and the other feeds), and X / StockTwits message speed. A mood '
+              'reading, not a trade signal.</div>')
+
+
+def _pulse_section(sym, info):
+    """Short Term: genel duyarlılık + hype (tam genişlik), altında kurumsal akış ve haber / topluluk."""
+    mp = render_market_pulse(sym)
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        render_flow_box(sym, info)
+    with c2:
+        render_sentiment_box(sym, mp)
 
 
 def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
@@ -4326,7 +4796,8 @@ def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
             ov, inf = st_overlay(payload, sym, best, levels)
             info.update(inf)
             return ov
-        render_big_chart(sym, tf, height=ST_CHART_H, tf_key="w_sttf", lb=lb, ov_fn=_ov, comp_key="pulse_chart_st")
+        render_big_chart(sym, tf, height=ST_CHART_H, tf_key="w_sttf", lb=lb, ov_fn=_ov, comp_key="pulse_chart_st",
+                         fit=ST_CHART_FIT)
         g = info.get("geo")
         H(f'<div class="muted small" style="margin-top:4px">'
           + (f'<b style="color:{info.get("pat_col", PAT_COL)}">{esc(g["label"])}</b> is drawn with its pivot '
@@ -4340,12 +4811,10 @@ def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
             f'<span class="ovsw" style="background:{PAT_COLS["rectangle"]}"></span> rectangle pattern · '
             f'<span class="ovsw" style="background:{PAT_COL}"></span> other patterns · '
             f'<span class="ovsw" style="background:{UP}"></span><span class="ovsw" style="background:{DOWN}"></span> '
-            f'support / resistance zones · dotted lines = dark-pool levels (Unusual Whales).</div>')
-    c1, c2 = st.columns(2, gap="medium")
-    with c1:
-        render_flow_box(sym, info)
-    with c2:
-        render_sentiment_box(sym)
+            f'support / resistance zones · dotted lines = dark-pool levels (Unusual Whales) · '
+            f'plan levels (Level / Stop / TP1 / TP2) are tagged on the price axis; labels that sit close together '
+            f'are spread apart and linked to their level.</div>')
+    pulse_live(sym, info)          # v4.2: sayfa açıkken 10 dakikada bir kendiliğinden yeniden taranır
 
 
 AI_STATE_STYLE = {"breakout": (UP, UP_BG, "BREAKOUT"), "retest": (ACCENT, ACC_BG, "RETEST"),
