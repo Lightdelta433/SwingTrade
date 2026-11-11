@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="pulse-ui" content="4.1">
+<meta name="pulse-ui" content="4.2">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Pulse Chart</title>
 <style id="baseCss">
@@ -234,7 +234,8 @@ function setPalette(light){
   Object.defineProperty(P,"strokeStyle",{configurable:true,get:function(){return ss.get.call(this);},
     set:function(v){ss.set.call(this,lm(v));}});
 })();
-const PS=68, TS=24, MINPANE=56, RMARGIN=0.12;
+const PS=68, TS=24, MINPANE=56, RMARGIN=0.12;   // PS: fiyat ekseninin en dar hali (v4.2: S.ps dinamik)
+const LBL_H=18, LBL_GAP=3, TAG_H=18, TAG_GAP=2;
 const TR=new Intl.NumberFormat("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -266,7 +267,8 @@ const S={
   type:"candles", view:{a:0,b:50}, yAuto:true, yLog:false, yMan:null,
   panes:[], cross:null, tool:null, pend:null, sel:null, drag:null,
   undo:[], redo:[], rev:-1, height:620, big:false, sentN:0, ready:false,
-  ivList:[["1d","Daily","1D"]], ivName:"Daily"
+  ivList:[["1d","Daily","1D"]], ivName:"Daily",
+  ps:68, lane:[], tags:[], patLbl:[], drawn:[], grow:0, args:null, hmin:620
 };
 const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
 let W=0,H=0,DPR=1;
@@ -296,7 +298,8 @@ function applyArgs(a){
   S.bars=(a.bars||[]).map(function(b){return {t:b[0],o:b[1],h:b[2],l:b[3],c:b[4],v:b[5]};});
   S.ind=a.ind||{}; S.zones=a.zones||[]; S.gaps=a.gaps||[]; S.divs=a.divs||[]; S.cfg=a.cfg||{};
   S.ov=a.ov||null;   // v4.0: formasyon çizgileri, order block'lar, yüksek hacimli alım/satım işaretleri, dark pool
-  S.height=a.height||620;
+  S.args=a;
+  if(symChanged) S.grow=0;
   if(a.intervals&&a.intervals.length) S.ivList=a.intervals;
   S.ivName=a.intervalName||S.interval;
   if(a.type) S.type=a.type;
@@ -308,6 +311,7 @@ function applyArgs(a){
   S.rev=dataRev;
   S.ha=heikin(S.bars);
   buildPanes();
+  S.height=fitHeight(a);
   if(symChanged || !S.ready){ fitView(); }
   else { clampView(); }
   S.ready=true;
@@ -316,6 +320,37 @@ function applyArgs(a){
   setFrameHeight(S.big?Math.max(560,(window.screen&&window.screen.height||900)*0.82):S.height);
   setTimeout(resize,30); resize();
 }
+/* v4.2: yükseklik ekrana göre ölçeklenir (fit = görünür pencerenin oranı), fiyat paneli en az pmin piksel kalır,
+   etiket şeridi sığmazsa hmax'a kadar uzar */
+function viewportH(){
+  let h=0;
+  try{ h=(window.parent&&window.parent!==window&&window.parent.innerHeight)||0; }catch(e){ h=0; }
+  if(!h){ try{ h=Math.max(0,((window.screen&&window.screen.availHeight)||0)-170); }catch(e){ h=0; } }
+  return h;
+}
+function priceH(h){
+  const plotH=h-TS; let sub=0;
+  for(let i=1;i<S.panes.length;i++) sub+=Math.max(MINPANE, plotH*S.panes[i].w*0.42);
+  sub=Math.min(sub, plotH*0.58);
+  return plotH-sub;
+}
+function fitHeight(a){
+  let h=a.height||620;
+  const hmax=a.hmax>0?a.hmax:0;
+  if(a.fit>0){ const vh=viewportH(); if(vh>0) h=Math.max(h, Math.round(vh*a.fit)); }
+  if(a.pmin>0){ let k=0; while(priceH(h)<a.pmin&&k<60&&(!hmax||h<hmax)){ h+=20; k++; } }
+  h+=S.grow||0;
+  if(hmax) h=Math.min(h, Math.max(hmax, a.height||620));
+  return Math.round(h);
+}
+function refit(){
+  if(!S.args) return;
+  const h=fitHeight(S.args);
+  if(Math.abs(h-S.height)>8){ S.height=h; if(!S.big&&!fsOn()){ setFrameHeight(h); setTimeout(resize,40); } }
+}
+try{ if(window.parent&&window.parent!==window){
+  let tm=null; window.parent.addEventListener("resize",function(){ clearTimeout(tm); tm=setTimeout(refit,250); });
+} }catch(e){}
 function normDraw(d){ d.pts=(d.pts||[]).map(function(p){return {t:p.t,p:p.p};}); return d; }
 
 /* ---------------------------------------------------------------- veri yardımcıları */
@@ -374,8 +409,26 @@ function layout(){
     const pn=S.panes[i];
     pn.top=y; pn.h = i===0 ? plotH-sub : subEach; y+=pn.h;
   }
-  S.plotW=Math.max(40,W-PS);
+  S.ps=axisWidth();
+  S.plotW=Math.max(40,W-S.ps);
 }
+/* v4.2: fiyat ekseni en geniş etikete göre genişler (ör. "TP2 1,234.56"); hiçbir etiket kesilmez */
+function axisWidth(){
+  if(!S.bars.length) return PS;
+  ctx.save(); ctx.font="bold 11px sans-serif";
+  let mx=0, hi=0;
+  for(const b of S.bars){ if(b.h>hi) hi=b.h; }
+  const txt=[fmtP(hi*1.15), fmtP(-hi*0.01)];
+  for(const l of planLevels()) txt.push(tagText(l)+" ▲");
+  for(const t of txt){ const w=ctx.measureText(t).width; if(w>mx) mx=w; }
+  ctx.restore();
+  return Math.max(PS, Math.min(Math.max(PS, W*0.24), Math.ceil(mx+16)));
+}
+function planLevels(){
+  if(!S.ov||!ovOn("patterns")) return [];
+  return (S.ov.levels||[]).filter(function(l){ return l&&isFinite(l.price); });
+}
+function tagText(l){ return (l.label?l.label+" ":"")+fmtP(l.price); }
 function paneAt(y){ for(const p of S.panes) if(y>=p.top&&y<p.top+p.h) return p; return S.panes[0]; }
 
 /* ---------------------------------------------------------------- ölçekler */
@@ -414,6 +467,15 @@ function autoScale(){
         if(z.hi>mn*0.55&&z.lo<mx*1.45){ /* bantlar görünür aralıktaysa hafifçe dahil et */ }
       }
       for(const a of S.alerts) if(a.price>mn*0.8&&a.price<mx*1.2){ mn=Math.min(mn,a.price); mx=Math.max(mx,a.price); }
+      // v4.2: işlem planı (Stop / TP1 / TP2 …) her zaman görünür; canlı order block'lar ve dark pool seviyeleri yakınsa
+      const lastC=bars.length?bars[bars.length-1].c:0;
+      for(const l of planLevels()){ mn=Math.min(mn,l.price); mx=Math.max(mx,l.price); }
+      if(S.ov&&lastC>0){
+        if(ovOn("obs")) for(const o of (S.ov.obs||[])){ if(o.end!=null) continue;
+          if(o.lo>lastC*0.75&&o.hi<lastC*1.25){ mn=Math.min(mn,o.lo); mx=Math.max(mx,o.hi); } }
+        if(ovOn("prints")) for(const d of (S.ov.prints||[])){
+          if(d.price>lastC*0.85&&d.price<lastC*1.15){ mn=Math.min(mn,d.price); mx=Math.max(mx,d.price); } }
+      }
       if(S.yMan&&!S.yAuto){ mn=S.yMan.min; mx=S.yMan.max; }
     } else if(p.id==="vol"){
       mn=0; for(let i=i0;i<=i1;i++){ const b=S.bars[i]; if(b&&b.v>mx)mx=b.v; }
@@ -429,7 +491,13 @@ function autoScale(){
       const pad=(mx-mn)*0.12||1; mn-=pad; mx+=pad;
     }
     if(!isFinite(mn)||!isFinite(mx)||mn===mx){ mn=(mn||0)-1; mx=(mx||0)+1; }
-    if(p.id==="price"&&!(S.yMan&&!S.yAuto)){ const pad=(mx-mn)*0.08; mn-=pad; mx+=pad; }
+    if(p.id==="price"&&!(S.yMan&&!S.yAuto)){
+      // kenardaki etiketlerin yarısı dışarı taşmasın: en az ~14 px boşluk
+      const r=mx-mn, pad=Math.max(r*0.08, r*14/Math.max(60,p.h-28));
+      if(S.yLog&&mn>0){ const a=lg(mn), b=lg(mx), lp=Math.max((b-a)*0.08,(b-a)*14/Math.max(60,p.h-28));
+        mn=Math.exp(a-lp); mx=Math.exp(b+lp); }
+      else { mn-=pad; mx+=pad; }
+    }
     p.min=mn; p.max=mx;
   }
 }
@@ -454,10 +522,27 @@ function fitView(){
   const want=Math.max(1, Math.min(n, S.visible>0 ? S.visible : (S.intraday?180:150)));
   S.view.b=n+Math.max(4,want*RMARGIN); S.view.a=S.view.b-Math.max(10,want*(1+RMARGIN));
   S.yAuto=true; S.yMan=null;
+  S.fitR={want:want,n:0,all:false}; S.fitSig=null;
 }
 function fitAll(){
   const n=S.bars.length;
-  S.view.a=-2; S.view.b=n+Math.max(4,n*0.06); S.yAuto=true; S.yMan=null; draw();
+  S.view.a=-2; S.view.b=n+Math.max(4,n*0.06); S.yAuto=true; S.yMan=null;
+  S.fitR={want:n+2,n:0,all:true}; S.fitSig=null;
+  draw();
+}
+/* v4.2: otomatik görünümde sağ boşluk etiket şeridi kadar açılır — etiketler son mumların üstüne binmez.
+   Kullanıcı kaydırır / yakınlaştırırsa (görünüm değişirse) bu ayar bırakılır. */
+function applyFitRight(){
+  const f=S.fitR, v=S.view; if(!f) return false;
+  if(S.fitSig&&(Math.abs(v.a-S.fitSig[0])>1e-6||Math.abs(v.b-S.fitSig[1])>1e-6)){ S.fitR=null; return false; }
+  if(f.n>=4) return false;
+  const n=S.bars.length, needPx=Math.min(S.plotW*0.42,(S.laneW>0?S.laneW+18:0));
+  const m=needPx>0?needPx*f.want/Math.max(40,S.plotW-needPx):0;
+  const base=f.all?Math.max(4,n*0.06):Math.max(4,f.want*RMARGIN);
+  const b=n+Math.max(base,m), a=f.all?-2:Math.min(n-f.want,b-10);
+  if(Math.abs(b-v.b)<0.25&&Math.abs(a-v.a)<0.25){ S.fitSig=[v.a,v.b]; return false; }
+  v.a=a; v.b=b; S.fitSig=[a,b]; f.n++;
+  return true;
 }
 function clampView(){
   const n=Math.max(2,S.bars.length), v=S.view;
@@ -500,10 +585,11 @@ function draw(){
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
   drawGrid();
+  S.lane=[]; S.patLbl=[]; S.drawn=[];   // v4.2: etiketler önce toplanır, sonra çakışmasız yerleştirilir
   for(const p of S.panes){
     ctx.save(); ctx.beginPath(); ctx.rect(0,p.top,S.plotW,p.h); ctx.clip();
     if(p.id==="price"){ drawZones(p); drawGaps(p); drawOB(p); drawPrice(p); drawOverlays(p); drawDivPrice(p);
-      drawPrints(p); drawPatterns(p); drawMarks(p); }
+      drawPrints(p); drawPatterns(p); drawLevels(p); drawMarks(p); }
     else if(p.id==="vol") drawVol(p);
     else if(p.id==="rsi") drawRSI(p);
     else if(p.id==="stoch") drawStoch(p);
@@ -516,9 +602,11 @@ function draw(){
   const P0=S.panes[0];   // çizimler ve alarmlar yalnızca fiyat panelinde
   ctx.save(); ctx.beginPath(); ctx.rect(0,P0.top,S.plotW,P0.h); ctx.clip();
   drawDrawings(); drawAlerts();
+  drawLane(P0); drawPatLabels(P0);
   ctx.restore();
   drawScales(); drawTimeAxis(); drawCross();
   updateLegend();
+  if(applyFitRight()) requestAnimationFrame(draw);
 }
 function drawGrid(){
   ctx.lineWidth=1;
@@ -581,9 +669,11 @@ function drawTimeAxis(){
   }
 }
 function drawScales(){
-  ctx.fillStyle=BG; ctx.fillRect(S.plotW,0,PS,H-TS);
+  const PSW=S.ps||PS;
+  ctx.fillStyle=BG; ctx.fillRect(S.plotW,0,PSW,H-TS);
   ctx.strokeStyle=LINE; ctx.beginPath();
   ctx.moveTo(S.plotW+0.5,0); ctx.lineTo(S.plotW+0.5,H-TS); ctx.stroke();
+  const tags=axisTags();
   ctx.font="11px sans-serif"; ctx.textAlign="left"; ctx.textBaseline="middle";
   for(const p of S.panes){
     if(p.id==="rsi"||p.id==="stoch"){   // sabit seviyeler daha okunur
@@ -599,31 +689,196 @@ function drawScales(){
       : step>=10?0 : step>=1?1 : step>=0.1?2 : 3);
     for(let v=start;v<=p.max;v+=step){
       const y=Y(p,v); if(y<p.top+8||y>p.top+p.h-6) continue;
+      // v4.2: bir fiyat etiketinin altında kalacak ölçek yazısı çizilmez
+      if(p.id==="price"&&tags.some(function(t){return Math.abs(t.ry-y)<TAG_H/2+6;})) continue;
       const vv=Math.abs(v)<step*1e-6?0:v;   // "-0,0" yerine 0
       ctx.fillStyle=MUT;
       ctx.fillText(p.id==="vol"?volLab(vv):fmt(vv,dec), S.plotW+7, y);
     }
   }
-  // son fiyat etiketi
-  const pp=S.panes[0], bars=series(), last=bars[bars.length-1];
-  if(last){
-    const up=last.c>=last.o, y=Y(pp,last.c);
-    if(y>0&&y<pp.top+pp.h){
-      ctx.fillStyle=up?UP:DOWN; ctx.fillRect(S.plotW+1,y-9,PS-1,18);
-      ctx.fillStyle="#06110E"; ctx.font="bold 11px sans-serif";
-      ctx.fillText(fmtP(last.c),S.plotW+7,y);
-      ctx.save(); ctx.setLineDash([3,3]); ctx.strokeStyle=up?UP:DOWN; ctx.globalAlpha=.55;
-      ctx.beginPath(); ctx.moveTo(0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke(); ctx.restore();
+  // son fiyat çizgisi (fiyat panelinde)
+  const pp=S.panes[0];
+  for(const t of tags) if(t.kind==="last"){
+    ctx.save(); ctx.beginPath(); ctx.rect(0,pp.top,S.plotW,pp.h); ctx.clip();
+    ctx.setLineDash([3,3]); ctx.strokeStyle=t.bg; ctx.globalAlpha=.55;
+    ctx.beginPath(); ctx.moveTo(0,Math.round(t.y)+0.5); ctx.lineTo(S.plotW,Math.round(t.y)+0.5); ctx.stroke(); ctx.restore();
+  }
+  // eksen etiketleri: plan seviyeleri + son fiyat; yer değiştirdiyse ince bağlantı çizgisi
+  ctx.font="bold 11px sans-serif"; ctx.textBaseline="middle"; ctx.textAlign="left";
+  for(const t of tags){
+    const top=t.ry-TAG_H/2;
+    if(Math.abs(t.ry-t.y)>1.5&&t.y>=pp.top&&t.y<=pp.top+pp.h){
+      ctx.strokeStyle=t.bg; ctx.lineWidth=1.2; ctx.beginPath();
+      ctx.moveTo(S.plotW-10,Math.round(t.y)+0.5); ctx.lineTo(S.plotW-2,Math.round(t.y)+0.5);
+      ctx.lineTo(S.plotW+3,t.ry); ctx.stroke();
     }
+    ctx.fillStyle=t.bg; roundRect(S.plotW+2,top,PSW-4,TAG_H,3); ctx.fill();
+    ctx.fillStyle=t.fg; ctx.fillText(t.text,S.plotW+7,t.ry+0.5);
+    S.drawn.push({kind:"tag:"+t.kind,text:t.text,x:S.plotW+2,y:top,w:PSW-4,h:TAG_H,
+                  tw:ctx.measureText(t.text).width});
   }
   if(S.cross){
     const p=paneAt(S.cross.y), v=PR(p,S.cross.y);
     const dec=p.id==="price"?S.dec:(p.id==="vol"?0:1);
     const lab=p.id==="vol"?volLab(v):fmt(v,dec);
-    ctx.fillStyle="#2A2F37"; ctx.fillRect(S.plotW+1,S.cross.y-9,PS-1,18);
+    ctx.fillStyle="#2A2F37"; ctx.fillRect(S.plotW+1,S.cross.y-9,PSW-1,18);
     ctx.fillStyle=TXT; ctx.font="bold 11px sans-serif";
     ctx.fillText(lab,S.plotW+7,S.cross.y);
   }
+}
+/* v4.2: eksen etiketlerini topla ve çakışmayacak şekilde dikey yay */
+function axisTags(){
+  const p=S.panes[0], out=[], bars=series(), last=bars[bars.length-1];
+  if(!p) return out;
+  if(last){
+    const up=last.c>=last.o, y=Y(p,last.c);
+    if(y>p.top-1&&y<p.top+p.h+1) out.push({kind:"last",y:y,text:fmtP(last.c),bg:up?UP:DOWN,fg:"#06110E",prio:9});
+  }
+  for(const l of planLevels()){
+    let y=Y(p,l.price), txt=tagText(l);
+    if(!isFinite(y)) continue;
+    if(y<p.top){ y=p.top; txt+=" ▲"; } else if(y>p.top+p.h){ y=p.top+p.h; txt+=" ▼"; }
+    out.push({kind:"level",y:y,text:txt,bg:l.color||ACCENT,fg:inkOn(l.color||ACCENT),prio:8});
+  }
+  spreadY(out,p.top+1,p.top+p.h-1,TAG_H,TAG_GAP);
+  S.tags=out;
+  return out;
+}
+/* koyu ya da açık yazı: arka plan rengine göre */
+function inkOn(hex){
+  const m=/^#([0-9a-f]{6})$/i.exec(hex||""); if(!m) return "#0A0B0D";
+  const n=parseInt(m[1],16), r=n>>16&255, g=n>>8&255, b=n&255;
+  return (0.299*r+0.587*g+0.114*b)>140?"#0A0B0D":"#FFFFFF";
+}
+/* Tek boyutlu yerleştirme: istenen y'lere en yakın, birbirine binmeyen konumlar (küme birleştirme).
+   Sığmayanlar önceliğe göre düşer (it.drop=true). Sonuç: it.ry */
+function spreadY(items,lo,hi,h,gap){
+  const step=h+gap, half=h/2;
+  const cap=Math.max(0,Math.floor((hi-lo+gap)/step));
+  for(const it of items) it.drop=false;
+  if(items.length>cap){
+    const idx=items.map(function(it,k){return [it,k];});
+    idx.sort(function(a,b){return (b[0].prio||0)-(a[0].prio||0) || a[1]-b[1];});
+    const byP=idx.map(function(q){return q[0];});
+    for(let k=cap;k<byP.length;k++) byP[k].drop=true;
+  }
+  const list=items.filter(function(it){return !it.drop;}).sort(function(a,b){return a.y-b.y;});
+  function place(c){
+    const n=c.items.length;
+    let top=c.sum/n-(n-1)*step/2;
+    top=Math.min(hi-half-(n-1)*step, top);
+    top=Math.max(lo+half, top);
+    c.top=top;
+  }
+  const cl=[];
+  for(const it of list){
+    cl.push({items:[it],sum:clamp(it.y,lo+half,hi-half)});
+    for(;;){
+      const c=cl[cl.length-1]; place(c);
+      if(cl.length<2) break;
+      const pv=cl[cl.length-2];
+      if(pv.top+pv.items.length*step>c.top+1e-6){ pv.items=pv.items.concat(c.items); pv.sum+=c.sum; cl.pop(); }
+      else break;
+    }
+  }
+  for(const c of cl){ place(c); c.items.forEach(function(it,k){ it.ry=c.top+k*step; }); }
+  return items.filter(function(it){return it.drop;}).length;
+}
+/* v4.2: işlem planı çizgileri (seviye / stop / hedefler) — etiketleri fiyat ekseninde */
+function drawLevels(p){
+  const lv=planLevels(); if(!lv.length) return;
+  ctx.save();
+  for(const l of lv){
+    const y=Y(p,l.price); if(!isFinite(y)||y<p.top||y>p.top+p.h) continue;
+    const col=l.color||ACCENT, x0=l.from==null?0:Math.max(0,X(l.from));
+    ctx.setLineDash([6,4]); ctx.strokeStyle=hexa(col,.9); ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(x0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  // stop ile hedef arasındaki risk / getiri alanı hafifçe boyanır
+  const st=lv.find(function(l){return /^stop/i.test(l.label||"");});
+  const en=lv.find(function(l){return /^(level|entry)/i.test(l.label||"");});
+  const tp=lv.find(function(l){return /^(tp1|target)/i.test(l.label||"");});
+  if(st&&en&&tp){
+    const xs=Math.max(0,X(en.from==null?S.bars.length-20:en.from));
+    const ye=Y(p,en.price), ys=Y(p,st.price), yt=Y(p,tp.price);
+    ctx.fillStyle=hexa(DOWN,.06); ctx.fillRect(xs,Math.min(ye,ys),S.plotW-xs,Math.abs(ys-ye));
+    ctx.fillStyle=hexa(UP,.06); ctx.fillRect(xs,Math.min(ye,yt),S.plotW-xs,Math.abs(yt-ye));
+  }
+  ctx.restore();
+}
+/* v4.2: sağ kenar etiket şeridi — S/R bantları, order block'lar, boşluklar, dark pool, alarmlar.
+   Etiketler birbirine binmez; yerinden kaydırılan etiket ince bir çizgiyle seviyesine bağlanır. */
+function laneAdd(y,text,color,prio,opt){
+  S.lane.push(Object.assign({y:y,text:text,color:color,prio:prio||1},opt||{}));
+}
+function drawLane(p){
+  S.laneW=0;
+  if(!S.lane.length) return;
+  ctx.save(); ctx.font="bold 10.5px sans-serif"; ctx.textBaseline="middle"; ctx.textAlign="left";
+  const maxW=Math.max(60,S.plotW*0.34);   // daha genişse kısa metin (ör. "Bull OB 2.4×")
+  for(const it of S.lane){
+    let t=it.text, w=ctx.measureText(t).width+14;
+    if(w>maxW&&it.short){ t=it.short; w=ctx.measureText(t).width+14; }
+    it.t=t; it.w=Math.min(w,Math.max(60,S.plotW-16));
+  }
+  const dropped=spreadY(S.lane,p.top+3,p.top+p.h-3,LBL_H,LBL_GAP);
+  for(const it of S.lane){
+    if(it.drop) continue;
+    const x=S.plotW-8-it.w, top=it.ry-LBL_H/2;
+    if(Math.abs(it.ry-it.y)>1.5){
+      ctx.strokeStyle=hexa(it.color,.8); ctx.lineWidth=1; ctx.beginPath();
+      ctx.moveTo(S.plotW-8,it.ry); ctx.lineTo(S.plotW-3,it.ry); ctx.lineTo(S.plotW-1,clamp(it.y,p.top,p.top+p.h)); ctx.stroke();
+    }
+    ctx.fillStyle=it.bg||"rgba(13,15,19,.88)"; roundRect(x,top,it.w,LBL_H,4); ctx.fill();
+    ctx.strokeStyle=hexa(it.color,.85); ctx.lineWidth=1; roundRect(x+0.5,top+0.5,it.w-1,LBL_H-1,4); ctx.stroke();
+    ctx.fillStyle=it.color; ctx.fillText(it.t,x+7,it.ry+0.5);
+    if(it.w>S.laneW) S.laneW=it.w;
+    S.drawn.push({kind:"lane:"+(it.kind||""),text:it.t,x:x,y:top,w:it.w,h:LBL_H,tw:ctx.measureText(it.t).width});
+  }
+  ctx.restore();
+  if(dropped>0) growFor(dropped);
+}
+/* formasyon etiketi: şeridin ve diğer etiketlerin üstüne binmeyen ilk konum */
+function drawPatLabels(p){
+  if(!S.patLbl.length) return;
+  ctx.save(); ctx.font="bold 11px sans-serif"; ctx.textBaseline="middle"; ctx.textAlign="left";
+  const occ=S.drawn.filter(function(d){return d.kind.indexOf("lane")===0;}).map(function(d){return [d.x,d.y,d.w,d.h];});
+  const lo=p.top+3, hi=p.top+p.h-3;
+  for(const L of S.patLbl){
+    const w=Math.min(ctx.measureText(L.text).width+12, S.plotW-8), h=LBL_H;
+    const cx=clamp(L.x-w/2,4,S.plotW-w-4);
+    // aday konumlar: noktanın üstü/altı, solu/sağı; şeridin solu; yakından uzağa sıralı
+    let laneX=S.plotW; for(const q of occ) laneX=Math.min(laneX,q[0]);
+    const xs=[cx, clamp(L.x-w-10,4,S.plotW-w-4), clamp(L.x+10,4,S.plotW-w-4), clamp(laneX-w-8,4,S.plotW-w-4)];
+    const cands=[];
+    for(const x of xs) for(let dy=16; dy<=Math.max(60,p.h); dy+=11){
+      cands.push([x,L.y-dy]); cands.push([x,L.y+dy]); }
+    for(const x of xs) if(Math.abs(x-cx)>w/2) cands.push([x,L.y]);   // noktanın üstüne binmeden yanına
+    cands.sort(function(a,b){ return Math.hypot(a[0]-cx,(a[1]-L.y)*1.6)-Math.hypot(b[0]-cx,(b[1]-L.y)*1.6); });
+    let best=null, bestO=Infinity;
+    for(const c of cands){
+      const x=c[0], yc=clamp(c[1],lo+h/2,hi-h/2), r=[x,yc-h/2,w,h];
+      let o=0; for(const q of occ) o+=ovl(r,q);
+      if(o<bestO-0.5){ bestO=o; best=r; } if(o===0) break;
+    }
+    if(!best) continue;
+    occ.push(best);
+    ctx.fillStyle=hexa(L.color,.94); roundRect(best[0],best[1],w,h,5); ctx.fill();
+    ctx.fillStyle=inkOn(L.color); ctx.fillText(L.text,best[0]+6,best[1]+h/2+0.5);
+    S.drawn.push({kind:"pattern",text:L.text,x:best[0],y:best[1],w:w,h:h,tw:ctx.measureText(L.text).width});
+  }
+  ctx.restore();
+}
+function ovl(a,b){
+  const w=Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0]), h=Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1]);
+  return (w>0&&h>0)?w*h:0;
+}
+/* şerit sığmazsa grafiği (izin verilen üst sınıra kadar) uzat */
+function growFor(n){
+  if(S.big||fsOn()||!S.args||!(S.args.hmax>0)) return;
+  const want=Math.min(S.args.hmax, S.height+n*(LBL_H+LBL_GAP)+12);
+  if(want>S.height+4){ S.grow+=want-S.height; S.height=want; setFrameHeight(S.height); setTimeout(resize,40); }
 }
 function curIdx(){
   return S.cross?clamp(Math.round(S.cross.i),0,S.bars.length-1):S.bars.length-1;
@@ -845,7 +1100,7 @@ function drawATR(p){
 function drawZones(p){
   if(!(S.cfg.zones&&S.cfg.zones.on)) return;
   ctx.font="10px sans-serif"; ctx.textBaseline="middle";
-  const usedY=[], cRes=CC("zones","cr",DOWN), cSup=CC("zones","cs",UP);
+  const cRes=CC("zones","cr",DOWN), cSup=CC("zones","cs",UP);
   for(const z of S.zones){
     const y1=Y(p,z.hi), y2=Y(p,z.lo);
     if(Math.max(y1,y2)<p.top-30||Math.min(y1,y2)>p.top+p.h+30) continue;
@@ -864,13 +1119,10 @@ function drawZones(p){
     ctx.fillRect(x0,top,bwid,Math.min(h,13));
     ctx.fillStyle="#FFFFFF"; ctx.textAlign="left";
     if(bwid>28) ctx.fillText(z.pct+"%",x0+5,top+Math.min(h,13)/2);
-    const ly=top+h/2;
-    if(!usedY.some(function(y){return Math.abs(y-ly)<13;})){
-      usedY.push(ly);
-      ctx.fillStyle=base; ctx.textAlign="right"; ctx.font="bold 10.5px sans-serif";
-      ctx.fillText(z.label,S.plotW-6,ly);
-    }
-    ctx.font="10px sans-serif";
+    // v4.2: etiket sağ şeride gider (çakışmasız); bandın görünen kısmının ortasına bağlanır
+    const vt=Math.max(top,p.top), vb=Math.min(top+h,p.top+p.h);
+    if(vb>vt) laneAdd((vt+vb)/2, z.label, base, z.weak?1:3,
+      {kind:"zone", short:String(z.label).replace("Resistance","Res.").replace("Support","Sup.")});
   }
 }
 /* ---------------------------------------------------------------- v4.0 overlays (Short Term)
@@ -906,8 +1158,15 @@ function drawOB(p){
     ctx.strokeRect(Math.round(xa)+0.5,Math.round(top)+0.5,Math.max(1,x1-xa-1),Math.max(1,h-1));
     ctx.setLineDash([]);
     if(!dead){ ctx.fillStyle=base; ctx.fillRect(Math.round(xa),top,3,h); }   /* sol kenarda kalın işaret */
-    if(x1-xa>110 && o.label){ ctx.fillStyle=dead?hexa(base,.7):base; ctx.textAlign="left";
-      ctx.fillText(o.label,xa+8,top+Math.min(h/2,9)+1); }
+    const vt=Math.max(top,p.top), vb=Math.min(top+h,p.top+p.h);
+    if(!dead && o.label && vb>vt){        // v4.2: canlı OB etiketi sağ şeritte — her zaman tam görünür
+      laneAdd((vt+vb)/2, o.label, base, 4,
+        {kind:"ob", short:o.short||((o.kind==="bull"?"Bull OB":"Bear OB")+(o.vx?" "+o.vx:""))});
+    } else if(dead && o.label){             // geçersiz OB: kutuya sığıyorsa içine, sığmıyorsa yazılmaz
+      const sl=o.kind==="bull"?"Bull OB (filled)":"Bear OB (filled)", tw=ctx.measureText(sl).width;
+      const ly=clamp(top+Math.min(h/2,9)+1, p.top+8, p.top+p.h-8);
+      if(x1-xa>tw+16){ ctx.fillStyle=hexa(base,.75); ctx.textAlign="left"; ctx.fillText(sl,xa+8,ly); }
+    }
   }
   ctx.restore();
 }
@@ -933,12 +1192,9 @@ function drawPatterns(p){
       ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
       ctx.lineWidth=1.5; ctx.strokeStyle=BG; ctx.stroke();
     }
-    if(pt.label&&pt.at){
+    if(pt.label&&pt.at){          // v4.2: etiket en son, boş bir yere yerleştirilir (drawPatLabels)
       const x=X(pt.at[0]+.5), y=Y(p,pt.at[1]);
-      ctx.font="bold 11px sans-serif";
-      const w=ctx.measureText(pt.label).width+12, lx=Math.max(4,Math.min(S.plotW-w-4,x-w/2)), ly=Math.max(p.top+12,y-16);
-      ctx.fillStyle=hexa(col,.92); roundRect(lx,ly-9,w,18,5); ctx.fill();
-      ctx.fillStyle="#0A0B0D"; ctx.textAlign="left"; ctx.fillText(pt.label,lx+6,ly);
+      if(isFinite(y)) S.patLbl.push({x:x,y:y,text:pt.label,color:col});
     }
   }
   ctx.restore();
@@ -970,8 +1226,7 @@ function drawMarks(p){
 }
 function drawPrints(p){
   if(!ovOn("prints")||!(S.ov.prints||[]).length) return;
-  ctx.save(); ctx.font="bold 10px sans-serif"; ctx.textBaseline="bottom"; ctx.textAlign="right";
-  const used=[];
+  ctx.save();
   for(const d of S.ov.prints){
     const y=Y(p,d.price);
     if(!isFinite(y)||y<p.top||y>p.top+p.h) continue;
@@ -982,8 +1237,7 @@ function drawPrints(p){
     ctx.setLineDash([]);
     if(d.i!=null){ ctx.beginPath(); ctx.arc(X(d.i+.5),y,3+Math.min(5,(d.w||0)*6),0,Math.PI*2);
       ctx.fillStyle=hexa(col,.55); ctx.fill(); ctx.strokeStyle=col; ctx.lineWidth=1; ctx.stroke(); }
-    if(d.label && !used.some(function(u){return Math.abs(u-y)<12;})){ used.push(y);
-      ctx.fillStyle=col; ctx.fillText(d.label,S.plotW-6,y-2); }
+    if(d.label) laneAdd(y, d.label, col, 2, {kind:"print", short:d.short||d.label.replace(/^Dark pool/,"DP")});
   }
   ctx.restore();
 }
@@ -1001,9 +1255,9 @@ function drawGaps(p){
     ctx.setLineDash([3,3]); ctx.strokeStyle=hexa(base,.75); ctx.lineWidth=1;
     ctx.strokeRect(Math.round(x0)+0.5,Math.round(top)+0.5,Math.max(1,S.plotW-x0-1),Math.max(1,h-1));
     ctx.setLineDash([]);
-    ctx.fillStyle=base; ctx.textAlign="left";
     const lab="Gap "+(g.dir==="up"?"▲":"▼")+" "+fmtP(g.lo)+"–"+fmtP(g.hi);
-    if(S.plotW-x0>120) ctx.fillText(lab,x0+5,top+h/2);
+    const vt=Math.max(top,p.top), vb=Math.min(top+h,p.top+p.h);
+    if(vb>vt) laneAdd((vt+vb)/2, lab, base, 2, {kind:"gap", short:"Gap "+(g.dir==="up"?"▲":"▼")});
   }
   ctx.restore();
 }
@@ -1103,11 +1357,8 @@ function drawAlerts(){
     ctx.setLineDash([6,4]); ctx.strokeStyle=col; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke();
     const lab="🔔 "+CONDL[a.cond]+" "+fmtP(a.price)+(a.triggered?" · triggered":"");
-    ctx.setLineDash([]); ctx.textAlign="left";
-    const w=ctx.measureText(lab).width+12, x=Math.max(6,S.plotW-w-8);
-    ctx.fillStyle="rgba(17,19,23,.92)"; ctx.strokeStyle=col;
-    ctx.beginPath(); ctx.rect(x,y-9,w,18); ctx.fill(); ctx.stroke();
-    ctx.fillStyle=a.triggered?WARN:SOFT; ctx.fillText(lab,x+6,y);
+    ctx.setLineDash([]);
+    if(y>=p.top&&y<=p.top+p.h) laneAdd(y, lab, col, 5, {kind:"alert", short:"🔔 "+fmtP(a.price)});
   }
   ctx.restore();
 }
@@ -2223,7 +2474,9 @@ if(inStreamlit){ stSend("streamlit:componentReady",{apiVersion:1}); }
 else if(window.__PULSE_ARGS__){ applyArgs(window.__PULSE_ARGS__); }
 window.PULSE={S:S,applyArgs:applyArgs,draw:draw,startTool:startTool,geom:geom,
   fitAll:fitAll,zoomAt:zoomAt,hitDraw:hitDraw,commitPending:commitPending,
-  colors:function(){return {obBull:OB_BULL,obBear:OB_BEAR,up:UP,down:DOWN};}};
+  colors:function(){return {obBull:OB_BULL,obBear:OB_BEAR,up:UP,down:DOWN};},
+  spreadY:spreadY,fitHeight:fitHeight,fitView:function(){fitView();draw();},priceH:priceH,drawn:function(){return S.drawn;},
+  box:function(){return {W:W,H:H,plotW:S.plotW,ps:S.ps,price:S.panes[0]};}};
 </script>
 </body>
 </html>
