@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "4.2"
+BACKEND_VERSION = "4.3"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -373,7 +373,7 @@ def send_push(topic, title, body, url=None, tags=None, priority=3):
 # ======================================================================
 NOTIFY_DEFAULT = {"on": True, "push": False, "topic": "", "email": False, "browser": True,
                   "price": True, "earn_up": True, "earn_res": True, "macro": True, "macro_impact": "High",
-                  "ai": True, "hype": True}
+                  "ai": True, "hype": True, "bot": True}
 
 
 def notify_prefs(prof):
@@ -684,6 +684,491 @@ def check_macro(md, state, email, prof, prefs):
     return n
 
 
+# ======================================================================
+# v4.3 — Demo hesabı (kâğıt üzerinde işlem, gerçek fiyatlarla) + otomatik işlem botları
+#   · Hesap "demo" deposunda tutulur (profilden ayrı: arka plandaki bot ile açık sayfa birbirini ezmez).
+#   · Botlar 15 dakikalık her mum kapanışından sonra bir kez çalışır: önce açık pozisyonlar (stop / TP / iz süren
+#     stop / süre), sonra yeni alımlar. Veri çekme kilidin dışında, hesap değişikliği kilidin içinde yapılır.
+#   · Örnek (mock) fiyatla hiçbir zaman işlem yapılmaz.
+# ======================================================================
+DEMO_STARTS = (10000, 25000, 50000, 100000, 500000)
+DEMO_CCYS = ("USD", "EUR")
+DEMO_WATCH = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD"]
+DEMO_WATCH_MAX = 40
+BOT_SLOT = 900               # botların kontrol aralığı: 15 dakika
+BOT_LAG = 75                 # mum kapandıktan sonra verinin gelmesi için bekleme (sn)
+BOT_HOURS_ONLY = True        # yalnızca ABD seansı açıkken alım (09:30–16:00 New York, hafta içi)
+BOT_BAR_MAX_AGE = 45 * 60    # alım için son 15 dk mumunun en fazla yaşı
+BOT_MAX = 8
+_EUR_SFX = (".DE", ".F", ".PA", ".AS", ".MI", ".MC", ".BR", ".VI", ".HE", ".LS", ".IR")
+_DLOCK = threading.RLock()
+
+
+def _engine():
+    import engine
+    return engine
+
+
+def inst_ccy(sym):
+    """Enstrümanın işlem para birimi: USD / EUR; desteklenmiyorsa None (FX çiftleri, endeksler, diğer borsalar)."""
+    s = str(sym or "").upper().strip()
+    if not s or "=" in s or s.startswith("^"):
+        return None
+    if s.endswith("-USD"):
+        return "USD"
+    if s.endswith(_EUR_SFX):
+        return "EUR"
+    if "." in s:
+        return None
+    return "USD"
+
+
+def fx_mult(acct_ccy, inst, eurusd):
+    """Enstrüman para birimi → hesap para birimi çarpanı (EURUSD = 1 EUR kaç USD)."""
+    if inst is None:
+        return None
+    if inst == acct_ccy:
+        return 1.0
+    if not eurusd or eurusd <= 0:
+        return None
+    return (1.0 / eurusd) if (inst == "USD" and acct_ccy == "EUR") else float(eurusd)
+
+
+def demo_new(start=25000, ccy="USD", watch=None, bots=None):
+    start = float(start if start in DEMO_STARTS else 25000)
+    return {"v": 1, "start": start, "ccy": ccy if ccy in DEMO_CCYS else "USD", "cash": start, "pos": {},
+            "trades": [], "eq": [[time.time(), start]], "watch": list(watch if watch is not None else DEMO_WATCH),
+            "bots": list(bots or []), "log": [], "seq": 0, "created": time.time(), "fx": None, "bot_slot": None}
+
+
+def _demo_all():
+    d = kv_get("demo")
+    return d if isinstance(d, dict) and isinstance(d.get("users"), dict) else {"v": 1, "users": {}}
+
+
+def demo_get(email):
+    """Hesabın kopyası; yoksa varsayılan (25.000 $) hesap."""
+    a = _demo_all()["users"].get(str(email or "").lower())
+    return a if isinstance(a, dict) and "cash" in a else demo_new()
+
+
+def demo_put(email, acct, sync=False):
+    email = str(email or "").lower()
+    if not email:
+        return False
+    with _DLOCK:
+        allp = _demo_all()
+        allp["users"][email] = acct
+        return kv_put("demo", allp, sync=sync)
+
+
+def demo_edit(email, fn):
+    """Hesabı kilit altında okur, fn(acct) ile değiştirir, kaydeder. fn'in döndürdüğünü döndürür."""
+    with _DLOCK:
+        acct = demo_get(email)
+        res = fn(acct)
+        demo_put(email, acct)
+        return res
+
+
+def demo_reset(email, start, ccy, keep=True):
+    """Yeni başlangıç tutarı / para birimi: hesap sıfırlanır; izleme listesi ve botlar (kapalı olarak) kalır."""
+    def run(acct):
+        bots = []
+        for b in (acct.get("bots") or []) if keep else []:
+            b = dict(b, on=False, last=None, cool={})
+            bots.append(b)
+        new = demo_new(start, ccy, acct.get("watch") if keep else None, bots)
+        acct.clear()
+        acct.update(new)
+        return True
+    return demo_edit(email, run)
+
+
+def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan=None, ts=None, bot=""):
+    """Bir emri hesaba işler (anında, verilen fiyattan). Döner: (ok, mesaj, işlem kaydı)."""
+    try:
+        qty, price, fxm = float(qty), float(price), float(fxm)
+    except (TypeError, ValueError):
+        return False, "Quantity and price must be numbers.", None
+    if not (qty > 0 and price > 0 and fxm > 0):
+        return False, "Quantity and price must be positive.", None
+    ts = float(ts or time.time())
+    key = f"{sym}|{owner}"
+    pos = acct["pos"].get(key)
+    amt = qty * price * fxm
+    pnl = None
+    if side == "buy":
+        if amt > acct["cash"] + 1e-6:
+            return False, "Not enough cash for this order.", None
+        if pos:
+            pos["entry"] = (pos["entry"] * pos["qty"] + price * qty) / (pos["qty"] + qty)
+            pos["qty"] += qty
+            pos["cost"] += amt
+        else:
+            pos = {"sym": sym, "owner": owner, "bot": bot, "qty": qty, "entry": price, "cost": amt, "opened": ts,
+                   "last": price}
+            acct["pos"][key] = pos
+        if plan:
+            pos.update({k: plan[k] for k in ("stop", "tp1", "tp2", "atr", "why", "cfg") if k in plan})
+            pos.update({"hi": price, "tp1_done": False, "checked": plan.get("checked") or ts})
+        acct["cash"] -= amt
+    elif side == "sell":
+        if not pos or qty > pos["qty"] + 1e-9:
+            return False, "You do not hold that many shares.", None
+        part = pos["cost"] * qty / pos["qty"]
+        pnl = amt - part
+        pos["qty"] -= qty
+        pos["cost"] -= part
+        acct["cash"] += amt
+        if pos["qty"] <= 1e-9:
+            acct["pos"].pop(key, None)
+    else:
+        return False, "Unknown order side.", None
+    acct["seq"] = int(acct.get("seq") or 0) + 1
+    tr = {"id": acct["seq"], "ts": ts, "sym": sym, "side": side, "qty": qty, "px": price, "fx": fxm,
+          "amt": round(amt, 2), "owner": owner, "bot": bot, "reason": reason,
+          "pnl": (round(pnl, 2) if pnl is not None else None)}
+    acct["trades"].append(tr)
+    del acct["trades"][:-400]
+    return True, "", tr
+
+
+def demo_value(acct, quotes=None, eurusd=None):
+    """Hesap değeri: nakit + pozisyonlar (son fiyatla). quotes: {sym: {'last', 'src'}}."""
+    quotes = quotes or {}
+    rows, inv, upl = [], 0.0, 0.0
+    for key, p in (acct.get("pos") or {}).items():
+        q = quotes.get(p["sym"]) or {}
+        last = float(q["last"]) if (q.get("src") == "real" and q.get("last")) else float(p.get("last") or p["entry"])
+        fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd or acct.get("fx")) or (p["cost"] / max(p["qty"] * p["entry"], 1e-9))
+        val = p["qty"] * last * fxm
+        pl = val - p["cost"]
+        inv += val
+        upl += pl
+        rows.append({"key": key, "sym": p["sym"], "owner": p["owner"], "bot": p.get("bot") or "", "qty": p["qty"],
+                     "entry": p["entry"], "last": last, "value": val, "pnl": pl,
+                     "pnl_pct": (pl / p["cost"] * 100) if p["cost"] else 0.0, "stop": p.get("stop"),
+                     "tp1": p.get("tp1"), "tp2": p.get("tp2"), "tp1_done": p.get("tp1_done"),
+                     "opened": p.get("opened"), "why": p.get("why") or "", "live": q.get("src") == "real"})
+    rpl = sum(t["pnl"] for t in acct.get("trades") or [] if t.get("pnl") is not None)
+    eq = float(acct["cash"]) + inv
+    rows.sort(key=lambda r: -r["value"])
+    return {"equity": eq, "cash": float(acct["cash"]), "invested": inv, "upl": upl, "rpl": rpl,
+            "total": eq - float(acct["start"]), "total_pct": (eq / float(acct["start"]) - 1) * 100, "rows": rows}
+
+
+def _eq_point(acct, equity, now, gap=840):
+    eq = acct.setdefault("eq", [])
+    if not eq or now - eq[-1][0] >= gap:
+        eq.append([round(now), round(equity, 2)])
+        del eq[:-1500]
+    else:
+        eq[-1][1] = round(equity, 2)
+
+
+def bot_new(name, src, universe, cfg=None, flt=None):
+    en = _engine()
+    return {"id": secrets.token_hex(4), "name": str(name or "Bot").strip()[:40] or "Bot",
+            "on": True, "src": "filter" if src == "filter" else "ai",
+            "universe": "scan" if universe == "scan" else "demo", "cfg": en.bot_cfg(cfg),
+            "flt": flt if (src == "filter" and isinstance(flt, dict)) else None,
+            "created": time.time(), "last": None, "cool": {}}
+
+
+def bot_stats(acct, bot_id, val=None):
+    """Botun toplam sonucu: gerçekleşen + açık kâr/zarar, işlem sayısı, isabet oranı, günlük ortalama."""
+    sells = [t for t in acct.get("trades") or [] if t.get("owner") == bot_id and t.get("pnl") is not None]
+    rpl = sum(t["pnl"] for t in sells)
+    rows = [r for r in (val or {}).get("rows", []) if r["owner"] == bot_id]
+    upl = sum(r["pnl"] for r in rows)
+    b = next((x for x in acct.get("bots") or [] if x["id"] == bot_id), None)
+    days = max(1.0, (time.time() - float((b or {}).get("created") or time.time())) / 86400.0)
+    wins = sum(1 for t in sells if t["pnl"] > 0)
+    return {"rpl": rpl, "upl": upl, "pnl": rpl + upl, "open": len(rows), "value": sum(r["value"] for r in rows),
+            "closed": len(sells), "win": (wins / len(sells) * 100) if sells else None,
+            "avg_day": (rpl + upl) / days}
+
+
+def us_session_open(now=None):
+    t = pd.Timestamp(now or time.time(), unit="s", tz="UTC").tz_convert("America/New_York")
+    return t.weekday() < 5 and (9 * 60 + 30) <= t.hour * 60 + t.minute < 16 * 60
+
+
+def _bars15(df, after=0.0):
+    """15 dk DataFrame → [(epoch, o, h, l, c)], yalnızca `after` sonrasında KAPANMIŞ mumlar."""
+    if df is None or not len(df):
+        return []
+    idx = df.index
+    try:
+        idx = idx.tz_localize("America/New_York") if idx.tz is None else idx
+        ep = [ts.timestamp() for ts in idx]            # çözünürlükten (ns / s) bağımsız
+    except Exception:
+        return []
+    out = []
+    now = time.time()
+    for i in range(len(df)):
+        end = float(ep[i]) + 900.0                     # mumun kapanış anı
+        if end <= after or end > now + 5:
+            continue
+        r = df.iloc[i]
+        o, h, l, c = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"])
+        if not (o == o and h == h and l == l and c == c):
+            continue
+        out.append((end, o, h, l, c))
+    return out
+
+
+def _real(df):
+    return df is not None and len(df) > 0 and df.attrs.get("src", "real") == "real"
+
+
+def bots_collect(md, acct):
+    """Kilidin DIŞINDA: botların ihtiyacı olan tüm veriyi çeker ve sinyalleri hesaplar."""
+    en = _engine()
+    bots = [b for b in acct.get("bots") or [] if b.get("on")]
+    held = sorted({p["sym"] for p in acct["pos"].values() if p["owner"] != "manual"})
+    watch = [s for s in acct.get("watch") or [] if inst_ccy(s)]
+    data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "eurusd": None, "err": {}}
+    try:
+        q = md.get_quotes(["EURUSD=X"]).get("EURUSD=X") or {}
+        if q.get("src") == "real" and q.get("last"):
+            data["eurusd"] = float(q["last"])
+    except Exception:
+        pass
+    if bots:
+        try:
+            data["regime_ok"] = bool(en.ai_regime(md.get_daily_batch(("SPY", "QQQ")), 50).get("ok"))
+        except Exception:
+            data["regime_ok"] = False
+    need15, evals = set(held), {}
+    for b in bots:
+        try:
+            if b["src"] == "ai":
+                meta = {}
+                if b["universe"] == "scan":
+                    cand, _ = en.ai_prefilter(md.get_market_snapshot(), None)
+                    syms = [t for t in list(cand["ticker"].head(40)) if inst_ccy(t)] if len(cand) else []
+                    meta = cand.set_index("ticker").to_dict("index") if len(cand) else {}
+                else:
+                    syms = list(watch)
+                daily = md.get_daily_batch(tuple(syms)) if syms else {}
+                rs = []
+                for t in syms:
+                    df = daily.get(t)
+                    if not _real(df):
+                        continue
+                    r = en.ai_evaluate(t, df, meta=meta.get(t))
+                    if r:
+                        rs.append(r)
+                        bb = r.get("best")
+                        if bb and r.get("ema_ok") and bb.get("state") in ("breakout", "retest"):
+                            need15.add(t)
+                evals[b["id"]] = ("ai", rs)
+                data["n"][b["id"]] = len(rs)
+            else:
+                f = b.get("flt") or {}
+                if b["universe"] == "scan":
+                    hist = md.get_universe_history()["hist"]
+                else:
+                    hist = md.get_daily_batch(tuple(watch)) if watch else {}
+                hist = {t: df for t, df in hist.items() if _real(df) and inst_ccy(t)}
+                spy = (md.get_daily_batch(("SPY",)) or {}).get("SPY")
+                rows = en.scan(hist, f.get("rows") or [], f.get("logic") or "AND", f.get("min"),
+                               spy["Close"] if spy is not None else None, None, getattr(md, "NAMES", None))
+                evals[b["id"]] = ("filter", rows)
+                data["n"][b["id"]] = len(hist)
+                need15.update(o["ticker"] for o in rows[:25])
+        except Exception as ex:
+            data["err"][b["id"]] = f"{type(ex).__name__}: {ex}"[:160]
+    if need15:
+        try:
+            i15 = md.get_intraday_batch(tuple(sorted(need15)))
+            data["i15"] = {t: df for t, df in i15.items() if _real(df)}
+        except Exception:
+            data["i15"] = {}
+    for t, df in data["i15"].items():
+        try:
+            data["px"][t] = float(df["Close"].iloc[-1])
+        except Exception:
+            pass
+    for b in bots:
+        kind, rows = evals.get(b["id"], (None, []))
+        sig, skip = [], []
+        for r in rows:
+            t = r["ticker"]
+            if kind == "ai":
+                bb = r.get("best")
+                if bb and t in data["i15"]:
+                    en.ai_apply_15m(r, en.confirm_15m(data["i15"][t], bb["level"], bb["kind"]))
+                s, why = en.bot_signal_ai(r, b["cfg"], data["regime_ok"])
+            else:
+                s, why = en.bot_signal_filter(r, b["cfg"])
+            if s and t in data["px"]:
+                s["entry"] = data["px"][t]            # alım fiyatı: son kapanmış 15 dk mumu
+                if s["entry"] <= s["stop"] or s["entry"] >= s["tp1"]:
+                    skip.append((t, "price moved out of the plan"))
+                    continue
+            if s and t not in data["i15"]:
+                skip.append((t, "no live 15-minute data"))
+                continue
+            (sig.append((t, s)) if s else skip.append((t, why)))
+        data["sig"][b["id"]] = sig
+        data["skip"][b["id"]] = skip[:12]
+    return data
+
+
+def bots_apply(acct, data, now=None):
+    """Kilidin İÇİNDE: açık pozisyonları yönetir, yeni alımları yapar. Döner: olay listesi."""
+    en = _engine()
+    now = float(now or time.time())
+    events = []
+    if data.get("eurusd"):
+        acct["fx"] = data["eurusd"]
+    eurusd = data.get("eurusd") or acct.get("fx")
+    names = {b["id"]: b["name"] for b in acct.get("bots") or []}
+
+    def log(bot, sym, text):
+        acct.setdefault("log", []).append({"ts": round(now), "bot": bot, "sym": sym, "text": text})
+        del acct["log"][:-200]
+
+    # 1) çıkışlar
+    sells = {}
+    for key, p in list(acct["pos"].items()):
+        if p["owner"] == "manual" or "stop" not in p:
+            continue
+        df = data["i15"].get(p["sym"])
+        bars = _bars15(df, float(p.get("checked") or p.get("opened") or 0))
+        if not bars:
+            continue
+        p["last"] = bars[-1][4]
+        fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd)
+        if fxm is None:
+            continue
+        evs, upd = en.bot_manage(p, bars, p.get("cfg"), now)
+        bname = names.get(p["owner"]) or p.get("bot") or "Bot"
+        for e in evs:
+            ok, _, tr = demo_trade(acct, p["sym"], "sell", float(e["qty"]), float(e["price"]), fxm, p["owner"],
+                                   e["reason"], ts=e["ts"], bot=bname)
+            if ok:
+                events.append({"kind": "sell", "sym": p["sym"], "qty": float(e["qty"]), "price": float(e["price"]),
+                               "bot": bname, "reason": e["reason"], "pnl": tr["pnl"]})
+                log(bname, p["sym"], f'SELL {e["qty"]:g} @ {e["price"]:.2f} — {e["reason"]} ({tr["pnl"]:+.2f})')
+                sells[p["owner"]] = sells.get(p["owner"], 0) + 1
+                if "stop" in e["reason"].lower() and tr["pnl"] < 0:
+                    for b in acct.get("bots") or []:
+                        if b["id"] == p["owner"]:
+                            b.setdefault("cool", {})[p["sym"]] = now
+        if key in acct["pos"]:
+            acct["pos"][key].update({k: upd[k] for k in ("stop", "hi", "tp1_done", "checked")})
+    # 2) alımlar
+    is_open = (not BOT_HOURS_ONLY) or us_session_open(now)
+    for b in acct.get("bots") or []:
+        if not b.get("on"):
+            continue
+        bid, cfg = b["id"], en.bot_cfg(b.get("cfg"))
+        buys, note = 0, ""
+        if bid in (data.get("err") or {}):
+            note = "data error: " + data["err"][bid]
+        elif not is_open:
+            note = "US market closed — open positions are still watched"
+        else:
+            cool = b.setdefault("cool", {})
+            for t in [t for t, ts_ in cool.items() if now - ts_ > cfg["cooldown_days"] * 86400]:
+                cool.pop(t, None)
+            for sym, s in data["sig"].get(bid, []):
+                have = sum(1 for p in acct["pos"].values() if p["owner"] == bid)
+                if have >= cfg["max_pos"]:
+                    note = note or f"position limit reached ({cfg['max_pos']})"
+                    break
+                if f"{sym}|{bid}" in acct["pos"] or sym in cool:
+                    continue
+                df = data["i15"].get(sym)
+                bars = _bars15(df, 0.0)
+                if not bars or (BOT_HOURS_ONLY and now - bars[-1][0] > BOT_BAR_MAX_AGE):
+                    log(b["name"], sym, "skipped — no fresh 15-minute bar")
+                    continue
+                fxm = fx_mult(acct["ccy"], inst_ccy(sym), eurusd)
+                if fxm is None:
+                    log(b["name"], sym, "skipped — EUR/USD rate not available")
+                    continue
+                eq = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)["equity"]
+                qty = en.bot_size(eq, acct["cash"], s["entry"], s["stop"], fxm, cfg)
+                if qty < 1:
+                    log(b["name"], sym, "skipped — not enough cash for one share at this risk")
+                    continue
+                plan = dict(s, cfg={k: cfg[k] for k in ("trail_atr", "max_days", "tp1_part")}, checked=bars[-1][0])
+                ok, msg, tr = demo_trade(acct, sym, "buy", qty, s["entry"], fxm, bid, s["why"], plan=plan, ts=now,
+                                         bot=b["name"])
+                if ok:
+                    buys += 1
+                    events.append({"kind": "buy", "sym": sym, "qty": float(qty), "price": float(s["entry"]),
+                                   "bot": b["name"], "reason": s["why"], "pnl": None, "stop": s["stop"],
+                                   "tp1": s["tp1"]})
+                    log(b["name"], sym, f'BUY {qty:g} @ {s["entry"]:.2f} — {s["why"]} · stop {s["stop"]:.2f} · '
+                                        f'TP1 {s["tp1"]:.2f}')
+            if not buys and not note:
+                sk = data["skip"].get(bid) or []
+                note = ("no setup passed — e.g. " + "; ".join(f"{t}: {w}" for t, w in sk[:2])) if sk else \
+                    "no setup passed the filter"
+        b["last"] = {"ts": round(now), "checked": int(data["n"].get(bid, 0)), "buys": buys,
+                     "sells": int(sells.get(bid, 0)), "note": note}
+    val = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)
+    _eq_point(acct, val["equity"], now)
+    return events
+
+
+def bots_tick(md, only=None, force=False):
+    """Tüm (ya da tek) kullanıcının botlarını çalıştırır — 15 dakikalık dilim başına bir kez. Döner: işlem sayısı."""
+    now = time.time()
+    slot = int(now // BOT_SLOT)
+    if not force and now % BOT_SLOT < BOT_LAG:
+        return 0
+    n = 0
+    for email in list(_demo_all()["users"].keys()):
+        if only and email != str(only).lower():
+            continue
+        acct = demo_get(email)
+        active = any(b.get("on") for b in acct.get("bots") or [])
+        owned = any(p["owner"] != "manual" for p in acct["pos"].values())
+        if not (active or owned) or (not force and acct.get("bot_slot") == slot):
+            continue
+        try:
+            data = bots_collect(md, acct)
+        except Exception as ex:
+            _MON["err"] = f"bots_collect: {type(ex).__name__}: {ex}"[:200]
+            continue
+
+        def run(a):
+            if not force and a.get("bot_slot") == slot:
+                return []
+            a["bot_slot"] = slot
+            return bots_apply(a, data, now)
+        try:
+            events = demo_edit(email, run)
+        except Exception as ex:
+            _MON["err"] = f"bots_apply: {type(ex).__name__}: {ex}"[:200]
+            continue
+        _MON["bots_last"] = now
+        n += len(events)
+        if events:
+            try:
+                prefs = notify_prefs(profile_get(email))
+                if prefs.get("on") and prefs.get("bot"):
+                    for e in events:
+                        if e["kind"] == "buy":
+                            title = f'{e["bot"]}: bought {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
+                            body = f'{e["reason"]}. Stop {e["stop"]:.2f} · TP1 {e["tp1"]:.2f}. Demo account.'
+                        else:
+                            title = f'{e["bot"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
+                            body = f'{e["reason"]}. Result {e["pnl"]:+.2f}. Demo account.'
+                        deliver(email, prefs, "bot", title, body, sym=e["sym"],
+                                tags=["robot"], priority=3)
+            except Exception as ex:
+                _MON["err"] = f"bot notify: {type(ex).__name__}: {ex}"[:200]
+    return n
+
+
 _BUZZ = {"i": 0, "last": {}}
 BUZZ_PER_TICK = 2            # her turda kaç izleme listesi hissesi taranır (sırayla, kaynaklara yük bindirmeden)
 
@@ -747,6 +1232,10 @@ def monitor_tick(md):
         total += check_buzz(md, state, users)
     except Exception as ex:
         _MON["err"] = f"check_buzz: {type(ex).__name__}: {ex}"[:200]
+    try:
+        total += bots_tick(md)              # v4.3: otomatik işlem botları (15 dakikada bir)
+    except Exception as ex:
+        _MON["err"] = f"bots_tick: {type(ex).__name__}: {ex}"[:200]
     if state.pop("_dirty", False):
         _state_save(state)
     _MON["ticks"] += 1
