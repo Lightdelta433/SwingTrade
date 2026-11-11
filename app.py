@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.3"
+APP_VERSION = "4.4"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -900,8 +900,14 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 a.opp-row,a.opp-row:hover,a.opp-row:visited,a.opp-row:active{text-decoration:none!important;color:#ECEEF1!important}
 a.opp-row *{text-decoration:none!important}
 .aist{font-size:10.5px;font-weight:800;border-radius:5px;padding:2px 7px;white-space:nowrap}
-.funnel{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px 0}
-.funnel div{background:#0C0D10;border:1px solid #22262D;border-radius:10px;padding:7px 11px;font-size:12px}
+.funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:10px 0 4px 0;width:100%}
+.funnel div{background:#0C0D10;border:1px solid #22262D;border-radius:12px;padding:9px 13px;font-size:12px;
+ min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:900px){.funnel{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:520px){.funnel{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.ai-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
+.ai-tag{font-size:12px;font-weight:700;color:#ECEEF1;border-radius:8px;padding:4px 10px;
+ background:color-mix(in srgb,var(--acc) 14%,transparent);border:1px solid color-mix(in srgb,var(--acc) 38%,transparent)}
 .funnel b{display:block;font-family:ui-monospace,monospace;font-size:15px;font-weight:700;color:#ECEEF1}
 .plan{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:8px 0}
 .planrow{display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid #1C1F25;font-size:12.5px}
@@ -1203,6 +1209,42 @@ table.bt .bsub{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-seri
 .demo-eq{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-top:6px}
 .demo-kv{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-top:1px solid #1C1F25;color:#8D96A5}
 .demo-kv b{color:#ECEEF1}
+.hd{padding-bottom:4px}
+[data-testid="stMarkdownContainer"]:has(.hd){margin-bottom:0 !important}
+.set-lab{font-size:12px;font-weight:600;color:#8D96A5;padding:8px 0 6px 0;line-height:1.35}
+.picks{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11.5px;margin:2px 0 6px 0}
+.picks a{font-weight:700;font-family:ui-monospace,monospace;color:#A3ABB8;text-decoration:none;border-radius:999px;
+ padding:3px 10px;border:1px solid color-mix(in srgb,var(--acc) 22%,var(--border))}
+.picks a:hover,.picks a.on{color:#ECEEF1;border-color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent)}
+.oquote{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;font-size:12.5px;color:#8D96A5;border-radius:12px;
+ padding:9px 12px;background:var(--panel2);border:1px solid color-mix(in srgb,var(--acc) 22%,var(--border))}
+.oquote b{color:#ECEEF1}
+table.pos{width:100%;min-width:560px;border-collapse:separate;border-spacing:0;font-size:13px}
+table.pos th{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:#6B7383;font-weight:700;
+ text-align:right;padding:8px 7px;border-bottom:1px solid #22262D;white-space:nowrap}
+table.pos td{padding:13px 7px;border-bottom:1px solid #1A1D23;text-align:right;white-space:nowrap;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;color:#ECEEF1;vertical-align:middle}
+table.pos .l{text-align:left}
+table.pos td.dim{color:#8D96A5}
+table.pos tbody tr:hover td{background:color-mix(in srgb,var(--acc) 6%,transparent)}
+table.pos tfoot td{border-bottom:0;border-top:1px solid #22262D;font-weight:700;color:#8D96A5;padding-top:11px}
+table.pos tfoot td:not(.l){color:#ECEEF1}
+.pos-sym{display:flex;align-items:center;gap:11px;font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif}
+.pos-sym b{display:block;font-size:14px;line-height:1.2}
+.pos-sym i{display:block;font-style:normal;font-size:11px;color:#8D96A5;line-height:1.25}
+.pos-by{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif;font-size:12px;color:#A3ABB8;border-radius:999px;
+ padding:3px 10px;border:1px solid #2A2F37}
+.pos-by.bot{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 45%,transparent);
+ background:color-mix(in srgb,var(--acc) 10%,transparent)}
+.pos-pl{font-weight:700}
+.pos-pct{display:inline-block;margin-left:7px;font-size:11px;font-weight:700;border-radius:6px;padding:2px 6px;
+ text-align:center}
+.pos-n{font-size:11px;font-weight:700;color:#8D96A5;border:1px solid #2A2F37;border-radius:999px;padding:1px 8px}
+table.pos .act{width:1%;padding-left:12px;padding-right:2px;border-left:1px solid #1A1D23}
+table.pos th.act{border-left:0}
+a.ghost{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif;font-size:11.5px;font-weight:700;color:#8D96A5;
+ border:1px solid #2A2F37;border-radius:8px;padding:5px 9px;text-decoration:none;transition:all .15s ease;white-space:nowrap}
+a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(248,113,113,.08)}
 .demo-warn{font-size:12px;line-height:1.45;border-radius:12px;padding:9px 11px;margin:6px 0;color:#F5B544;
  background:rgba(245,181,68,.10);border:1px solid rgba(245,181,68,.35)}
 </style>
@@ -2052,10 +2094,7 @@ def earnings_card(sym, d=None, cur="USD"):
         box_l = (f'<div class="earn-box"><div class="earn-top"><span class="earn-k">LAST REPORT</span>{badge}</div>'
                  f'<div class="earn-date earn-date-sm">{esc(" · ".join(x for x in (per, rep) if x))}</div>'
                  f'<div class="earn-f">{"".join(rows)}</div></div>')
-    H(f'<div class="earn-wrap">{box_n}{box_l}</div>'
-      f'<div class="muted earn-src">Sources: {esc(", ".join(info.get("sources") or []))} · checked '
-      f'{esc(info.get("checked") or "")} · “Beat” = reported EPS above the analyst consensus, “Miss” = below · '
-      f'hover a figure for details.</div>')
+    H(f'<div class="earn-wrap">{box_n}{box_l}</div>')      # v4.4: kaynak satırı kaldırıldı
 
 
 ECAL_TOP = 12
@@ -2223,7 +2262,7 @@ def render_chart_panel(sym):
     if meta or web:
         H(f'<div class="muted small" style="margin-top:4px">{esc(meta)}{web}</div>')
     if en_sum and (d.get("desc") or len(en_sum) > 260):
-        with st.expander("About the company — details (Yahoo Finance)"):
+        with st.expander("About the company — details"):
             H(f'<div class="desc" style="margin:0">{esc(en_sum)}</div>')
     anchor("chart")
     if SECTOR and md.sector_by_etf(SECTOR):
@@ -5248,13 +5287,11 @@ def render_ai_detail(r):
           f'href="{link(sec="Markets", sym=r["ticker"])}"><b style="font-size:17px">{esc(r["ticker"])}</b></a>'
           f'<div class="muted small">{esc(r["name"])}{" · " + esc(r["sector"]) if r["sector"] else ""}</div></div>'
           f'<span class="aist" style="color:{sfg};background:{sbg}">{slab}</span></div>')
-        if b:
-            H(f'<div class="muted small" style="margin-top:2px"><b style="color:{SOFT}">{esc(b["name"])}</b> — '
-              f'{esc(b["note"])} · confidence {tr(b["conf"] * 100, 0)}% · volume {tr(b["vol_x"], 1)}x</div>')
+        # v4.4: ayrıntı satırları yok — yalnızca formasyon adı ve 15 dk durumu (rozet olarak)
         cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
-        H(f'<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-          f'<span class="aist" style="color:{cfg_};background:{cbg}">15m · {esc(c.get("state", "—"))}</span>'
-          f'<span class="muted small" style="flex:1">{esc(c.get("note", ""))}</span></div>')
+        H('<div class="ai-tags">'
+          + (f'<span class="ai-tag">{esc(b["name"])}</span>' if b else "")
+          + f'<span class="aist" style="color:{cfg_};background:{cbg}">15m · {esc(c.get("state", "—"))}</span></div>')
         if p:
             tiles = [("Entry", tr(p["entry"]), TXT), ("Stop", tr(p["stop"]), DOWN),
                      (f'TP1 · {round(p["part1"] * 100)}%', tr(p["tp1"]), UP),
@@ -5309,6 +5346,26 @@ def demo_state():
     return acct, bk.demo_value(acct, q, eurusd), eurusd
 
 
+def demo_resolve(text):
+    """Serbest metin (ticker ya da şirket adı) → (sembol | None, fiyat kaydı). İzleme listesi şart değildir."""
+    raw = (text or "").strip()
+    if not raw:
+        return None, {}
+    hit = ss.get("_demo_res")
+    if hit and hit[0] == raw.upper() and hit[1]:
+        sym = hit[1]
+    else:
+        sym = None
+        cand = _SYM_RE.sub("", raw).upper()[:24]
+        if cand and (md.get_quotes([cand]).get(cand) or {}).get("src") == "real":
+            sym = cand
+        else:
+            res = md.search_symbols(raw[:40])
+            sym = res[0]["ticker"] if res else (cand if cand in md.KNOWN else None)
+        ss["_demo_res"] = (raw.upper(), sym)
+    return sym, ((md.get_quotes([sym]).get(sym) or {}) if sym else {})
+
+
 def demo_order(sym, side, qty, owner="manual"):
     """Elle verilen demo emri: yalnızca canlı fiyattan dolar. Döner: (ok, mesaj)."""
     sym = str(sym or "").upper().strip()
@@ -5343,6 +5400,9 @@ def _demo_actions():
     if not _me():
         return
     rm, sell, tg, dl = _consume("demo_rm"), _consume("demo_sell"), _consume("bot_tg"), _consume("bot_del")
+    pick = _consume("demo_pick")
+    if pick:
+        ss["_demo_set"] = dict(ss.get("_demo_set") or {}, demo_osym=str(pick)[:24])
     if rm:
         bk.demo_edit(_me(), lambda a: a.__setitem__("watch", [s for s in a.get("watch") or [] if s != rm]))
         st.toast(f"{rm} removed from the demo watchlist")
@@ -5563,8 +5623,7 @@ def _bots_body():
                     f'{esc(l["text"])}</span><span class="muted">{esc(l["bot"])}</span></div>' for l in logs))
     with side_:
         with st.container(border=True):
-            H('<div style="display:flex;justify-content:space-between;align-items:center">'
-              '<span class="panel-title">Bot Profit</span></div>')
+            H('<div class="hd"><span class="panel-title">Bot Profit</span></div>')
             rng = seg("Range", ["All", "1w", "1m"], "bot_rng", "All")
             fig, avg, nd = bot_profit_fig(acct.get("trades") or [], cur, rng)
             upl = sum(r["pnl"] for r in val["rows"] if r["owner"] != "manual")
@@ -5624,19 +5683,22 @@ def render_demo():
     cur = acct["ccy"]
     for k_, v_ in (ss.pop("_demo_set", None) or {}).items():      # widget değerleri yalnızca çizilmeden önce değişir
         ss[k_] = v_
-    H(f'<div class="page-title">Demo Account</div><div class="muted" style="margin-bottom:10px">'
+    H(f'<div class="hd"><div class="page-title">Demo Account</div></div><div class="hd muted" style="padding-bottom:10px">'
       f'<span class="dot-live"></span>Paper trading with live prices — no real money. Your bots from Short Term '
       f'trade this account too.</div>')
     left, right = st.columns([1, 3.1], gap="medium")
     with left:
         with st.container(border=True):
-            H('<span class="panel-title">Settings</span><div class="muted small">Starting balance of the demo '
-              'account</div>')
             sync = (int(acct["start"]), cur)
             if ss.get("_demo_sync") != sync:
                 ss["demo_start"], ss["demo_ccy"], ss["_demo_sync"] = int(acct["start"]), cur, sync
+            # v4.4: başlık, açıklama ve düğmeler ayrı bloklar — aralarında sabit boşluk (üst üste binme yok)
+            H('<div class="hd"><span class="panel-title">Settings</span></div>')
+            H('<div class="hd set-lab">Account currency</div>')
             ccy = seg("Currency", list(bk.DEMO_CCYS), "demo_ccy", cur, fmt=lambda c: f"{CUR[c]}  {c}")
+            H('<div class="hd set-lab">Starting balance of the demo account</div>')
             start = st.radio("Starting balance", list(bk.DEMO_STARTS), key="demo_start",
+                             label_visibility="collapsed",
                              format_func=lambda v: f"{CUR.get(ccy or cur, '')}{int(v):,}".replace(",", "."))
             changed = (int(start) != int(acct["start"])) or ((ccy or cur) != cur)
             used = bool(acct["pos"] or acct["trades"])
@@ -5700,8 +5762,8 @@ def render_demo():
         # ---- izleme listesi
         with st.container(border=True):
             watch = list(acct.get("watch") or [])
-            H(f'<div style="display:flex;justify-content:space-between;align-items:center"><span class="panel-title">'
-              f'My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · '
+            H(f'<div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:10px;'
+              f'flex-wrap:wrap"><span class="panel-title">My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · '
               f'bots set to “Demo watchlist” trade only these</span></div>')
             a1, a2 = st.columns([3.4, 1], vertical_alignment="bottom")
             with a1:
@@ -5756,35 +5818,49 @@ def render_demo():
                   'or let your bots watch.</div>')
         # ---- emir
         with st.container(border=True):
-            H('<span class="panel-title">Order ticket</span><div class="muted small">Filled at once at the last '
-              'live price — no fees, whole account currency conversion at the current EUR/USD rate.</div>')
-            syms = list(dict.fromkeys(list(acct.get("watch") or []) + [r["sym"] for r in val["rows"]]))
-            if not syms:
-                H('<div class="muted small" style="padding:6px 0">Add a company to the watchlist first.</div>')
+            H('<div class="hd"><span class="panel-title">Order ticket</span><div class="muted small" '
+              'style="margin-top:2px">Trade any company — type a ticker or a name. The watchlist is optional. Filled '
+              'at once at the last live price, no fees.</div></div>')
+            o1, o2, o3, o4 = st.columns([1.7, 1.1, 1.0, 1.2], vertical_alignment="bottom")
+            with o1:
+                otxt = st.text_input("Symbol", key="demo_osym", placeholder="Ticker or company — e.g. TTD, Siemens")
+            with o2:
+                side = seg("Side", ["Buy", "Sell"], "demo_oside", "Buy")
+            with o3:
+                qty = st.number_input("Shares", min_value=0.0, value=1.0, step=1.0, key="demo_oqty")
+            with o4:
+                go_ = button("Place order", key="demo_place", primary=True)
+            osym, qs = demo_resolve(otxt)
+            picks = list(dict.fromkeys([r["sym"] for r in val["rows"]] + list(acct.get("watch") or [])))[:12]
+            if picks:
+                H('<div class="picks"><span class="muted">Quick pick</span>' + "".join(
+                    f'<a target="_self" class="{"on" if p_ == osym else ""}" href="{link(demo_pick=p_, f="demo")}">'
+                    f'{esc(p_)}</a>' for p_ in picks) + '</div>')
+            fxm = bk.fx_mult(cur, bk.inst_ccy(osym), eurusd) if osym else None
+            if not (otxt or "").strip():
+                H('<div class="muted small">Type a ticker or a company name to see the live price.</div>')
+            elif not osym:
+                H(f'<div class="muted small">Nothing found for “{esc((otxt or "").strip()[:40])}”.</div>')
+            elif bk.inst_ccy(osym) is None:
+                H(f'<div class="muted small">{esc(osym)} cannot be traded in the demo — only stocks, ETFs and crypto '
+                  f'quoted in USD or EUR.</div>')
+            elif qs.get("src") == "real" and fxm:
+                amt = float(qty or 0) * float(qs["last"]) * fxm
+                have = sum(r["qty"] for r in val["rows"] if r["sym"] == osym and r["owner"] == "manual")
+                H(f'<div class="oquote"><span style="display:flex;align-items:center;gap:9px">{avatar(osym, 26)}<b>'
+                  f'{esc(osym)}</b><span class="muted">{esc(md.company_name(osym) or "")[:40]}</span></span>'
+                  f'<span>Price <b class="mono">{tr(qs["last"])}</b></span>'
+                  f'<span>Order value <b class="mono">{money(amt, cur)}</b></span>'
+                  f'<span>Cash after <b class="mono">'
+                  f'{money(val["cash"] - amt if side == "Buy" else val["cash"] + amt, cur)}</b></span>'
+                  f'<span>You hold <b class="mono">{have:g}</b></span></div>')
             else:
-                o1, o2, o3, o4 = st.columns([1.5, 1.2, 1.1, 1.2], vertical_alignment="bottom")
-                with o1:
-                    if ss.get("demo_osym") not in syms:
-                        ss["demo_osym"] = syms[0]
-                    osym = st.selectbox("Symbol", syms, key="demo_osym")
-                with o2:
-                    side = seg("Side", ["Buy", "Sell"], "demo_oside", "Buy")
-                with o3:
-                    qty = st.number_input("Shares", min_value=0.0, value=1.0, step=1.0, key="demo_oqty")
-                with o4:
-                    go_ = button("Place order", key="demo_place", primary=True)
-                qs = (md.get_quotes([osym]).get(osym) or {})
-                fxm = bk.fx_mult(cur, bk.inst_ccy(osym), eurusd)
-                if qs.get("src") == "real" and fxm:
-                    amt = float(qty or 0) * float(qs["last"]) * fxm
-                    H(f'<div class="muted small">{esc(osym)} at <b class="mono" style="color:{TXT}">{tr(qs["last"])}'
-                      f'</b> → order value <b class="mono" style="color:{TXT}">{money(amt, cur)}</b> · cash after: '
-                      f'<b class="mono" style="color:{TXT}">'
-                      f'{money(val["cash"] - amt if side == "Buy" else val["cash"] + amt, cur)}</b></div>')
+                H(f'<div class="muted small">No live price for {esc(osym)} right now — orders are only filled at '
+                  f'real prices.</div>')
+            if go_:
+                if not osym:
+                    st.warning("Enter a ticker or a company name first.")
                 else:
-                    H(f'<div class="muted small">No live price for {esc(osym)} right now — orders are only filled at '
-                      f'real prices.</div>')
-                if go_:
                     ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty)
                     if ok:
                         st.toast(msg)
@@ -5793,20 +5869,31 @@ def render_demo():
                         st.warning(msg)
         # ---- pozisyonlar + geçmiş
         with st.container(border=True):
-            H(f'<span class="panel-title">Open positions</span> <span class="muted small">{len(val["rows"])}</span>')
+            H(f'<div class="hd" style="display:flex;align-items:center;gap:10px"><span class="panel-title">Open '
+              f'positions</span><span class="pos-n">{len(val["rows"])}</span></div>')
             if val["rows"]:
-                rows = "".join(
-                    f'<tr><td><span style="display:flex;align-items:center;gap:9px">{avatar(r["sym"], 26)}<b>'
-                    f'{esc(r["sym"])}</b></span></td><td style="text-align:left;font-family:inherit">'
-                    f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</td><td>{r["qty"]:g}</td>'
-                    f'<td style="color:{SOFT}">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
-                    f'<td>{money(r["value"], cur)}</td><td style="color:{col(r["pnl"])};font-weight:700">'
-                    f'{"+" if r["pnl"] >= 0 else ""}{money(r["pnl"], cur)}<span class="bsub">{pct(r["pnl_pct"], 1)}'
-                    f'</span></td><td><a class="lnk small" target="_self" href="{link(demo_sell=r["key"], f="demo")}">'
-                    f'Sell all</a></td></tr>' for r in val["rows"])
-                H(f'<div style="overflow-x:auto"><table class="jt bt"><thead><tr><th>Symbol</th><th style="text-align:'
-                  f'left">Opened by</th><th>Qty</th><th>Entry</th><th>Last</th><th>Value</th><th>P/L</th><th></th>'
-                  f'</tr></thead><tbody>{rows}</tbody></table></div>')
+                rows = ""
+                for r in val["rows"]:
+                    pc = UP if r["pnl"] >= 0 else DOWN
+                    rows += (
+                        f'<tr><td class="l"><span class="pos-sym">{avatar(r["sym"], 30)}<span><b>{esc(r["sym"])}</b>'
+                        f'<i>{esc(md.company_name(r["sym"]) or "")[:20]}</i></span></span></td>'
+                        f'<td class="l"><span class="pos-by{" bot" if r["owner"] != "manual" else ""}">'
+                        f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</span></td>'
+                        f'<td>{r["qty"]:g}</td><td class="dim">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
+                        f'<td>{money(r["value"], cur)}</td>'
+                        f'<td><span class="pos-pl" style="color:{pc}">{"+" if r["pnl"] >= 0 else "−"}'
+                        f'{money(abs(r["pnl"]), cur)}</span><span class="pos-pct" style="color:{pc};'
+                        f'background:{rgba(pc, 0.13)}">{pct(r["pnl_pct"], 1)}</span></td>'
+                        f'<td class="act"><a class="ghost" target="_self" '
+                        f'href="{link(demo_sell=r["key"], f="demo")}">Sell all</a></td></tr>')
+                tpc = UP if val["upl"] >= 0 else DOWN
+                H(f'<div style="overflow-x:auto"><table class="pos"><thead><tr><th class="l">Symbol</th>'
+                  f'<th class="l">Opened by</th><th>Qty</th><th>Entry</th><th>Last</th><th>Value</th><th>P / L'
+                  f'</th><th class="act"></th></tr></thead><tbody>{rows}</tbody><tfoot><tr><td class="l" colspan="5">'
+                  f'Total</td><td>{money(val["invested"], cur)}</td><td><span class="pos-pl" style="color:{tpc}">'
+                  f'{"+" if val["upl"] >= 0 else "−"}{money(abs(val["upl"]), cur)}</span></td><td class="act"></td>'
+                  f'</tr></tfoot></table></div>')
             else:
                 H('<div class="muted" style="padding:8px 0">No open positions.</div>')
             trs = list(reversed(acct.get("trades") or []))[:25]
@@ -7759,21 +7846,6 @@ def yield_fig(divst, tnx_w, height=260):
     return _layout(fig, height, legend=True, margin=dict(l=4, r=8, t=26, b=4))
 
 
-def growth_proj_fig(rows, year0, rev0, height=260):
-    yrs = [str(year0)] + [str(year0 + r_["k"]) for r_ in rows]
-    revs = [rev0 / 1e9] + [r_["rev"] / 1e9 for r_ in rows]
-    fig = go.Figure(go.Bar(x=yrs, y=revs, name="Revenue (bn)", marker_color=rgba(ACCENT, 0.6),
-                           hovertemplate="%{x}: %{y:.1f} bn<extra></extra>"))
-    fig.add_trace(go.Scatter(x=yrs[1:], y=[r_["margin"] for r_ in rows], name="FCF margin", yaxis="y2",
-                             mode="lines+markers", line=dict(color=UP, width=2),
-                             hovertemplate="%{x}: %{y:.1f}%<extra></extra>"))
-    fig.update_layout(yaxis2=dict(overlaying="y", side="right", showgrid=False, ticksuffix="%",
-                                  tickfont=dict(color=MUT, size=10)), legend=dict(orientation="h", y=1.16, x=0))
-    fig = _layout(fig, height, legend=True, margin=dict(l=36, r=40, t=26, b=4))
-    fig.update_layout(yaxis=dict(side="left"))
-    return fig
-
-
 def debt_fig(f, height=260):
     yrs = [str(y) for y in f["years"]]
     fig = go.Figure()
@@ -7922,17 +7994,6 @@ def render_value_model(b, sym):
             if any(m.get("excluded") for m in ms):
                 H('<div class="muted small" style="margin-top:6px">“excluded”: the result is more than 6× away '
                   'from today\'s price, which usually means a broken input — it is not used in the blend.</div>')
-            if vt == "growth" and extra.get("reverse"):
-                rv = extra["reverse"]
-                txt = (f'Today\'s price implies starting revenue growth of <b>{tr(rv["growth"], 1)}%</b> (fading to '
-                       f'{tr(en.G_TERM, 0)}% over 10 years) at a {tr(extra.get("target_margin"), 0)}% FCF margin.')
-                if rv.get("capped") == "above":
-                    txt = f'Today\'s price implies more than {tr(rv["growth"], 0)}% starting revenue growth.'
-                elif rv.get("capped") == "below":
-                    txt = "Today's price implies shrinking revenue."
-                if en._ok(extra.get("g0")):
-                    txt += f' Expected growth right now: {tr(extra["g0"], 1)}%.'
-                H(f'<div class="gtext">{txt}</div>')
             if vt == "defensive" and not (b.get("divst") or {}).get("d0"):
                 H('<div class="muted small" style="margin-top:6px">No dividend — the dividend methods are skipped.</div>')
     with c4:
@@ -7962,11 +8023,6 @@ def render_value_model(b, sym):
                 H('<div class="panel-title">Dividend Yield vs Its History</div><div class="muted small">Trailing '
                   '12-month yield · higher than usual = cheaper · dotted line: US 10Y yield</div>')
                 plot(yield_fig(ds, b.get("tnx_w")), key="v_type")
-    elif vt == "growth" and extra.get("path"):
-        with st.container(border=True):
-            H('<div class="panel-title">Target-Margin DCF Path</div><div class="muted small">Projected revenue '
-              'and free-cash-flow margin used in the DCF</div>')
-            plot(growth_proj_fig(extra["path"], f["years"][-1], en._last_ok(f["revenue"])), key="v_type")
     elif vt == "capital":
         with st.container(border=True):
             H('<div class="panel-title">Profits vs Debt</div><div class="muted small">EBITDA and total debt by '
@@ -8456,22 +8512,15 @@ def render_value_peers(b, sym):
                   f'{tr(band["high"], 1)}x, median {tr(band["median"], 1)}x '
                   f'({min(band["years"])}–{max(band["years"])}).</div>')
     names = [t for t in [sym] + list(peers) if vals.get(t)]
-    c3, c4 = st.columns(2, gap="medium")
-    with c3:
-        with st.container(border=True):
-            H('<div class="panel-title">Forward P/E Comparison</div><div class="muted small">Dashed '
-              'line peer median · blue is the selected company</div>')
-            order = sorted(names, key=lambda t: vals[t].get("fwd_pe") if en._ok(vals[t].get("fwd_pe")) else 1e9)
-            plot(bar_fig(order, [("Fwd P/E", [vals[t].get("fwd_pe") for t in order],
-                                  [ACCENT if t == sym else "#4A515C" for t in order])],
-                         height=240, suffix="x", hline=pm.get("fwd_pe"), hl_label="median",
-                         legend=False, text=True), key="v_pfwd")
-    with c4:
-        with st.container(border=True):
-            H('<div class="panel-title">Growth and Net Margin</div><div class="muted small">Percent</div>')
-            plot(bar_fig(names, [("Fwd EPS growth", [vals[t].get("growth") for t in names], ACCENT),
-                                 ("Net margin", [vals[t].get("net_margin") for t in names], "#6EE7B7")],
-                         height=240, suffix="%"), key="v_pgm")
+    # v4.4: "Growth and Net Margin" kaldırıldı — ileriye dönük F/K karşılaştırması tam genişlikte
+    with st.container(border=True):
+        H('<div class="panel-title">Forward P/E Comparison</div><div class="muted small">Dashed '
+          'line peer median · blue is the selected company</div>')
+        order = sorted(names, key=lambda t: vals[t].get("fwd_pe") if en._ok(vals[t].get("fwd_pe")) else 1e9)
+        plot(bar_fig(order, [("Fwd P/E", [vals[t].get("fwd_pe") for t in order],
+                              [ACCENT if t == sym else "#4A515C" for t in order])],
+                     height=260, suffix="x", hline=pm.get("fwd_pe"), hl_label="median",
+                     legend=False, text=True), key="v_pfwd")
 
 
 def render_value_cycle(b):
