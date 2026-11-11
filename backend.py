@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "4.1"
+BACKEND_VERSION = "4.2"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -373,7 +373,7 @@ def send_push(topic, title, body, url=None, tags=None, priority=3):
 # ======================================================================
 NOTIFY_DEFAULT = {"on": True, "push": False, "topic": "", "email": False, "browser": True,
                   "price": True, "earn_up": True, "earn_res": True, "macro": True, "macro_impact": "High",
-                  "ai": True}
+                  "ai": True, "hype": True}
 
 
 def notify_prefs(prof):
@@ -684,19 +684,69 @@ def check_macro(md, state, email, prof, prefs):
     return n
 
 
+_BUZZ = {"i": 0, "last": {}}
+BUZZ_PER_TICK = 2            # her turda kaç izleme listesi hissesi taranır (sırayla, kaynaklara yük bindirmeden)
+
+
+def check_buzz(md, state, users):
+    """v4.2: izleme listelerindeki hisselerin haber + topluluk nabzını arka planda sırayla tarar (sayfalar sıcak
+    önbellekle açılır) ve hype "Viral" olduğunda isteyen kullanıcılara bir kez haber verir."""
+    if not hasattr(md, "get_market_pulse"):
+        return 0
+    syms = []
+    for email, prof, prefs in users:
+        for s_ in (prof.get("watchlist") or [])[:40]:
+            if s_ and not any(c in s_ for c in "=^") and not s_.endswith("-USD") and s_ not in syms:
+                syms.append(s_)
+    if not syms:
+        return 0
+    n = 0
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    for _ in range(min(BUZZ_PER_TICK, len(syms))):
+        sym = syms[_BUZZ["i"] % len(syms)]
+        _BUZZ["i"] += 1
+        try:
+            mp = md.get_market_pulse(sym)
+        except Exception as ex:
+            _MON["err"] = f"check_buzz: {type(ex).__name__}: {ex}"[:200]
+            continue
+        hy = mp.get("hype") or {}
+        _BUZZ["last"][sym] = (time.time(), hy.get("score"), (mp.get("overall") or {}).get("label"))
+        if hy.get("level") != "Viral":
+            continue
+        ov = mp.get("overall") or {}
+        why = "; ".join(d["text"] for d in (hy.get("drivers") or [])[:3])
+        for email, prof, prefs in users:
+            if not prefs.get("hype") or sym not in (prof.get("watchlist") or []):
+                continue
+            if notify_once(state, f"hype:{email}:{sym}:{day}", email, prefs, "hype",
+                           f"{sym}: viral buzz (hype {hy.get('score')}/100)",
+                           f"{sym} is drawing unusual attention: {why}. Overall sentiment: "
+                           f"{ov.get('label', '—')} ({ov.get('score', 0):+.0f}).",
+                           sym=sym, tags=["fire"], priority=4):
+                n += 1
+    return n
+
+
 def monitor_tick(md):
     """Tüm kullanıcılar için bir tur. Döner: gönderilen bildirim sayısı."""
     state = _state()
     total = 0
+    users = []
     for email, prof in profiles().items():
         prefs = notify_prefs(prof)
         if not prefs.get("on"):
             continue
+        users.append((email, prof, prefs))
         for fn in (check_prices, check_earnings, check_macro):
             try:
                 total += fn(md, state, email, prof, prefs)
             except Exception as ex:      # bir kaynak bozulsa da diğerleri çalışsın
                 _MON["err"] = f"{fn.__name__}: {type(ex).__name__}: {ex}"[:200]
+    try:
+        total += check_buzz(md, state, users)
+    except Exception as ex:
+        _MON["err"] = f"check_buzz: {type(ex).__name__}: {ex}"[:200]
     if state.pop("_dirty", False):
         _state_save(state)
     _MON["ticks"] += 1
