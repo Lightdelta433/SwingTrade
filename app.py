@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.5"
+APP_VERSION = "4.6"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -908,7 +908,12 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 a.opp-row,a.opp-row:hover,a.opp-row:visited,a.opp-row:active{text-decoration:none!important;color:#ECEEF1!important}
 a.opp-row *{text-decoration:none!important}
 .aist{font-size:10.5px;font-weight:800;border-radius:5px;padding:2px 7px;white-space:nowrap}
-.funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:10px 0 4px 0;width:100%}
+.funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:6px 0 16px 0;width:100%}
+/* v4.6 — rejim uyarısı: rozetlerin altında, alttaki kutulardan 16 px uzakta */
+.regime-warn{display:flex;align-items:flex-start;gap:10px;margin:4px 0 16px 0;padding:12px 16px;border-radius:14px;
+ font-size:13px;line-height:1.55;color:#F5D48A;background:rgba(245,181,68,.10);border:1px solid rgba(245,181,68,.40);
+ box-sizing:border-box;width:100%;overflow-wrap:break-word}
+.regime-warn .rw-ic{flex:none;font-size:15px;line-height:1.35;color:#F5B544}
 .funnel div{background:#0C0D10;border:1px solid #22262D;border-radius:12px;padding:9px 13px;font-size:12px;
  min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:900px){.funnel{grid-template-columns:repeat(3,minmax(0,1fr))}}
@@ -1082,10 +1087,19 @@ a.sent-post .sp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;whit
 .pfoot .pf-copy{grid-column:1/-1;border-top:1px solid #1C1F25;padding-top:8px;font-size:11px}
 /* v4.0 — compact layout: smaller vertical gaps between boxes (most visible on laptops) */
 .block-container{padding-top:2.4rem !important;padding-bottom:1.6rem !important}
-[data-testid="stVerticalBlock"]{gap:.6rem !important}
-[data-testid="stHorizontalBlock"]{gap:.7rem !important}
+[data-testid="stHorizontalBlock"]{gap:.75rem !important}
 [data-testid="stExpander"] details{margin:0}
-[data-testid="stPlotlyChart"]{margin-bottom:-6px}
+[data-testid="stPlotlyChart"]{margin-bottom:0}
+/* v4.6 — üst üste binmeyi kökten önle: Streamlit her markdown kutusuna negatif alt boşluk verir (paragraf
+   boşluğunu telafi için). HTML bloklarında paragraf yok → sonraki öğe yukarı çekilir ve sıkı aralıkla içeri girer.
+   Kutu boşluğu sıfır + son paragrafın boşluğu sıfır = öğeler arası mesafe her yerde tam olarak blok aralığı. */
+[data-testid="stMarkdownContainer"],[data-testid="stCaptionContainer"]{margin-bottom:0 !important}
+[data-testid="stMarkdownContainer"]>p:last-child,[data-testid="stMarkdownContainer"]>div:last-child>p:last-child,
+[data-testid="stCaptionContainer"]>p:last-child{margin-bottom:0 !important}
+[data-testid="stMarkdownContainer"]{overflow-wrap:break-word}
+[data-testid="stColumn"],[data-testid="column"]{min-width:0}
+[data-testid="stVerticalBlock"]{gap:.75rem !important}
+[data-testid="stCaptionContainer"]{margin-top:2px}
 .sec-head{margin:2px 0 6px 0}
 .page-title{font-size:26px;margin:0 0 2px 0}
 .hdr-line{margin:4px 0 8px 0}
@@ -1100,7 +1114,7 @@ a.sent-post .sp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;whit
 [data-testid="stColumn"]>[data-testid="stVerticalBlock"]>[data-testid="stLayoutWrapper"]:last-child>[data-testid="stVerticalBlock"]{flex:1 1 auto}
 @media (max-height:900px),(max-width:1600px){
  .block-container{padding-top:1.9rem !important}
- [data-testid="stVerticalBlock"]{gap:.5rem !important}
+ [data-testid="stVerticalBlock"]{gap:.65rem !important}
  .page-title{font-size:23px}
  .tile{padding:8px 10px}
 }
@@ -1253,6 +1267,27 @@ table.pos th.act{border-left:0}
 a.ghost{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif;font-size:11.5px;font-weight:700;color:#8D96A5;
  border:1px solid #2A2F37;border-radius:8px;padding:5px 9px;text-decoration:none;transition:all .15s ease;white-space:nowrap}
 a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(248,113,113,.08)}
+/* v4.6 — Demo ve bot bölümü: öğeler arasında belirgin, ölçülü boşluk */
+.st-key-pg_demo,.st-key-pg_bots,.st-key-pg_demo [data-testid="stVerticalBlock"],
+.st-key-pg_bots [data-testid="stVerticalBlock"]{gap:1.05rem !important}
+.st-key-pg_demo [data-testid="stHorizontalBlock"],.st-key-pg_bots [data-testid="stHorizontalBlock"]{gap:1rem !important}
+.st-key-pg_demo [data-testid="stVerticalBlockBorderWrapper"]>div,
+.st-key-pg_bots [data-testid="stVerticalBlockBorderWrapper"]>div{padding-top:4px;padding-bottom:6px}
+.st-key-pg_demo [data-testid="stWidgetLabel"],.st-key-pg_bots [data-testid="stWidgetLabel"]{margin-bottom:6px !important}
+.st-key-pg_demo .set-lab{padding:2px 0 0 0}
+.st-key-pg_demo .demo-eq{margin:10px 0 6px 0}
+.st-key-pg_demo .demo-kv{padding:9px 0}
+.st-key-pg_demo .demo-tiles{gap:12px;margin-bottom:2px}
+.st-key-pg_demo .picks{gap:8px;margin:2px 0}
+.st-key-pg_demo .oquote{padding:11px 14px}
+.st-key-pg_demo table.pos td{padding-top:15px;padding-bottom:15px}
+.st-key-pg_demo table.jt td,.st-key-pg_bots table.jt td{padding-top:11px;padding-bottom:11px}
+.st-key-pg_demo .demo-warn{margin:4px 0}
+.st-key-pg_demo [role="radiogroup"]{gap:8px 10px !important}
+.st-key-pg_demo .hd,.st-key-pg_bots .hd{padding-bottom:2px}
+.st-key-pg_bots .bp-k{margin:6px 0 8px 0}
+.st-key-pg_bots .blog{padding:7px 0}
+.st-key-pg_bots .alloc{margin-top:12px}
 .demo-warn{font-size:12px;line-height:1.45;border-radius:12px;padding:9px 11px;margin:6px 0;color:#F5B544;
  background:rgba(245,181,68,.10);border:1px solid rgba(245,181,68,.35)}
 </style>
@@ -1563,6 +1598,8 @@ THEMES = {
 # Beyaz temada Streamlit'in kendi bileşenleri (koyu temel tema) açık renge çekilir
 LIGHT_CSS = """
 .stApp,[data-testid="stAppViewContainer"]{color:#14171C}
+.regime-warn{color:#7A4E00 !important;background:#FFF6E0 !important;border-color:#F0C766 !important}
+.regime-warn .rw-ic{color:#B7791F !important}
 [data-testid="stMarkdownContainer"],[data-testid="stMarkdownContainer"] p,[data-testid="stCaptionContainer"],
 [data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] p,label,.stRadio label,.stCheckbox label{color:#2E3440}
 [data-testid="stCaptionContainer"]{color:#5F6878 !important}
@@ -3047,7 +3084,7 @@ def value_cfg(b, sym):
                                     on_change=_vg_changed, args=(sym, d["fy"], k),
                                     help=f"Default {tr(g_def, 1)}% — {G_SRC.get(d['src'], d['src'])}.")
                     src_ = "your input" if ov is not None else G_SRC.get(d["src"], d["src"])
-                    H(f'<div class="muted" style="font-size:10.5px;margin-top:-6px">{esc(src_)}</div>')
+                    H(f'<div class="muted" style="font-size:10.5px;margin-top:2px">{esc(src_)}</div>')
             with gc[-1]:
                 H('<div style="height:26px"></div>')
                 st.button("Reset", key=f"vg_reset_{sym}", on_click=_vg_reset, args=(sym,),
@@ -4395,7 +4432,7 @@ def render_longterm():
             plot(gauge(fg["value"], [{"range": [0, 25], "color": DOWN}, {"range": [25, 45], "color": "#F0883E"},
                                      {"range": [45, 55], "color": "#D9C441"}, {"range": [55, 75], "color": "#56B06A"},
                                      {"range": [75, 100], "color": UP}], 240, number=True), key="fg_gauge")
-            H(f'<div style="text-align:center;font-size:17px;font-weight:700;margin-top:-10px">{esc(fg["label"])}</div>'
+            H(f'<div style="text-align:center;font-size:17px;font-weight:700;margin-top:4px">{esc(fg["label"])}</div>'
               f'<div style="background:#12171f;border-left:3px solid {WARN};border-radius:8px;padding:12px 14px;'
               f'margin-top:12px;color:#c9d1d9;font-style:italic">“{esc(fg["quote"])}”<br><span class="muted" '
               f'style="font-style:normal">— {esc(fg["quote_author"])}</span></div>')
@@ -5205,9 +5242,10 @@ def render_ai_opps():
       f'flex-wrap:wrap"><span class="boxlbl">Regime filter</span>{_rchip("S&amp;P 500", sp)}{_rchip("Nasdaq", qq)}'
       f'</div><div class="muted small" style="flex:1 1 300px">The strategy only looks for longs while both indices '
       f'are above their 50-day EMA.</div></div>')
-    if not ok:
-        st.warning("At least one index is below its 50-day EMA — the strategy doesn't look for longs in this regime. "
-                   "The list below is shown for information only.")
+    if not ok:      # v4.6: kendi HTML bandı — rozetlere ve alttaki kutulara asla binmez
+        H('<div class="regime-warn"><span class="rw-ic">⚠</span><span>At least one index is below its 50-day '
+          'EMA — the strategy doesn\'t look for longs in this regime. The list below is shown for information '
+          'only.</span></div>')
 
     H(f'<div class="funnel"><div>Universe<b>{steps.get("evren", 0)}</b></div>'
       f'<div>Price ≥ $3<b>{steps.get("price", 0)}</b></div>'
@@ -5681,13 +5719,20 @@ def render_bots_section(hist=None):
     H(f'<div class="sec-head" style="margin-top:14px"><span class="sec-no">AUTO</span><h3>Trading bots</h3>'
       f'<span class="muted small">automatic buying and selling in the demo account — paper money, live prices'
       f'</span></div>')
-    bots_live()
+    with st.container(key="pg_bots"):
+        bots_live()
     if hist is not None:
         with st.expander("Manual trade journal", expanded=False):
             render_journal(hist)
 
 
 def render_demo():
+    """Demo reiter — v4.6: tüm içerik tek bir anahtarlı kapta (daha ferah aralıklar yalnızca burada)."""
+    with st.container(key="pg_demo"):
+        _render_demo_body()
+
+
+def _render_demo_body():
     """Demo reiter: başlangıç tutarı, kendi izleme listesi, elle emir, pozisyonlar ve geçmiş."""
     acct, val, eurusd = demo_state()
     cur = acct["ccy"]
@@ -8382,7 +8427,7 @@ def render_peer_editor(b, sym):
         v = b["vals"].get(t) or {}
         nm = v.get("name") or md.company_name(t)
         names.append(f"{t} ({nm})" if nm and nm != t else t)
-    H(f'<div class="muted small" style="margin:-4px 0 6px">Peer source: <b>{esc(b.get("peer_src") or "—")}</b>'
+    H(f'<div class="muted small" style="margin:0 0 6px">Peer source: <b>{esc(b.get("peer_src") or "—")}</b>'
       f' · {esc(", ".join(names)) or "—"}</div>')
     with st.expander("Edit peers"):
         H('<div class="muted small">Separate with commas. Foreign exchanges use the Yahoo symbol: SK Hynix '
