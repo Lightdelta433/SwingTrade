@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.1"
+ENGINE_VERSION = "4.2"
 NAN = float("nan")
 
 
@@ -4404,6 +4404,7 @@ def quarter_path(path, q=None, px=None):
 # v3.9 — Mali yıl → çeyrek finansallar (SEC dönemlerinden ya da Yahoo çeyreklerinden)
 # ======================================================================
 Q_METRICS = ["revenue", "gross", "op_income", "net_income", "eps", "ocf", "capex"]
+Q_BS = ["assets", "equity", "cash", "debt"]          # v4.2: çeyrek sonu bilanço kalemleri
 
 
 def _ts(x):
@@ -4420,8 +4421,10 @@ def fiscal_quarters(fy_ends, sec=None, yq=None, qest=None, cur_fy_end=None):
     Q4 = yıllık − ilk 9 ay), Yahoo (son ~5 çeyrek). İçinde bulunulan mali yılda raporlanmamış çeyrekler
     analist beklentisiyle (EPS, ciro) 'expected' olarak işaretlenir.
     Döner: {fy: {"start", "end", "status", "quarters": [...], "src"}}"""
+    sec_bs = (sec or {}).get("bs") or {}
     sec = (sec or {}).get("series") or {}
     yq = (yq or {}).get("series") or {}
+    bs_sec = {m: {_ts(e): v for e, v in (sec_bs.get(m) or {}).items()} for m in Q_BS}
     ends = sorted({_ts(e) for e in fy_ends if e is not None})
     if cur_fy_end is not None:
         ce = _ts(cur_fy_end)
@@ -4494,6 +4497,19 @@ def fiscal_quarters(fy_ends, sec=None, yq=None, qest=None, cur_fy_end=None):
                         break
             for k, v in vals.items():
                 qs[k - 1][m] = float(abs(v) if m == "capex" else v)
+        for q in qs:                         # bilanço: çeyrek sonu değeri (SEC; yoksa Yahoo)
+            for m in Q_BS:
+                v = next((x for e_, x in bs_sec[m].items() if abs((e_ - q["end"]).days) <= 12), None)
+                if v is None:
+                    v = next((x for e_, x in (yq.get(m) or {}).items() if abs((_ts(e_) - q["end"]).days) <= 20), None)
+                    if v is not None:
+                        used_yf = True
+                else:
+                    used_sec = True
+                if v is not None:
+                    q[m] = float(v)
+            if _ok(q.get("debt")) and _ok(q.get("cash")):
+                q["net_debt"] = q["debt"] - q["cash"]
         for q in qs:
             if any(m in q for m in Q_METRICS):
                 q["src"] = "reported"
@@ -4504,6 +4520,8 @@ def fiscal_quarters(fy_ends, sec=None, yq=None, qest=None, cur_fy_end=None):
                         q[nm] = q[m] / r_ * 100
             if _ok(q.get("ocf")):
                 q["fcf"] = q["ocf"] - (q.get("capex") or 0.0)
+                if _ok(r_) and r_:
+                    q["fcf_m"] = q["fcf"] / r_ * 100
             q["derived"] = sorted(q["derived"])
         status = "in progress" if fe > pd.Timestamp.now().normalize() else "reported"
         out[int(fe.year)] = {"start": fs, "end": fe, "status": status, "quarters": qs,
@@ -4531,12 +4549,19 @@ def fiscal_quarters(fy_ends, sec=None, yq=None, qest=None, cur_fy_end=None):
     # QoQ / YoY
     flat = [(fy, q) for fy in sorted(out) for q in out[fy]["quarters"]]
     for i, (fy, q) in enumerate(flat):
-        for m in ("revenue", "eps", "net_income"):
+        for m in ("revenue", "eps", "net_income", "gross", "op_income", "ocf", "capex", "fcf",
+                  "assets", "equity", "cash", "debt"):
             v = q.get(m)
             pv = flat[i - 1][1].get(m) if i else None
             yv = flat[i - 4][1].get(m) if i >= 4 else None
             q[m + "_qoq"] = (v / pv - 1) * 100 if (_ok(v) and _ok(pv) and pv > 0) else None
             q[m + "_yoy"] = (v / yv - 1) * 100 if (_ok(v) and _ok(yv) and yv > 0) else None
+        for m in ("gross_m", "op_m", "net_m", "fcf_m", "net_debt"):     # puan / mutlak fark
+            v = q.get(m)
+            pv = flat[i - 1][1].get(m) if i else None
+            yv = flat[i - 4][1].get(m) if i >= 4 else None
+            q[m + "_qoq"] = (v - pv) if (_ok(v) and _ok(pv)) else None
+            q[m + "_yoy"] = (v - yv) if (_ok(v) and _ok(yv)) else None
     return out
 
 
