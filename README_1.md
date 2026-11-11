@@ -1,3 +1,27 @@
+# Pulse — Market Dashboard (Streamlit) · v4.6
+
+## Neu in v4.6 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Keine neuen Secrets.
+
+* **Ursache der „klebenden“ / überlappenden Elemente behoben (alle Seiten).** Streamlit gibt jedem
+  Markdown-Block einen negativen unteren Rand (−1 rem), um den Absatzabstand auszugleichen. Pulse baut fast
+  alles aus HTML-Blöcken ohne Absatz – dadurch wurde das jeweils nächste Element nach oben gezogen, und mit
+  dem engen Abstand aus v4.0 ragte es einige Pixel hinein (Kennzahlen-Leiste in den Tabellenkopf, Banner in
+  die Badges, Text in Eingabefelder). Jetzt ist der Rand neutralisiert: Zwischen zwei Elementen liegt überall
+  genau der Blockabstand (0,75 rem, auf Laptops 0,65 rem).
+  Außerdem entfernt: drei Stellen mit negativem Abstand (Hinweiszeile unter den Wachstums-Eingaben im
+  Value-Path, Fear-&-Greed-Beschriftung unter dem Tacho, „Peer source“ in Valuation) und der negative Rand
+  unter allen Diagrammen. Lange Texte brechen in schmalen Spalten um, statt in Nachbar-Buttons zu laufen.
+* **Demo-Bereich (und Bot-Bereich in Short Term) luftiger:** Abstand zwischen allen Elementen 1,05 rem,
+  Beschriftungen haben Abstand zu ihren Feldern, Zeilen in Konto-Box und Tabellen sind höher.
+* **Short Term – Regime-Banner:** eigener Block direkt **unter** den Regime-Filter-Badges (S&P 500, Nasdaq),
+  16 px Abstand nach unten, Text bricht sauber um und bleibt im Banner.
+* **Short Term – Kennzahlen-Leiste:** 16 px Abstand zum Tabellenkopf (SYMBOL, PATTERN, PRICE …).
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.5
 
 ## Neu in v4.5 (Deutsch)
