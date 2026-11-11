@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.3"
+ENGINE_VERSION = "4.4"
 NAN = float("nan")
 
 
@@ -3521,21 +3521,8 @@ def growth_models(sym, f, r, an, d, vals, peers, wacc, price):
     sc = (r or {}).get("share_chg", NAN)
     dil = float(min(4.0, max(0.0, sc / max(1, f["n"] - 1)))) if _ok(sc) else 0.0
     if _ok(rev0) and _ok(sh):
-        base = target_margin_dcf(rev0, g0, m0, m_t, wacc, sh, nd, dil=dil)
-        lo = target_margin_dcf(rev0, (g0 if _ok(g0) else 10) * 0.7, m0, m_t - 6, wacc, sh, nd, dil=dil)
-        hi = target_margin_dcf(rev0, (g0 if _ok(g0) else 10) * 1.3, m0, m_t + 6, wacc, sh, nd, dil=dil)
-        if base:
-            extra["path"] = base["rows"]
-            extra["target_margin"] = m_t
-            extra["g0"] = g0
-            ms.append(_method("tdcf", "Target-margin DCF", lo["value"] if lo else NAN, base["value"],
-                              hi["value"] if hi else NAN,
-                              "Revenue %s growing %s%% fading to %s%% over 10 yrs; FCF margin %s%% → %s%% by "
-                              "year 7; WACC %s%%%s" % (_bn(rev0), fmt_num(g0, 1), fmt_num(G_TERM, 0),
-                                                       fmt_num(m0, 1), fmt_num(m_t, 0), fmt_num(wacc, 1),
-                                                       ("; dilution %s%%/yr" % fmt_num(dil, 1)) if dil else ""),
-                              0.50))
-            extra["reverse"] = reverse_target_dcf(price, rev0, m0, m_t, wacc, sh, nd, dil)
+        # v4.4: "Target-margin DCF" yöntemi (ve fiyatın ima ettiği büyüme metni) kullanıcı isteğiyle kaldırıldı;
+        # büyüme tipinde değer artık rakiplere göre EV/Satış doğrusundan gelir.
         reg = ev_sales_regression(sym, vals, peers, rev0, nd, sh)
         if reg and reg["method"]:
             ms.append(reg["method"])
