@@ -27,7 +27,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "4.1"
+CHART_VERSION = "4.2"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -463,7 +463,7 @@ def data_token(sym, tf, lb=None):
 # ----------------------------------------------------------------------
 # Bileşen
 # ----------------------------------------------------------------------
-UI_VERSION = "4.1"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+UI_VERSION = "4.2"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
 
 
 def frontend_version():
@@ -492,13 +492,16 @@ def missing_frontend():
 
 
 def render_chart(payload, draws, alerts, chart_type="candles", height=640, rev=0, key="chart", light=False,
-                 ov=None):
+                 ov=None, fit=0.0, hmax=0, pmin=0):
     """Grafiği çizer. Kullanıcı bir şey değiştirdiyse olay sözlüğü döndürür.
-    ov: isteğe bağlı katman (formasyon çizgileri, order block'lar, hacim işaretleri, dark pool seviyeleri)."""
+    ov: isteğe bağlı katman (formasyon çizgileri, order block'lar, hacim işaretleri, dark pool seviyeleri, plan seviyeleri).
+    fit/hmax/pmin (v4.2): yükseklik görünür pencerenin `fit` oranına büyür, fiyat paneli en az `pmin` px kalır,
+    üst sınır `hmax` px."""
     comp = _component()
     args = dict(payload)
     args.update({"draws": draws or [], "alerts": alerts or [], "type": chart_type,
-                 "height": int(height), "rev": int(rev), "light": bool(light), "ov": ov})
+                 "height": int(height), "rev": int(rev), "light": bool(light), "ov": ov,
+                 "fit": float(fit or 0), "hmax": int(hmax or 0), "pmin": int(pmin or 0)})
     if comp is None:
         html = open(_INDEX, encoding="utf-8").read() if os.path.isfile(_INDEX) else ""
         if html:
