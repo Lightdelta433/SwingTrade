@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -807,6 +807,14 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 .grow .gv{width:26px;text-align:right;font-family:ui-monospace,monospace;color:#8D96A5;flex:none}
 .gtext{font-size:12.5px;line-height:1.68;color:#C4CAD4;margin-top:11px;padding-top:11px;
  border-top:1px solid #1C1F25}
+/* v4.5 — fırsat kartı: kural metni ile "Why this opportunity is listed" arasında net boşluk */
+.gtext.plan-rule{margin:12px 0 4px 0}
+[data-testid="stMarkdownContainer"]:has(.plan-rule){margin-bottom:10px !important}
+[class*="st-key-aiwhy_"]{width:100%;margin:2px 0 12px 0}
+[class*="st-key-aiwhy_"] [data-testid="stExpander"],
+[class*="st-key-aiwhy_"] [data-testid="stExpander"] details{width:100%;margin:0 !important}
+[class*="st-key-aiwhy_"] [data-testid="stExpander"] summary{padding-top:9px;padding-bottom:9px}
+[class*="st-key-aiwhy_"] .greason{margin:2px 0 4px 0}
 .gtext b{color:#ECEEF1}
 /* değer analizi */
 .vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
@@ -5307,10 +5315,12 @@ def render_ai_detail(r):
               f'<span class="v" style="font-size:12px">{esc(p["stop_src"])}</span></div>'
               f'<div class="planrow"><span class="l">TP1 based on</span>'
               f'<span class="v" style="font-size:12px">{esc(p["tp1_src"])}</span></div>')
-            H(f'<div class="gtext" style="margin-top:10px">{esc(p["rule"])}</div>')
+            H(f'<div class="gtext plan-rule">{esc(p["rule"])}</div>')
+        # v4.4: aklama kendi satırında; açıldığında alttaki düğme aşağı kayar, metne binmez
         if r.get("summary"):
-            with st.expander("Why this opportunity is listed"):
-                H(f'<div class="greason">{esc(r["summary"])}</div>')
+            with st.container(key=f'aiwhy_{r["ticker"]}'):
+                with st.expander("Why this opportunity is listed"):
+                    H(f'<div class="greason">{esc(r["summary"])}</div>')
         if p and button("Add to trade journal", key=f'aij_{r["ticker"]}', primary=True):
             if ss.journal is None:
                 ss.journal = []
@@ -7928,12 +7938,7 @@ def render_value_model(b, sym):
               f'<div class="muted small">US 10Y yield{" (live)" if b.get("rf_src") == "real" else " (default — live rate unavailable)"} '
               f'+ beta × equity risk premium · WACC {tr(wacc, 1)}% '
               f'({tr(wc["we"] * 100, 0)}% equity, debt at {tr(wc["kd"], 1)}% before tax)</div>')
-    # yöntemler
-    st_ = vp_state(b, sym)
-    kw = vp_kwargs(b, st_)
-    path = None
-    if en._ok(b.get("eps_last")):
-        path = build_path(b, kw, price)
+    # yöntemler: karışık adil değeri besler; v4.4: "Methods" tablosu ve "Market-implied path" satırı kaldırıldı
     extra, pbpos, ms, checks = {}, None, [], []
     if vt == "cyclical":
         ms.append(en.normalized_earnings(f, an, en._shares(f, d), ke))
@@ -7947,13 +7952,6 @@ def render_value_model(b, sym):
     else:
         ms, checks, extra = en.capital_models(f, r, d, b["pm"], b["px"], wacc, price, an)
     ms = [m for m in ms if m]
-    if path:
-        r1 = path["rows"][1] if len(path["rows"]) > 1 else path["rows"][0]
-        pm_ = en._method("path", f"Market-implied path ({r1['label']})", r1["value"]["bear"], r1["value"]["base"],
-                         r1["value"]["bull"], f"{r1['label']} EPS × today's multiple — reference only, "
-                         "not in the blend", 0.0)
-        if pm_:
-            ms.append(pm_)
     bl = en.blend(ms, price)
     with c2:
         with st.container(border=True):
@@ -7969,38 +7967,19 @@ def render_value_model(b, sym):
                 if en._ok(an.get("target_mean")):
                     H(f'<div class="muted small" style="margin-top:6px">Analyst mean target {tr(an["target_mean"], dec)}'
                       f' ({pct((an["target_mean"] / price - 1) * 100)})</div>')
+                if vt == "defensive" and not (b.get("divst") or {}).get("d0"):
+                    H('<div class="muted small" style="margin-top:6px">No dividend — the dividend methods are '
+                      'skipped.</div>')
             elif any(m.get("excluded") for m in ms):
                 H('<div class="muted" style="margin-top:6px">Every method landed more than 6× away from today\'s '
                   'price, which points to unreliable inputs for this stock — no blended value is shown.</div>')
             else:
                 H('<div class="muted" style="margin-top:6px">Not enough data for the methods of this type. '
                   'Try another model type above.</div>')
-    c3, c4 = st.columns([1.3, 1], gap="medium")
-    with c3:
-        with st.container(border=True):
-            H('<div class="panel-title">Methods</div>')
-            rows = ""
-            for m in ms:
-                up = (m["base"] / price - 1) * 100
-                rows += (f'<tr><td><b>{esc(m["name"])}</b><div class="muted small" style="white-space:normal;'
-                         f'max-width:330px">{esc(m["note"])}</div></td>'
-                         f'<td style="color:{SOFT}">{tr(m["low"], dec)}</td><td>{tr(m["base"], dec)}</td>'
-                         f'<td style="color:{SOFT}">{tr(m["high"], dec)}</td>'
-                         f'<td style="color:{col(up)}">{pct(up)}</td>'
-                         f'<td style="color:{MUT}">{"excluded" if m.get("excluded") else (str(bl["weights"].get(m["name"], 0)) + "%") if (bl and m["weight"]) else "—"}</td></tr>')
-            H(f'<div style="overflow-x:auto"><table class="ptab"><thead><tr><th>Method</th><th>Low</th><th>Base</th>'
-              f'<th>High</th><th>vs price</th><th>Weight</th></tr></thead><tbody>{rows}</tbody></table></div>'
-              if rows else '<div class="muted">No method could be calculated.</div>')
-            if any(m.get("excluded") for m in ms):
-                H('<div class="muted small" style="margin-top:6px">“excluded”: the result is more than 6× away '
-                  'from today\'s price, which usually means a broken input — it is not used in the blend.</div>')
-            if vt == "defensive" and not (b.get("divst") or {}).get("d0"):
-                H('<div class="muted small" style="margin-top:6px">No dividend — the dividend methods are skipped.</div>')
-    with c4:
-        with st.container(border=True):
-            title = {"cyclical": "Cycle Checks", "defensive": "Growth, Margins &amp; Dividend Safety",
-                     "growth": "Growth Quality", "capital": "Debt, Profit Growth &amp; Consistency"}[vt]
-            H(f'<div class="panel-title">{title}</div>' + checks_html(checks))
+    with st.container(border=True):
+        title = {"cyclical": "Cycle Checks", "defensive": "Growth, Margins &amp; Dividend Safety",
+                 "growth": "Growth Quality", "capital": "Debt, Profit Growth &amp; Consistency"}[vt]
+        H(f'<div class="panel-title">{title}</div>' + checks_html(checks))
     # tipe özel grafik
     if vt == "cyclical":
         c5, c6 = st.columns([1, 1.35], gap="medium")
