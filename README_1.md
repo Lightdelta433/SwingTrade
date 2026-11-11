@@ -1,3 +1,34 @@
+# Pulse — Market Dashboard (Streamlit) · v4.4
+
+## Neu in v4.4 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Keine neuen Secrets.
+
+* **Unternehmensübersicht:** Der Aufklapper heißt nur noch „About the company — details“. Die graue
+  Quellenzeile („Sources: …“) über „Chart controls · period statistics“ ist entfernt.
+* **Valuation:** Entfernt sind das Diagramm *Growth and Net Margin*, das Diagramm *Target-Margin DCF Path*
+  und die Methode *Target-margin DCF* samt Erläuterung unter der Methods-Tabelle – aus Layout **und**
+  Berechnung. *Forward P/E Comparison* steht jetzt in voller Breite.
+  **Folge:** Beim Typ *Growth Tech* kommt der Fair Value nur noch aus „EV/Sales vs growth (peers)“. Gibt es
+  zu wenige Vergleichsfirmen, zeigt Pulse dort keinen Mischwert.
+* **Short Term – Karte der gewählten Aktie:** Unter Ticker, Firmenname und Status-Badge (z. B. BREAKOUT)
+  stehen nur noch zwei Badges: der Formationsname (z. B. „20-day high breakout“) und „15m · confirmed“.
+  Die Detailzeilen darunter sind entfernt.
+* **Short Term – Filterleiste** (Universe, Price ≥ $3, Daily change +, Market cap ≥ $300M, Above 21 & 50 EMA,
+  Top 20 by volume): volle Breite, sechs gleich breite Spalten, bündig mit dem Regime-Banner.
+* **Demo:**
+  * **Order ticket mit freier Suche:** Ticker oder Firmenname eintippen und direkt handeln – die Watchlist
+    ist dafür nicht nötig. Darunter stehen Kurs, Orderwert, Cash danach und der eigene Bestand; „Quick
+    pick“ füllt das Feld mit einem Klick aus Bestand oder Watchlist.
+  * **Open positions** neu gestaltet: Zahlen rechtsbündig, Gewinn/Verlust grün bzw. rot mit Prozent-Badge,
+    Summenzeile, „Sell all“ als dezenter Button in eigener Spalte.
+  * **Settings:** Überschrift, „Account currency“ und „Starting balance of the demo account“ sind getrennte
+    Blöcke mit festem Abstand; die Überlappung mit den Währungsschaltern ist behoben. Dieselbe Korrektur
+    gilt für die anderen Kopfzeilen auf der Demo-Seite und für „Bot Profit“.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.3
 
 ## Neu in v4.3 (Deutsch)
