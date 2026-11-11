@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "4.3"
+DATA_VERSION = "4.4"
 
 try:
     import yfinance as yf
