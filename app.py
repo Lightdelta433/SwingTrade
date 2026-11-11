@@ -39,9 +39,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.2"
+APP_VERSION = "4.3"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -149,7 +149,25 @@ SETUP_STYLE = {"Pullback": ("#9DB8FF", "rgba(91,140,255,.14)"), "Breakout": ("#6
 TONE = {"good": (UP, "#0F1A15", "#1F4D3A", "#0A0B0D"), "warn": (WARN, "#1A160E", "#4D3D1F", "#0A0B0D"),
         "bad": (DOWN, "#1A0F10", "#4D1F24", "#ECEEF1")}
 
-SECTIONS = ["Markets", "Valuation", "Long Term", "Short Term", "Backtest", "Forex & News"]
+SECTIONS = ["Markets", "Valuation", "Long Term", "Short Term", "Demo", "Backtest", "Forex & News"]
+# v4.3: sol yan menü — gruplar ve simgeler
+NAV_GROUPS = [("Main Menu", ["Markets", "Valuation", "Long Term"]),
+              ("Trading", ["Short Term", "Demo", "Backtest"]),
+              ("Other", ["Forex & News"])]
+_IC = ('<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+       'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">%s</svg>')
+NAV_ICON = {
+    "Markets": _IC % '<path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/>',
+    "Valuation": _IC % '<path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a3.5 3.5 0 0 0 6 0z"/>'
+                       '<path d="M19 7l-3 7a3.5 3.5 0 0 0 6 0z"/>',
+    "Long Term": _IC % '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+    "Short Term": _IC % '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+    "Demo": _IC % '<rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M16 15h2"/>',
+    "Backtest": _IC % '<path d="M9 3h6"/><path d="M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/>'
+                      '<path d="M7.5 15h9"/>',
+    "Forex & News": _IC % '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>'
+                          '<path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18"/>',
+}
 # Mum aralıkları tek yerde tanımlı: chart.py (küçükten büyüğe sıralı)
 TF_LIST = ch.INTERVAL_ORDER
 TF_DEF = ch.DEFAULT_INTERVAL
@@ -1025,13 +1043,13 @@ a.sent-post .sp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;whit
 .hype-meter{position:relative;display:grid;grid-template-columns:22fr 20fr 20fr 18fr 20fr;gap:3px;height:10px;
  margin:12px 0 4px 0}
 .hype-meter span{border-radius:3px}
-.hype-meter i{position:absolute;top:-5px;width:4px;height:20px;margin-left:-2px;border-radius:2px;background:#F2F4F7;
+.hype-meter i{position:absolute;top:-5px;width:4px;height:20px;margin-left:-2px;border-radius:2px;background:#ECEEF1;
  box-shadow:0 0 0 2px #0A0B0D}
 .hy-d{display:flex;gap:8px;align-items:baseline;font-size:12px;padding:3px 0;border-top:1px solid #1C1F25}
 .hy-d .hy-s{font-family:ui-monospace,monospace;font-weight:800;min-width:24px;text-align:right}
 .hype-banner{display:flex;gap:10px;align-items:center;padding:9px 13px;margin:2px 0 8px 0;border-radius:10px;
  border:1px solid var(--hc);background:linear-gradient(90deg,color-mix(in srgb,var(--hc) 22%,transparent),transparent);
- font-size:13px;color:#F2F4F7}
+ font-size:13px;color:#ECEEF1}
 .hype-banner .hb-ic{font-size:18px}
 .hype-banner.viral{animation:hypeglow 1.6s ease-in-out infinite}
 @keyframes hypeglow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--hc) 0%,transparent)}
@@ -1072,6 +1090,121 @@ a.sent-post .sp-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;whit
  .page-title{font-size:23px}
  .tile{padding:8px 10px}
 }
+/* ============ v4.3 — design refresh: colourful rings, rounder cards, side menu ============ */
+:root{--acc:#5B8CFF;--acc2:#A78BFA;--panel:#111317;--panel2:#0C0D10;--border:#22262D;
+ --ring:linear-gradient(135deg,rgba(91,140,255,.55),rgba(167,139,250,.30) 38%,rgba(34,211,238,.26) 68%,rgba(61,220,151,.45))}
+.block-container{max-width:1640px}
+/* cards: gradient ring + soft depth */
+div[data-testid="stVerticalBlockBorderWrapper"]{border:1px solid transparent !important;border-radius:20px !important;
+ background:linear-gradient(var(--panel),var(--panel)) padding-box,var(--ring) border-box !important;
+ box-shadow:0 1px 0 rgba(255,255,255,.035) inset,0 18px 40px -28px rgba(0,0,0,.75);transition:box-shadow .25s ease}
+div[data-testid="stVerticalBlockBorderWrapper"]:hover{box-shadow:0 1px 0 rgba(255,255,255,.05) inset,
+ 0 18px 44px -26px color-mix(in srgb,var(--acc) 55%,transparent)}
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlockBorderWrapper"]{border-radius:16px !important;
+ background:var(--panel2) !important;border:1px solid color-mix(in srgb,var(--acc) 22%,var(--border)) !important;box-shadow:none}
+.opp,.idx,.feat,.kpi,.critbar,.wll{border:1px solid transparent !important;border-radius:18px;
+ background:linear-gradient(var(--panel),var(--panel)) padding-box,var(--ring) border-box !important}
+.tile,.card,.nwi{border:1px solid color-mix(in srgb,var(--acc) 20%,var(--border));border-radius:14px}
+.tile:hover,.card:hover,.nwi:hover{border-color:color-mix(in srgb,var(--acc) 55%,var(--border))}
+.regime{border-radius:18px !important}
+/* headings */
+.page-title{background:linear-gradient(92deg,#ECEEF1 0%,color-mix(in srgb,var(--acc) 70%,#ECEEF1) 55%,color-mix(in srgb,var(--acc2) 75%,#ECEEF1) 100%);
+ -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;display:inline-block}
+.panel-title{display:inline-flex;align-items:center;gap:8px}
+.panel-title::before{content:"";width:4px;height:15px;border-radius:3px;flex:none;
+ background:linear-gradient(180deg,var(--acc),var(--acc2))}
+.sec-no{color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent);border-radius:7px;padding:3px 7px}
+.hdr-line{border:0;height:1px;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--acc) 60%,transparent),
+ color-mix(in srgb,var(--acc2) 45%,transparent),transparent)}
+.dot-live{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+/* controls */
+[data-testid="stBaseButton-secondary"],[data-testid="stBaseButton-primary"],[data-testid="stPopover"] button,
+[data-testid="stDownloadButton"] button{border-radius:12px !important;transition:all .15s ease}
+[data-testid="stBaseButton-secondary"]{border-color:color-mix(in srgb,var(--acc) 26%,var(--border)) !important}
+[data-testid="stBaseButton-secondary"]:hover{border-color:var(--acc) !important;color:#ECEEF1 !important;
+ box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 16%,transparent)}
+[data-testid="stBaseButton-primary"]{border:0 !important;color:#0A0B0D !important;font-weight:700 !important;
+ background:linear-gradient(135deg,var(--acc),var(--acc2)) !important}
+[data-testid="stBaseButton-primary"]:hover{filter:brightness(1.08);box-shadow:0 8px 22px -10px var(--acc)}
+[data-baseweb="input"],[data-baseweb="base-input"],[data-baseweb="select"]>div,[data-baseweb="textarea"],
+[data-testid="stNumberInputContainer"]{border-radius:12px !important}
+[data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-testid="stNumberInputContainer"]:focus-within{
+ border-color:var(--acc) !important;box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 18%,transparent)}
+[data-testid="stBaseButton-segmented_control"],[data-testid="stBaseButton-segmented_controlActive"]{border-radius:999px !important}
+[data-testid="stBaseButton-segmented_controlActive"]{background:linear-gradient(135deg,color-mix(in srgb,var(--acc) 30%,var(--panel2)),
+ color-mix(in srgb,var(--acc2) 26%,var(--panel2))) !important;border-color:var(--acc) !important;color:#ECEEF1 !important}
+[data-testid="stExpander"] details{border-radius:16px !important;border-color:color-mix(in srgb,var(--acc) 24%,var(--border)) !important;
+ overflow:hidden}
+[data-testid="stExpander"] summary:hover{color:var(--acc)}
+[data-testid="stPopoverBody"],[data-baseweb="popover"]>div{border-radius:16px !important}
+.badge,.chip{border-radius:8px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--acc) 28%,#2A2F37);border-radius:8px;border:2px solid transparent;
+ background-clip:padding-box}
+::-webkit-scrollbar-track{background:transparent}
+/* side menu */
+section[data-testid="stSidebar"]{background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%) !important;
+ border-right:1px solid color-mix(in srgb,var(--acc) 26%,var(--border))}
+section[data-testid="stSidebar"][aria-expanded="true"]{width:236px !important;min-width:236px !important;max-width:236px !important}
+[data-testid="stSidebarHeader"]{height:2.4rem;padding:.35rem .6rem 0 .6rem}
+[data-testid="stSidebarUserContent"]{padding:0 12px 18px 12px}
+a.side-brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;letter-spacing:-.02em;color:#ECEEF1;
+ text-decoration:none;padding:0 6px 14px 6px;margin-bottom:6px;border-bottom:1px dashed color-mix(in srgb,var(--acc) 30%,var(--border))}
+.side-grp{font-size:11px;color:#6B7383;margin:16px 8px 6px 8px;letter-spacing:.03em}
+.navbar.side{flex-direction:column;flex-wrap:nowrap;gap:3px}
+.navbar.side a{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:12px;font-size:14px;font-weight:600;
+ color:#A3ABB8;border:1px solid transparent;transition:all .15s ease}
+.navbar.side a svg{flex:none;opacity:.85}
+.navbar.side a:hover{color:#ECEEF1;background:color-mix(in srgb,var(--acc) 9%,transparent)}
+.navbar.side a.active{color:#ECEEF1;font-weight:700;
+ background:linear-gradient(color-mix(in srgb,var(--acc) 12%,var(--panel2)),color-mix(in srgb,var(--acc) 12%,var(--panel2))) padding-box,
+ var(--ring) border-box;box-shadow:0 10px 22px -16px var(--acc)}
+.navbar.side a.active svg{color:var(--acc);opacity:1}
+a.side-card{display:flex;flex-direction:column;gap:2px;margin:20px 2px 0 2px;padding:12px 13px;border-radius:16px;
+ text-decoration:none;color:#ECEEF1;border:1px solid transparent;
+ background:linear-gradient(var(--panel2),var(--panel2)) padding-box,var(--ring) border-box}
+a.side-card .sc-k{font-size:11px;color:#8D96A5}
+a.side-card b{font-size:18px}
+a.side-card .sc-b{font-size:11.5px;color:#8D96A5;display:flex;align-items:center;gap:6px;margin-top:4px}
+a.side-card .sc-b i{width:7px;height:7px;border-radius:50%;background:#4A515C;display:inline-block}
+a.side-card .sc-b i.on{background:#3DDC97;box-shadow:0 0 0 3px rgba(61,220,151,.2)}
+.hdr.top{display:none;margin-bottom:6px}
+@media (max-width:820px){.hdr.top{display:flex}}
+/* bots + demo */
+.bchip{font-size:11px;font-weight:700;border-radius:999px;padding:3px 10px;color:var(--c);
+ background:color-mix(in srgb,var(--c) 14%,transparent);border:1px solid color-mix(in srgb,var(--c) 40%,transparent);white-space:nowrap}
+table.bt{min-width:560px}
+table.bt td{vertical-align:middle}
+table.bt td:first-child{white-space:normal;font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif;font-size:14px}
+table.bt .bsub{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif}
+.bsub{display:block;font-size:11px;color:#8D96A5;font-weight:500;font-family:inherit}
+.bnote{max-width:300px;white-space:normal;line-height:1.35}
+.bot-ic{width:32px;height:32px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;
+ font-size:15px;background:color-mix(in srgb,var(--c) 22%,transparent);border:1px solid color-mix(in srgb,var(--c) 55%,transparent)}
+.bstat{font-size:11.5px;font-weight:800;border-radius:8px;padding:4px 10px;font-family:inherit}
+.bstat.on{color:#3DDC97;background:rgba(61,220,151,.13);border:1px solid rgba(61,220,151,.35)}
+.bstat.off{color:#F87171;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.32)}
+.blog{display:flex;gap:9px;align-items:baseline;font-size:12px;padding:4px 0;border-top:1px solid #1C1F25;flex-wrap:wrap}
+.bp-k{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}
+.bp-k div{display:flex;flex-direction:column;gap:1px}
+.bp-k b{font-size:14px}
+.alloc{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:8px}
+.al-ring{width:148px;height:148px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+ box-shadow:0 0 30px -10px var(--acc)}
+.al-hole{width:104px;height:104px;border-radius:50%;background:var(--panel);display:flex;flex-direction:column;
+ align-items:center;justify-content:center;gap:1px}
+.al-hole b{font-size:15px}
+.al-leg{flex:1 1 150px;min-width:150px;display:flex;flex-direction:column;gap:4px}
+.al-r{display:flex;align-items:center;gap:7px;font-size:12px}
+.al-d{width:9px;height:9px;border-radius:3px;flex:none}
+.al-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.al-p{font-size:11px;min-width:30px;text-align:right}
+.demo-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:6px}
+.demo-eq{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-top:6px}
+.demo-kv{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-top:1px solid #1C1F25;color:#8D96A5}
+.demo-kv b{color:#ECEEF1}
+.demo-warn{font-size:12px;line-height:1.45;border-radius:12px;padding:9px 11px;margin:6px 0;color:#F5B544;
+ background:rgba(245,181,68,.10);border:1px solid rgba(245,181,68,.35)}
 </style>
 """)
 
@@ -1419,18 +1552,41 @@ header[data-testid="stHeader"] *{color:#2E3440}
 """
 
 
+RINGS = {"gece": ("#5B8CFF", "#A78BFA", "#22D3EE", "#3DDC97"), "uzay": ("#A78BFA", "#7C3AED", "#60A5FA", "#F472B6"),
+         "orman": ("#34D399", "#A3E635", "#22D3EE", "#34D399"), "okyanus": ("#22D3EE", "#3B82F6", "#818CF8", "#2DD4BF"),
+         "gunbatimi": ("#F5B544", "#FB7185", "#F472B6", "#FB923C"), "beyaz": ("#3B6EF5", "#8B5CF6", "#06B6D4", "#10B981")}
+NIGHT_GRAD = ("radial-gradient(1100px 560px at 8% -10%, rgba(91,140,255,.13), transparent 62%),"
+              "radial-gradient(900px 480px at 96% 0%, rgba(167,139,250,.10), transparent 60%),"
+              "radial-gradient(800px 420px at 60% 112%, rgba(34,211,238,.06), transparent 60%)")
+
+
+def theme_vars(key, t):
+    """v4.3: renkli çerçeve (halka) ve vurgu renkleri — temaya göre."""
+    r = RINGS.get(key) or RINGS["gece"]
+    al = (.42, .24, .20, .34) if t.get("light") else (.58, .32, .28, .46)
+
+    def a_(hexc, a):
+        h = hexc.lstrip("#")
+        return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{a})"
+    ring = (f"linear-gradient(135deg,{a_(r[0], al[0])},{a_(r[1], al[1])} 38%,{a_(r[2], al[2])} 68%,"
+            f"{a_(r[3], al[3])})")
+    return (f':root{{--acc:{r[0]};--acc2:{r[1]};--panel:{t["panel"]};--panel2:{t["panel2"]};'
+            f'--border:{t["border"]};--ring:{ring}}}')
+
+
 def theme_css(key):
     t = THEMES.get(key) or THEMES["gece"]
+    if key == "gece" and not t.get("grad"):
+        t = dict(t, grad=NIGHT_GRAD)
     grad = (f"background-image:{t['grad']};background-attachment:fixed;background-repeat:no-repeat;"
             if t.get("grad") else "background-image:none;")
     return (
         "<style>"
         f'[data-testid="stAppViewContainer"],.stApp,body{{background-color:{t["bg"]};{grad}}}'
         '[data-testid="stMain"],[data-testid="stMainBlockContainer"],section.main{background:transparent}'
-        f'div[data-testid="stVerticalBlockBorderWrapper"]{{background:{t["panel"]};border-radius:18px;'
-        f'border-color:{t["border"]}}}'
-        f'.opp,.idx,.feat,.regime,.kpi,.critbar,.wll,.jt{{background:{t["panel"]};border-color:{t["border"]}}}'
-        f'.tile,.card,.nwi,.funnel div{{background:{t["panel2"]};border-color:{t["border"]}}}'
+        + theme_vars(key, t) +
+        f'.regime,.jt{{background:{t["panel"]};border-color:{t["border"]}}}'
+        f'.tile,.card,.nwi,.funnel div{{background:{t["panel2"]}}}'
         f'.dot-live{{background:{t["dot"]}}}'
         + (LIGHT_CSS if t.get("light") else "") +
         "</style>")
@@ -1470,7 +1626,7 @@ def notes_body():
 
 
 NTF_KEYS = {"on": "ntf_on", "price": "ntf_price", "earn_up": "ntf_eup", "earn_res": "ntf_eres", "macro": "ntf_macro",
-            "macro_impact": "ntf_imp", "ai": "ntf_ai", "hype": "ntf_hype", "push": "ntf_push", "email": "ntf_email",
+            "macro_impact": "ntf_imp", "ai": "ntf_ai", "hype": "ntf_hype", "bot": "ntf_bot", "push": "ntf_push", "email": "ntf_email",
             "browser": "ntf_browser"}
 
 
@@ -1505,6 +1661,7 @@ def notify_settings():
         st.selectbox("Economic data importance", ["High", "Medium +"], key="ntf_imp")
         st.checkbox("Impulse levels — fresh breakouts found by the AI scan", key="ntf_ai")
         st.checkbox("Viral buzz — a watchlist company's hype indicator turns Viral", key="ntf_hype")
+        st.checkbox("Bot trades — every automatic buy and sell in the demo account", key="ntf_bot")
         H('<div style="font-size:12px;font-weight:700;margin:6px 0 2px 0">Where</div>')
         push = st.checkbox("Push to phone / computer (also when Pulse is closed)", key="ntf_push")
         topic = n.get("topic") or ""
@@ -1676,13 +1833,41 @@ def account_body():
       'screener, sentiment from CNN, calendar from ForexFactory.</div>')
 
 
+def render_sidebar():
+    """v4.3: bölümler solda alt alta (Main Menu · Trading · Other) + demo hesabının kısa özeti."""
+    sb = getattr(st, "sidebar", None)
+    if sb is None:
+        return
+    body = f'<a class="side-brand" target="_self" href="{link(sec="Markets")}">{LOGO_SVG}<span>Pulse</span></a>'
+    for grp, items in NAV_GROUPS:
+        body += f'<div class="side-grp">{esc(grp)}</div><nav class="navbar side">' + "".join(
+            f'<a class="{"active" if s_ == SEC else ""}" target="_self" '
+            f'href="{link(sec=s_, opp=None, aip=None, sector=None)}">{NAV_ICON.get(s_, "")}<span>{esc(s_)}</span></a>'
+            for s_ in items) + '</nav>'
+    try:
+        acct = bk.demo_get(_me())
+        eq = float((acct.get("eq") or [[0, acct["start"]]])[-1][1])
+        run = sum(1 for b in acct.get("bots") or [] if b.get("on"))
+        ch_ = (eq / float(acct["start"]) - 1) * 100
+        body += (f'<a class="side-card" target="_self" href="{link(sec="Demo")}"><span class="sc-k">Demo account</span>'
+                 f'<b class="mono">{money(eq, acct["ccy"], 0)}</b><span style="color:{col(ch_)};font-size:11.5px;'
+                 f'font-weight:700">{pct(ch_)}</span><span class="sc-b"><i class="{"on" if run else ""}"></i>'
+                 f'{run} bot{"" if run == 1 else "s"} running</span></a>')
+    except Exception:
+        pass
+    with sb:
+        H(body)
+
+
 def render_header():
     H(theme_css(ss.get("theme") or "gece"))
-    c1, c2, c3 = st.columns([5.0, 2.3, 1.6], vertical_alignment="center")
-    with c1:
-        nav = "".join(f'<a class="{"active" if s == SEC else ""}" target="_self" '
-                      f'href="{link(sec=s, opp=None, aip=None, sector=None)}">{esc(s)}</a>' for s in SECTIONS)
-        H(f'<div class="hdr"><div class="brand">{LOGO_SVG}<span>Pulse</span></div><nav class="navbar">{nav}</nav></div>')
+    render_sidebar()
+    nav = "".join(f'<a class="{"active" if s == SEC else ""}" target="_self" '
+                  f'href="{link(sec=s, opp=None, aip=None, sector=None)}">{esc(s)}</a>' for s in SECTIONS)
+    # dar ekranda (yan menü kapalıyken) bölümler üstte de durur; geniş ekranda gizlidir
+    H(f'<div class="hdr top"><div class="brand">{LOGO_SVG}<span>Pulse</span></div><nav class="navbar top">{nav}'
+      f'</nav></div>')
+    c2, c3 = st.columns([6.4, 1.6], vertical_alignment="center")
     with c2:
         q = st.text_input("Search", key="q", placeholder="🔍  Search symbol, FX pair, indicator…",
                           label_visibility="collapsed")
@@ -5101,6 +5286,548 @@ def render_ai_detail(r):
 AI_MODE = "🤖 AI Opportunities"
 
 
+# ======================================================================
+# v4.3 — Demo hesabı (kâğıt işlem) + otomatik işlem botları
+# ======================================================================
+ALLOC_COLS = ["#5B8CFF", "#A78BFA", "#22D3EE", "#3DDC97", "#F5B544", "#F472B6", "#FB923C", "#94A3B8"]
+BOT_SRC_NAME = {"ai": "AI Opportunities filter", "filter": "My Filter"}
+BOT_UNI_NAME = {"demo": "Demo watchlist", "scan": "Whole market scan"}
+
+
+def _me():
+    a = ss.get("auth")
+    return str(a.get("user") or "") if isinstance(a, dict) else ""
+
+
+def demo_state():
+    """Demo hesabı + canlı fiyatlarla değeri. Döner: (hesap, değerleme, EURUSD)."""
+    acct = bk.demo_get(_me())
+    syms = sorted({p["sym"] for p in acct["pos"].values()})
+    q = md.get_quotes(syms + ["EURUSD=X"]) if (syms or acct["ccy"] == "EUR") else {}
+    e = q.get("EURUSD=X") or {}
+    eurusd = float(e["last"]) if (e.get("src") == "real" and e.get("last")) else acct.get("fx")
+    return acct, bk.demo_value(acct, q, eurusd), eurusd
+
+
+def demo_order(sym, side, qty, owner="manual"):
+    """Elle verilen demo emri: yalnızca canlı fiyattan dolar. Döner: (ok, mesaj)."""
+    sym = str(sym or "").upper().strip()
+    inst = bk.inst_ccy(sym)
+    if inst is None:
+        return False, (f"{sym} cannot be traded in the demo account — only stocks, ETFs and crypto quoted in "
+                       f"USD or EUR.")
+    q = md.get_quotes([sym, "EURUSD=X"])
+    qs = q.get(sym) or {}
+    if qs.get("src") != "real" or not qs.get("last"):
+        return False, f"No live price for {sym} right now — demo orders are only filled at real prices."
+    acct = bk.demo_get(_me())
+    e = q.get("EURUSD=X") or {}
+    eurusd = float(e["last"]) if (e.get("src") == "real" and e.get("last")) else acct.get("fx")
+    fxm = bk.fx_mult(acct["ccy"], inst, eurusd)
+    if fxm is None:
+        return False, "The EUR/USD rate is not available right now, so this order cannot be converted."
+    px = float(qs["last"])
+
+    def run(a):
+        if eurusd:
+            a["fx"] = eurusd
+        ok, msg, _ = bk.demo_trade(a, sym, side, qty, px, fxm, owner,
+                                   "Manual order" if owner == "manual" else "Closed by hand")
+        return ok, msg
+    ok, msg = bk.demo_edit(_me(), run)
+    return ok, (msg or f"{'Bought' if side == 'buy' else 'Sold'} {float(qty):g} {sym} at {tr(px)}")
+
+
+def _demo_actions():
+    """Tablolardaki linklerle gelen işlemler (izleme listesinden çıkar, pozisyonu kapat, botu durdur / sil)."""
+    if not _me():
+        return
+    rm, sell, tg, dl = _consume("demo_rm"), _consume("demo_sell"), _consume("bot_tg"), _consume("bot_del")
+    if rm:
+        bk.demo_edit(_me(), lambda a: a.__setitem__("watch", [s for s in a.get("watch") or [] if s != rm]))
+        st.toast(f"{rm} removed from the demo watchlist")
+    if sell:
+        acct = bk.demo_get(_me())
+        p = acct["pos"].get(sell)
+        if p:
+            ok, msg = demo_order(p["sym"], "sell", p["qty"], owner=p["owner"])
+            st.toast(msg if ok else f"⚠️ {msg}")
+    if tg:
+        def run(a):
+            for b in a.get("bots") or []:
+                if b["id"] == tg:
+                    b["on"] = not b.get("on")
+                    return b
+        b = bk.demo_edit(_me(), run)
+        if b:
+            st.toast(f'{b["name"]} is {"running" if b["on"] else "paused"}')
+    if dl:
+        def run2(a):
+            held = any(p["owner"] == dl for p in a["pos"].values())
+            a["bots"] = [b for b in a.get("bots") or [] if b["id"] != dl]
+            return held
+        held = bk.demo_edit(_me(), run2)
+        st.toast("Bot deleted" + (" — its open positions stay and keep their stop / targets" if held else ""))
+
+
+def alloc_html(parts, total, cur, center_k="Equity"):
+    """Halka grafik (CSS): [(etiket, değer)] → renkli halka + açıklama."""
+    tot = sum(max(0.0, v) for _, v in parts) or 1.0
+    segs, acc, legend = [], 0.0, ""
+    for i, (lab, v) in enumerate(parts):
+        c = ALLOC_COLS[i % len(ALLOC_COLS)]
+        share = max(0.0, v) / tot * 100
+        segs.append(f"{c} {acc:.2f}% {acc + share:.2f}%")
+        acc += share
+        legend += (f'<div class="al-r"><span class="al-d" style="background:{c}"></span><span class="al-n">{esc(lab)}'
+                   f'</span><span class="mono al-v">{money(v, cur, 0)}</span><span class="muted al-p">{share:.0f}%'
+                   f'</span></div>')
+    return (f'<div class="alloc"><div class="al-ring" style="background:conic-gradient({", ".join(segs)})">'
+            f'<div class="al-hole"><span class="muted" style="font-size:10.5px">{esc(center_k)}</span>'
+            f'<b class="mono">{big(total, cur)}</b></div></div><div class="al-leg">{legend}</div></div>')
+
+
+def bot_profit_fig(trades, cur, rng="All", height=210):
+    """Botların günlük gerçekleşen sonucu (satışlar) — sütun grafik."""
+    rows = [t for t in trades if t.get("owner") != "manual" and t.get("pnl") is not None]
+    if not rows:
+        return None, 0.0, 0
+    d = pd.DataFrame({"ts": [pd.Timestamp(t["ts"], unit="s", tz="UTC").tz_convert(md.TZ).normalize() for t in rows],
+                      "pnl": [float(t["pnl"]) for t in rows]})
+    cut = {"1w": 7, "1m": 31}.get(rng)
+    if cut:
+        d = d[d["ts"] >= pd.Timestamp.now(tz=md.TZ).normalize() - pd.Timedelta(days=cut)]
+    if d.empty:
+        return None, 0.0, 0
+    g = d.groupby("ts")["pnl"].sum()
+    best = float(g.abs().max())
+    cols = [(ACCENT if v >= 0 else DOWN) if abs(v) >= best * 0.6 else ("#3A4763" if v >= 0 else "#5A3038")
+            for v in g.values]
+    fig = go.Figure(go.Bar(x=[x.strftime("%d.%m") for x in g.index], y=[float(v) for v in g.values],
+                           marker_color=cols, hovertemplate="%{x}: %{y:,.2f} " + cur + "<extra></extra>"))
+    _layout(fig, height, margin=dict(l=4, r=4, t=6, b=4))
+    fig.update_layout(bargap=0.35)
+    fig.update_xaxes(showgrid=False, type="category")
+    return fig, float(g.mean()), int(len(g))
+
+
+def _bot_when(ts):
+    try:
+        return pd.Timestamp(float(ts), unit="s", tz="UTC").tz_convert(md.TZ).strftime("%H:%M")
+    except Exception:
+        return "—"
+
+
+def render_bot_form(acct):
+    """Yeni bot: strateji (AI filtresi ya da kendi filtren), evren, risk ve çıkış kuralları."""
+    saved = ss.get("saved_filters") or []
+    cur_name = ss.get("flt_name") or "My filter"
+    opts = ["ai", "flt:__current__"] + [f'flt:{x["name"]}' for x in saved if x.get("name") != cur_name]
+
+    def fmt(o):
+        if o == "ai":
+            return "AI Opportunities filter (pattern + 15-min confirmation)"
+        return f"My Filter — {cur_name} (as it is now)" if o == "flt:__current__" else f"My Filter — {o[4:]} (saved)"
+    with st.expander("➕  New bot", expanded=not (acct.get("bots") or [])):
+        c1, c2, c3 = st.columns([1.3, 1.9, 1.4])
+        with c1:
+            name = st.text_input("Bot name", key="bot_name", placeholder="e.g. Breakout bot", max_chars=40)
+        with c2:
+            strat = st.selectbox("Strategy", opts, key="bot_strat", format_func=fmt)
+        with c3:
+            uni = st.selectbox("Where it looks", ["demo", "scan"], key="bot_uni",
+                               format_func=lambda u: BOT_UNI_NAME[u])
+        d = en.BOT_DEFAULT
+        n1, n2, n3 = st.columns(3)
+        with n1:
+            risk = st.number_input("Risk per trade (% of account)", 0.1, 5.0, float(d["risk_pct"]), 0.1,
+                                   key="bot_risk")
+            minrr = st.number_input("Minimum reward / risk", 0.5, 6.0, float(d["min_rr"]), 0.1, key="bot_rr")
+        with n2:
+            maxp = st.number_input("Max. open positions", 1, 20, int(d["max_pos"]), 1, key="bot_maxp")
+            trail = st.number_input("Trailing stop (× ATR, after TP1)", 0.5, 6.0, float(d["trail_atr"]), 0.5,
+                                    key="bot_trail")
+        with n3:
+            alloc = st.number_input("Max. size of one position (%)", 2.0, 100.0, float(d["max_alloc"]), 1.0,
+                                    key="bot_alloc")
+            days = st.number_input("Max. holding time (days)", 1, 120, int(d["max_days"]), 1, key="bot_days")
+        k1, k2 = st.columns(2)
+        with k1:
+            c15 = st.checkbox("Require the 15-minute confirmation (AI filter)", value=True, key="bot_c15")
+        with k2:
+            reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
+        if button("Create bot", key="bot_create", primary=True):
+            if len(acct.get("bots") or []) >= bk.BOT_MAX:
+                st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
+            else:
+                flt = None
+                if strat != "ai":
+                    if strat == "flt:__current__":
+                        flt = {"name": cur_name, "rows": en.normalize_conds(ss.flt_rows), "logic": ss.flt_logic,
+                               "min": int(ss.flt_min or 1)}
+                    else:
+                        sv = next((x for x in saved if x.get("name") == strat[4:]), None) or {}
+                        flt = {"name": sv.get("name") or strat[4:], "rows": en.normalize_conds(sv.get("rows") or []),
+                               "logic": sv.get("logic") or "AND", "min": int(sv.get("min") or 1)}
+                nm = (name or "").strip() or ("AI bot" if strat == "ai" else f'{flt["name"]} bot')
+                b = bk.bot_new(nm, "ai" if strat == "ai" else "filter", uni,
+                               {"risk_pct": risk, "max_pos": maxp, "max_alloc": alloc, "min_rr": minrr,
+                                "trail_atr": trail, "max_days": days, "need_c15": c15, "regime": reg}, flt)
+                bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b))
+                st.toast(f"{nm} is running — first check within 15 minutes")
+                st.rerun()
+        H('<div class="muted" style="font-size:11px;margin-top:4px">Entry: the strategy must be fully met on the '
+          'last closed 15-minute bar; size = account × risk % ÷ (entry − stop), capped by the position limit and '
+          'your cash. Exit: stop-loss, 40 % at TP1 (the stop then moves to the entry), the rest at TP2 or by the '
+          'ATR trailing stop, at the latest after the maximum holding time.</div>')
+
+
+def _bots_body():
+    """Short Term'deki bot bölümü: Active bots · Bot Profit · Asset allocation (demo hesabı üzerinden)."""
+    try:
+        bk.bots_tick(md, only=_me())          # sayfa açıkken de 15 dakikalık kontrol kaçmasın
+    except Exception:
+        pass
+    acct, val, _eu = demo_state()
+    cur = acct["ccy"]
+    bots = acct.get("bots") or []
+    now = time.time()
+    nxt = (int(now // bk.BOT_SLOT) + 1) * bk.BOT_SLOT + bk.BOT_LAG
+    last = max([float((b.get("last") or {}).get("ts") or 0) for b in bots] or [0])
+    main_, side_ = st.columns([2.2, 1], gap="medium")
+    with main_:
+        with st.container(border=True):
+            running = sum(1 for b in bots if b.get("on"))
+            mkt = bk.us_session_open(now)
+            H(f'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'
+              f'<span class="panel-title">Active bots</span><span style="display:flex;gap:6px;flex-wrap:wrap">'
+              f'<span class="bchip" style="--c:{UP if running else MUT}">{running} running</span>'
+              f'<span class="bchip" style="--c:{UP if mkt else WARN}">US market {"open" if mkt else "closed"}</span>'
+              f'<span class="bchip" style="--c:{ACCENT}">next check ≈ {_bot_when(nxt)}</span></span></div>'
+              f'<div class="muted small">Bots buy and sell on their own in your <a class="lnk" target="_self" '
+              f'href="{link(sec="Demo")}">demo account</a> ({money(val["equity"], cur, 0)}) · checked every 15 minutes'
+              f'{" · last check " + _bot_when(last) if last else ""}</div>')
+            if bots:
+                rows = ""
+                for b in bots:
+                    stt = bk.bot_stats(acct, b["id"], val)
+                    lc = b.get("last") or {}
+                    strat = "AI filter" if b["src"] == "ai" else f'Filter: {(b.get("flt") or {}).get("name", "—")}'
+                    on = bool(b.get("on"))
+                    note = lc.get("note") or ((str(lc.get("buys", 0)) + " bought, " + str(lc.get("sells", 0)) + " sold")
+                                              if lc else "waiting for the first check")
+                    rows += (
+                        f'<tr><td><span style="display:flex;align-items:center;gap:10px"><span class="bot-ic" '
+                        f'style="--c:{ALLOC_COLS[bots.index(b) % len(ALLOC_COLS)]}">🤖</span><span><b>{esc(b["name"])}'
+                        f'</b><span class="bsub">{esc(strat)} · {esc(BOT_UNI_NAME[b["universe"]])}</span>'
+                        f'<span class="bsub bnote">{("Last check " + _bot_when(lc.get("ts")) + " · " + str(int(lc.get("checked") or 0)) + " checked · ") if lc else ""}'
+                        f'{esc(note)}</span></span></span></td><td><div>{money(stt["value"], cur, 0)}</div>'
+                        f'<div class="bsub">{stt["open"]} open · {stt["closed"]} closed</div></td>'
+                        f'<td style="color:{col(stt["pnl"])};font-weight:700"><div>{"+" if stt["pnl"] >= 0 else ""}'
+                        f'{money(stt["pnl"], cur)}</div><div class="bsub">'
+                        f'{("hit rate " + tr(stt["win"], 0) + "%") if stt["win"] is not None else "no closed trade"}'
+                        f'</div></td><td style="color:{col(stt["avg_day"])}">{"+" if stt["avg_day"] >= 0 else ""}'
+                        f'{money(stt["avg_day"], cur)}</td><td style="white-space:nowrap"><span class="bstat '
+                        f'{"on" if on else "off"}">{"Active" if on else "Paused"}</span><div class="bsub" '
+                        f'style="margin-top:6px"><a class="lnk" target="_self" href="{link(bot_tg=b["id"], f="bots")}">'
+                        f'{"Pause" if on else "Resume"}</a> · <a class="lnk" style="color:{DOWN}" target="_self" '
+                        f'href="{link(bot_del=b["id"], f="bots")}">Delete</a></div></td></tr>')
+                H(f'<div style="overflow-x:auto;margin-top:8px"><table class="jt bt"><thead><tr><th>Bot · strategy</th>'
+                  f'<th>Current value</th><th>Total P/L</th><th>Avg. daily</th><th>Status</th></tr></thead><tbody>'
+                  f'{rows}</tbody></table></div>')
+            else:
+                H('<div class="muted" style="padding:12px 0 4px 0">No bot yet. Create one below — it trades the demo '
+                  'account automatically with the AI filter or with one of your own filters.</div>')
+            render_bot_form(acct)
+            brow = [r for r in val["rows"] if r["owner"] != "manual"]
+            if brow:
+                rows = "".join(
+                    f'<tr><td><span style="display:flex;align-items:center;gap:9px">{avatar(r["sym"], 26)}<b>'
+                    f'{esc(r["sym"])}</b></span></td><td style="text-align:left;font-family:inherit">{esc(r["bot"])}'
+                    f'</td><td>{r["qty"]:g}</td><td style="color:{SOFT}">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
+                    f'<td style="color:{DOWN}">{tr(r["stop"]) if r.get("stop") else "—"}</td><td style="color:{UP}">'
+                    f'{("✓ " if r.get("tp1_done") else "") + tr(r["tp1"]) if r.get("tp1") else "—"}</td>'
+                    f'<td style="color:{col(r["pnl"])};font-weight:700">{"+" if r["pnl"] >= 0 else ""}'
+                    f'{money(r["pnl"], cur)} <span class="bsub" style="display:inline">({pct(r["pnl_pct"], 1)})</span>'
+                    f'</td><td><a class="lnk small" target="_self" href="{link(demo_sell=r["key"], f="bots")}">'
+                    f'Close</a></td></tr>' for r in brow)
+                H(f'<div style="font-size:12px;font-weight:700;margin:10px 0 2px 0">Open bot positions</div>'
+                  f'<div style="overflow-x:auto"><table class="jt bt"><thead><tr><th>Symbol</th><th style="text-align:'
+                  f'left">Bot</th><th>Qty</th><th>Entry</th><th>Last</th><th>Stop</th><th>TP1</th><th>P/L</th><th>'
+                  f'</th></tr></thead><tbody>{rows}</tbody></table></div>')
+            logs = list(reversed(acct.get("log") or []))[:8]
+            if logs:
+                H('<div style="font-size:12px;font-weight:700;margin:10px 0 2px 0">Bot activity</div>' + "".join(
+                    f'<div class="blog"><span class="mono muted">{pd.Timestamp(l["ts"], unit="s", tz="UTC").tz_convert(md.TZ).strftime("%d.%m %H:%M")}'
+                    f'</span><b>{esc(l["sym"])}</b><span style="color:{UP if l["text"].startswith("BUY") else DOWN if l["text"].startswith("SELL") else MUT}">'
+                    f'{esc(l["text"])}</span><span class="muted">{esc(l["bot"])}</span></div>' for l in logs))
+    with side_:
+        with st.container(border=True):
+            H('<div style="display:flex;justify-content:space-between;align-items:center">'
+              '<span class="panel-title">Bot Profit</span></div>')
+            rng = seg("Range", ["All", "1w", "1m"], "bot_rng", "All")
+            fig, avg, nd = bot_profit_fig(acct.get("trades") or [], cur, rng)
+            upl = sum(r["pnl"] for r in val["rows"] if r["owner"] != "manual")
+            rpl = sum(t["pnl"] for t in acct.get("trades") or [] if t.get("owner") != "manual"
+                      and t.get("pnl") is not None)
+            H(f'<div class="bp-k"><div><span class="muted small">Avg. daily profit</span><b class="mono" '
+              f'style="color:{col(avg)}">{"+" if avg >= 0 else ""}{money(avg, cur)}</b></div><div><span class="muted '
+              f'small">Realised</span><b class="mono" style="color:{col(rpl)}">{"+" if rpl >= 0 else ""}'
+              f'{money(rpl, cur)}</b></div><div><span class="muted small">Open P/L</span><b class="mono" '
+              f'style="color:{col(upl)}">{"+" if upl >= 0 else ""}{money(upl, cur)}</b></div></div>')
+            if fig is not None:
+                plot(fig, key="bot_profit")
+            else:
+                H('<div class="muted small" style="padding:18px 0">No closed bot trade in this range yet — the '
+                  'daily bars appear after the first sale.</div>')
+        with st.container(border=True):
+            H('<span class="panel-title">Asset allocation</span>')
+            parts = [("Cash", val["cash"])]
+            agg = {}
+            for r in val["rows"]:
+                agg[r["sym"]] = agg.get(r["sym"], 0.0) + r["value"]
+            top = sorted(agg.items(), key=lambda x: -x[1])
+            parts += top[:6]
+            if len(top) > 6:
+                parts.append(("Other", sum(v for _, v in top[6:])))
+            H(alloc_html(parts, val["equity"], cur)
+              + f'<div class="bp-k" style="margin-top:8px"><div><span class="muted small">Profit</span><b class="mono" '
+                f'style="color:{col(val["total"])}">{"+" if val["total"] >= 0 else ""}{money(val["total"], cur)}</b>'
+                f'</div><div><span class="muted small">Positions</span><b class="mono">{money(val["invested"], cur, 0)}'
+                f'</b></div><div><span class="muted small">Cash</span><b class="mono">{money(val["cash"], cur, 0)}</b>'
+                f'</div></div>')
+
+
+if _frag0 is not None:
+    try:
+        bots_live = _frag0(run_every=120)(_bots_body)        # sayfa açıkken iki dakikada bir tazelenir
+    except TypeError:
+        bots_live = _bots_body
+else:
+    bots_live = _bots_body
+
+
+def render_bots_section(hist=None):
+    anchor("bots")
+    H(f'<div class="sec-head" style="margin-top:14px"><span class="sec-no">AUTO</span><h3>Trading bots</h3>'
+      f'<span class="muted small">automatic buying and selling in the demo account — paper money, live prices'
+      f'</span></div>')
+    bots_live()
+    if hist is not None:
+        with st.expander("Manual trade journal", expanded=False):
+            render_journal(hist)
+
+
+def render_demo():
+    """Demo reiter: başlangıç tutarı, kendi izleme listesi, elle emir, pozisyonlar ve geçmiş."""
+    acct, val, eurusd = demo_state()
+    cur = acct["ccy"]
+    for k_, v_ in (ss.pop("_demo_set", None) or {}).items():      # widget değerleri yalnızca çizilmeden önce değişir
+        ss[k_] = v_
+    H(f'<div class="page-title">Demo Account</div><div class="muted" style="margin-bottom:10px">'
+      f'<span class="dot-live"></span>Paper trading with live prices — no real money. Your bots from Short Term '
+      f'trade this account too.</div>')
+    left, right = st.columns([1, 3.1], gap="medium")
+    with left:
+        with st.container(border=True):
+            H('<span class="panel-title">Settings</span><div class="muted small">Starting balance of the demo '
+              'account</div>')
+            sync = (int(acct["start"]), cur)
+            if ss.get("_demo_sync") != sync:
+                ss["demo_start"], ss["demo_ccy"], ss["_demo_sync"] = int(acct["start"]), cur, sync
+            ccy = seg("Currency", list(bk.DEMO_CCYS), "demo_ccy", cur, fmt=lambda c: f"{CUR[c]}  {c}")
+            start = st.radio("Starting balance", list(bk.DEMO_STARTS), key="demo_start",
+                             format_func=lambda v: f"{CUR.get(ccy or cur, '')}{int(v):,}".replace(",", "."))
+            changed = (int(start) != int(acct["start"])) or ((ccy or cur) != cur)
+            used = bool(acct["pos"] or acct["trades"])
+            if changed:
+                H(f'<div class="demo-warn">Switching to <b>{money(start, ccy or cur, 0)}</b> starts a fresh account'
+                  + (': open positions and the trade history are deleted. Your watchlist and bots stay, the bots '
+                     'are paused.' if used else '.') + '</div>')
+                if button("Apply and start fresh", key="demo_apply", primary=True):
+                    bk.demo_reset(_me(), int(start), ccy or cur)
+                    st.toast(f"Demo account restarted with {money(start, ccy or cur, 0)}")
+                    st.rerun()
+            elif used:
+                sure = st.checkbox("Delete positions and history", key="demo_sure")
+                if button("Reset account", key="demo_reset"):
+                    if sure:
+                        bk.demo_reset(_me(), int(start), cur)
+                        ss["_demo_set"] = {"demo_sure": False}
+                        st.toast("Demo account reset")
+                        st.rerun()
+                    else:
+                        st.warning("Tick the box first — a reset cannot be undone.")
+        with st.container(border=True):
+            H(f'<span class="panel-title">Account</span>'
+              f'<div class="demo-eq mono">{money(val["equity"], cur)}</div>'
+              f'<div style="color:{col(val["total"])};font-weight:700;font-size:13px">'
+              f'{"+" if val["total"] >= 0 else ""}{money(val["total"], cur)} ({pct(val["total_pct"])})</div>'
+              f'<div class="demo-kv"><span>Started with</span><b class="mono">{money(acct["start"], cur, 0)}</b></div>'
+              f'<div class="demo-kv"><span>Cash</span><b class="mono">{money(val["cash"], cur)}</b></div>'
+              f'<div class="demo-kv"><span>In positions</span><b class="mono">{money(val["invested"], cur)}</b></div>'
+              f'<div class="demo-kv"><span>Bots running</span><b class="mono">'
+              f'{sum(1 for b in acct.get("bots") or [] if b.get("on"))}</b></div>'
+              + (f'<div class="demo-kv"><span>EUR / USD</span><b class="mono">{tr(eurusd, 4)}</b></div>'
+                 if (cur == "EUR" and eurusd) else "")
+              + f'<a class="lnk small" target="_self" href="{link(sec="Short Term", f="bots")}">Manage bots →</a>')
+    with right:
+        tiles = [("Equity", money(val["equity"], cur), TXT), ("Cash", money(val["cash"], cur), TXT),
+                 ("Invested", money(val["invested"], cur), TXT),
+                 ("Open P/L", ("+" if val["upl"] >= 0 else "") + money(val["upl"], cur), col(val["upl"])),
+                 ("Realised P/L", ("+" if val["rpl"] >= 0 else "") + money(val["rpl"], cur), col(val["rpl"])),
+                 ("Return", pct(val["total_pct"]), col(val["total_pct"]))]
+        H('<div class="demo-tiles">' + "".join(
+            f'<div class="tile"><span class="k">{k}</span><span class="v mono" style="font-size:17px;color:{c}">{v}'
+            f'</span></div>' for k, v, c in tiles) + '</div>')
+        eq = acct.get("eq") or []
+        if len(eq) >= 3:
+            with st.container(border=True):
+                H('<span class="panel-title">Equity curve</span>')
+                xs = [pd.Timestamp(e[0], unit="s", tz="UTC").tz_convert(md.TZ) for e in eq] + \
+                     [pd.Timestamp.now(tz=md.TZ)]
+                ys = [float(e[1]) for e in eq] + [float(val["equity"])]
+                up = ys[-1] >= float(acct["start"])
+                fig = go.Figure(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=UP if up else DOWN, width=2),
+                                           fill="tozeroy", fillcolor=rgba(UP if up else DOWN, 0.10),
+                                           hovertemplate="%{x|%d.%m %H:%M}: %{y:,.2f}<extra></extra>"))
+                _layout(fig, 200, margin=dict(l=4, r=4, t=6, b=4))
+                lo, hi = min(ys + [float(acct["start"])]), max(ys + [float(acct["start"])])
+                pad = max((hi - lo) * 0.15, hi * 0.002)
+                fig.update_yaxes(range=[lo - pad, hi + pad])
+                fig.add_hline(y=float(acct["start"]), line_dash="dot", line_color=MUT, line_width=1)
+                plot(fig, key="demo_eq")
+        # ---- izleme listesi
+        with st.container(border=True):
+            watch = list(acct.get("watch") or [])
+            H(f'<div style="display:flex;justify-content:space-between;align-items:center"><span class="panel-title">'
+              f'My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · '
+              f'bots set to “Demo watchlist” trade only these</span></div>')
+            a1, a2 = st.columns([3.4, 1], vertical_alignment="bottom")
+            with a1:
+                qadd = st.text_input("Add a company", key="demo_add", placeholder="Ticker or name — e.g. NVDA, "
+                                     "Siemens, SAP.DE, BTC-USD")
+            with a2:
+                add = button("Add to watchlist", key="demo_add_btn", primary=True)
+            if add and (qadd or "").strip():
+                raw = _SYM_RE.sub("", qadd).upper()[:24]
+                sym = None
+                if raw and (md.get_quotes([raw]).get(raw) or {}).get("src") == "real":
+                    sym = raw
+                else:
+                    res = md.search_symbols(qadd.strip()[:40])
+                    sym = res[0]["ticker"] if res else None
+                if not sym:
+                    st.warning(f"Nothing found for “{qadd.strip()[:40]}”.")
+                elif bk.inst_ccy(sym) is None:
+                    st.warning(f"{sym} cannot be traded in the demo (only USD- and EUR-quoted stocks, ETFs and crypto).")
+                elif sym in watch:
+                    st.info(f"{sym} is already on the list.")
+                elif len(watch) >= bk.DEMO_WATCH_MAX:
+                    st.warning(f"The demo watchlist holds up to {bk.DEMO_WATCH_MAX} companies.")
+                else:
+                    bk.demo_edit(_me(), lambda a: a.setdefault("watch", []).append(sym))
+                    ss["_demo_set"] = {"demo_add": ""}
+                    st.toast(f"{sym} added to the demo watchlist")
+                    st.rerun()
+            if watch:
+                q = md.get_quotes(watch)
+                held = {}
+                for r in val["rows"]:
+                    held[r["sym"]] = held.get(r["sym"], 0.0) + r["qty"]
+                rows = ""
+                for s_ in watch:
+                    qs = q.get(s_) or {}
+                    live = qs.get("src") == "real"
+                    rows += (
+                        f'<tr><td><a class="plain" target="_self" href="{link(sec="Markets", sym=s_)}"><span '
+                        f'style="display:flex;align-items:center;gap:10px">{avatar(s_, 28)}<span><b>{esc(s_)}</b>'
+                        f'<span class="bsub">{esc(md.company_name(s_) or "")[:34]}</span></span></span></a></td>'
+                        f'<td>{tr(qs.get("last")) if qs.get("last") else "—"}{"" if live else " <span class=bsub style=display:inline>sample</span>"}</td>'
+                        f'<td style="color:{col(qs.get("change_pct") or 0)}">{pct(qs.get("change_pct") or 0)}</td>'
+                        f'<td>{(str(round(held[s_], 4)).rstrip("0").rstrip(".") + " sh") if s_ in held else "—"}</td>'
+                        f'<td><a class="lnk small" style="color:{MUT}" target="_self" '
+                        f'href="{link(demo_rm=s_, f="demo")}">Remove</a></td></tr>')
+                H(f'<div style="overflow-x:auto;max-height:330px"><table class="jt bt"><thead><tr><th>Company</th>'
+                  f'<th>Last</th><th>Today</th><th>In account</th><th></th></tr></thead><tbody>{rows}</tbody>'
+                  f'</table></div>')
+            else:
+                H('<div class="muted" style="padding:10px 0">The list is empty — add the companies you want to trade '
+                  'or let your bots watch.</div>')
+        # ---- emir
+        with st.container(border=True):
+            H('<span class="panel-title">Order ticket</span><div class="muted small">Filled at once at the last '
+              'live price — no fees, whole account currency conversion at the current EUR/USD rate.</div>')
+            syms = list(dict.fromkeys(list(acct.get("watch") or []) + [r["sym"] for r in val["rows"]]))
+            if not syms:
+                H('<div class="muted small" style="padding:6px 0">Add a company to the watchlist first.</div>')
+            else:
+                o1, o2, o3, o4 = st.columns([1.5, 1.2, 1.1, 1.2], vertical_alignment="bottom")
+                with o1:
+                    if ss.get("demo_osym") not in syms:
+                        ss["demo_osym"] = syms[0]
+                    osym = st.selectbox("Symbol", syms, key="demo_osym")
+                with o2:
+                    side = seg("Side", ["Buy", "Sell"], "demo_oside", "Buy")
+                with o3:
+                    qty = st.number_input("Shares", min_value=0.0, value=1.0, step=1.0, key="demo_oqty")
+                with o4:
+                    go_ = button("Place order", key="demo_place", primary=True)
+                qs = (md.get_quotes([osym]).get(osym) or {})
+                fxm = bk.fx_mult(cur, bk.inst_ccy(osym), eurusd)
+                if qs.get("src") == "real" and fxm:
+                    amt = float(qty or 0) * float(qs["last"]) * fxm
+                    H(f'<div class="muted small">{esc(osym)} at <b class="mono" style="color:{TXT}">{tr(qs["last"])}'
+                      f'</b> → order value <b class="mono" style="color:{TXT}">{money(amt, cur)}</b> · cash after: '
+                      f'<b class="mono" style="color:{TXT}">'
+                      f'{money(val["cash"] - amt if side == "Buy" else val["cash"] + amt, cur)}</b></div>')
+                else:
+                    H(f'<div class="muted small">No live price for {esc(osym)} right now — orders are only filled at '
+                      f'real prices.</div>')
+                if go_:
+                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty)
+                    if ok:
+                        st.toast(msg)
+                        st.rerun()
+                    else:
+                        st.warning(msg)
+        # ---- pozisyonlar + geçmiş
+        with st.container(border=True):
+            H(f'<span class="panel-title">Open positions</span> <span class="muted small">{len(val["rows"])}</span>')
+            if val["rows"]:
+                rows = "".join(
+                    f'<tr><td><span style="display:flex;align-items:center;gap:9px">{avatar(r["sym"], 26)}<b>'
+                    f'{esc(r["sym"])}</b></span></td><td style="text-align:left;font-family:inherit">'
+                    f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</td><td>{r["qty"]:g}</td>'
+                    f'<td style="color:{SOFT}">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
+                    f'<td>{money(r["value"], cur)}</td><td style="color:{col(r["pnl"])};font-weight:700">'
+                    f'{"+" if r["pnl"] >= 0 else ""}{money(r["pnl"], cur)}<span class="bsub">{pct(r["pnl_pct"], 1)}'
+                    f'</span></td><td><a class="lnk small" target="_self" href="{link(demo_sell=r["key"], f="demo")}">'
+                    f'Sell all</a></td></tr>' for r in val["rows"])
+                H(f'<div style="overflow-x:auto"><table class="jt bt"><thead><tr><th>Symbol</th><th style="text-align:'
+                  f'left">Opened by</th><th>Qty</th><th>Entry</th><th>Last</th><th>Value</th><th>P/L</th><th></th>'
+                  f'</tr></thead><tbody>{rows}</tbody></table></div>')
+            else:
+                H('<div class="muted" style="padding:8px 0">No open positions.</div>')
+            trs = list(reversed(acct.get("trades") or []))[:25]
+            if trs:
+                rows = "".join(
+                    f'<tr><td class="mono">{pd.Timestamp(t["ts"], unit="s", tz="UTC").tz_convert(md.TZ).strftime("%d.%m.%y %H:%M")}'
+                    f'</td><td style="text-align:left"><span class="badge" style="color:{UP if t["side"] == "buy" else DOWN};'
+                    f'background:{UP_BG if t["side"] == "buy" else DOWN_BG}">{t["side"].upper()}</span></td>'
+                    f'<td style="text-align:left;font-family:inherit"><b>{esc(t["sym"])}</b></td><td>{t["qty"]:g}</td>'
+                    f'<td>{tr(t["px"])}</td><td>{money(t["amt"], cur)}</td>'
+                    f'<td style="color:{col(t["pnl"] or 0)}">{(("+" if t["pnl"] >= 0 else "") + money(t["pnl"], cur)) if t.get("pnl") is not None else "—"}</td>'
+                    f'<td style="text-align:left;font-family:inherit" class="bnote">'
+                    f'{esc(("🤖 " + t["bot"] + " — ") if t.get("owner") != "manual" else "")}{esc(t.get("reason") or "")}'
+                    f'</td></tr>' for t in trs)
+                H(f'<div style="font-size:12px;font-weight:700;margin:12px 0 2px 0">Trade history</div>'
+                  f'<div style="overflow-x:auto;max-height:360px"><table class="jt bt"><thead><tr><th>When</th>'
+                  f'<th style="text-align:left">Side</th><th style="text-align:left">Symbol</th><th>Qty</th><th>Price'
+                  f'</th><th>Amount</th><th>Result</th><th style="text-align:left">Why</th></tr></thead><tbody>{rows}'
+                  f'</tbody></table></div>')
+
+
 def render_short():
     """Short Term: hazır yapay zeka stratejisi ya da kullanıcının kendi filtresi."""
     now0 = pd.Timestamp.now(tz=md.TZ)
@@ -5110,7 +5837,7 @@ def render_short():
     mode = seg("Mode", [AI_MODE, "My Filter"], "w_aimode", AI_MODE)
     if mode == AI_MODE:
         render_ai_opps()
-        render_journal(md.get_universe_history()["hist"])
+        render_bots_section(md.get_universe_history()["hist"])     # v4.3: botlar "My Open Trades"in yerinde
         return
     render_own_filter()
 
@@ -5309,9 +6036,8 @@ def render_own_filter():
                         chip=(f'<span class="pill" style="color:{sfg};background:{sbg}">{esc(sel["setup"])}</span>'
                               + (f' <span class="muted small">{esc(pats[0]["name"])}</span>' if pats else "")),
                         back="opps")
-    # ---- Açık işlemlerim ----
-    with left:
-        render_journal(hist)
+    # ---- v4.3: botlar tam genişlikte (iç içe sütun olmasın); elle tutulan işlem günlüğü altında ----
+    render_bots_section(hist)
 
 
 def render_journal(hist):
@@ -6024,7 +6750,7 @@ def _ecss(rule_tail, body):
 ENTRY_CSS = ("<style>"
              "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap');"
              '.stApp,[data-testid="stAppViewContainer"]{background:#0A0E14 !important;background-image:none !important}'
-             'header[data-testid="stHeader"]{display:none}'
+             'header[data-testid="stHeader"],section[data-testid="stSidebar"]{display:none}'
              ".block-container{padding-top:0 !important;max-width:100% !important}"
              ".entry-bg{position:fixed;inset:0;z-index:0;pointer-events:none}"
              ".entry-bg svg{width:100%;height:100%;opacity:.17}"
@@ -6928,10 +7654,11 @@ def main():
     if boot is not None:
         boot.markdown(LOADING_HTML, unsafe_allow_html=True)     # sayfa hesaplanırken açılış ekranı
     try:
+        _demo_actions()          # v4.3: demo / bot linkleri (çıkar, kapat, durdur, sil)
         notify_live()            # yeni bildirimler zil sayacına başlık çizilmeden önce girsin
         render_header()
         {"Markets": render_piyasalar, "Valuation": render_value, "Long Term": render_longterm,
-         "Short Term": render_short, "Backtest": render_backtest,
+         "Short Term": render_short, "Demo": render_demo, "Backtest": render_backtest,
          "Forex & News": render_forex}[SEC]()
         render_footer()
     finally:
