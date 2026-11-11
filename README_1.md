@@ -1,3 +1,58 @@
+# Pulse — Market Dashboard (Streamlit) · v4.3
+
+## Neu in v4.3 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Keine neuen Secrets nötig.
+
+* **Neues Design.** Karten haben farbige Verlaufsrahmen (je nach Theme), rundere Ecken und einen leichten
+  Schein beim Darüberfahren. Buttons, Eingabefelder, Aufklapper und Umschalter sind abgerundet, der
+  Haupt-Button hat einen Farbverlauf, Überschriften einen farbigen Akzent. Das Night-Theme hat jetzt einen
+  dezenten farbigen Hintergrund. Alle sechs Themes (auch Weiß) haben eigene Rahmenfarben.
+* **Menü links.** Markets, Valuation, Long Term, Short Term, Demo, Backtest und Forex & News stehen
+  untereinander in einer Seitenleiste, gruppiert in *Main Menu*, *Trading* und *Other*. Darunter zeigt
+  eine kleine Karte den Stand des Demokontos und die Zahl der laufenden Bots. Die Leiste lässt sich
+  einklappen; auf schmalen Bildschirmen erscheinen die Reiter zusätzlich oben.
+* **Neuer Reiter „Demo“ (Demokonto mit Spielgeld, echte Kurse).**
+  * Links **Settings**: Startbetrag 10.000 / 25.000 / 50.000 / 100.000 / 500.000 in **$ oder €**. Ein
+    Wechsel startet das Konto neu (Watchlist und Bots bleiben, Bots werden pausiert).
+  * **Eigene Watchlist**: Firmen per Ticker oder Namen hinzufügen und entfernen (bis 40). Handelbar sind
+    Aktien, ETFs und Krypto in USD oder EUR.
+  * **Order ticket**: manuell kaufen und verkaufen, sofort zum letzten echten Kurs. Bei einem €-Konto wird
+    mit dem aktuellen EUR/USD-Kurs umgerechnet.
+  * Dazu Kontostand, Equity-Kurve, offene Positionen und der Handelsverlauf.
+* **Short Term: automatische Trading-Bots.** Der Block ersetzt „My Open Trades“ (das manuelle Journal ist
+  darunter eingeklappt noch da).
+  * **Active bots**: Tabelle mit Wert, Gesamt-P/L, Tagesschnitt, letzter Prüfung und Status; Pause, Fortsetzen
+    und Löschen direkt in der Zeile. Bis zu 8 Bots laufen gleichzeitig, jeder mit eigenen Positionen.
+  * **New bot**: Strategie = **AI-Opportunities-Filter** oder **einer deiner eigenen Filter** (der aktuelle
+    oder ein gespeicherter); Suchbereich = Demo-Watchlist oder ganzer Markt-Scan. Einstellbar sind Risiko je
+    Trade, maximale Positionen, maximale Positionsgröße, Mindest-Chance/Risiko, Trailing-Stop und Haltedauer.
+  * **Prüfung alle 15 Minuten**, jeweils kurz nach Schluss der 15-Minuten-Kerze:
+    * *Kauf*, wenn die Strategie vollständig erfüllt ist. Beim AI-Filter heißt das: bullische Formation mit
+      Ausbruch oder Retest, Kurs über EMA 21 / 50, 15-Minuten-Bestätigung, Chance/Risiko hoch genug, SPY und
+      QQQ über ihrer 50-Tage-EMA. Stückzahl = Konto × Risiko % ÷ (Einstieg − Stop).
+    * *Verkauf*: Stop-Loss; 40 % bei TP1 (der Stop rückt dann auf den Einstieg); der Rest bei TP2 oder über
+      den ATR-Trailing-Stop; spätestens nach der maximalen Haltedauer. Nach einem Stop wartet der Bot einen
+      Tag, bevor er dieselbe Aktie wieder kauft.
+    * Gekauft wird nur während der US-Handelszeit; offene Positionen werden immer überwacht.
+  * **Bot Profit** (Tagesgewinne als Säulen, All / 1w / 1m) und **Asset allocation** (Ring: Cash und
+    Positionen) stehen rechts daneben, darunter die offenen Bot-Positionen und das Bot-Protokoll.
+  * Neue Benachrichtigung **„Bot trades“**: jeder automatische Kauf und Verkauf, auf Wunsch per Push / E-Mail.
+
+**Wichtig zu den Bots**
+
+* Sie handeln ausschließlich im **Demokonto**. Pulse ist mit keinem Broker verbunden; es wird kein echtes
+  Geld bewegt.
+* Mit Beispieldaten (wenn Yahoo nicht antwortet) wird nie gehandelt.
+* Die Kurse von Yahoo sind bis zu 15 Minuten verzögert; Ausführungen sind deshalb Näherungen ohne Gebühren
+  und Slippage.
+* **Streamlit Community Cloud legt die App schlafen, wenn sie längere Zeit niemand öffnet.** Dann prüfen
+  auch die Bots nicht. Solange die App wach ist (ein Tab offen genügt), laufen sie alle 15 Minuten weiter,
+  auch wenn du auf einer anderen Seite bist.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.2
 
 ## Neu in v4.2 (Deutsch)
