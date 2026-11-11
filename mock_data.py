@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "4.1"
+DATA_VERSION = "4.2"
 
 try:
     import yfinance as yf
@@ -2913,6 +2913,66 @@ _SEC_INSTANT = {
     "ltd": ["LongTermDebtNoncurrent", "LongTermDebt"],
     "std": ["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings", "CommercialPaper"],
 }
+# v4.2: çeyrek sonu bilanço serileri (her 10-Q / 10-K bilanço tarihi) — Balance Sheet çeyrek görünümü
+_SEC_BS_SERIES = {
+    "assets": ["Assets"],
+    "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+    "sti": ["ShortTermInvestments", "MarketableSecuritiesCurrent", "AvailableForSaleSecuritiesDebtSecuritiesCurrent"],
+    "ltd_nc": ["LongTermDebtNoncurrent"],
+    "ltd_all": ["LongTermDebt"],
+    "debt_c": ["DebtCurrent"],
+    "ltd_c": ["LongTermDebtCurrent"],
+    "stb": ["ShortTermBorrowings", "CommercialPaper"],
+}
+
+
+def _sec_instant_series(gaap):
+    """Bilanço kalemleri: {metric: {end: value}} (aynı tarih için en son dosyalanan değer).
+    Borç = uzun vadeli (kısa vadeli kısmı hariç) + kısa vadeli borçlar; nakit = nakit + kısa vadeli yatırımlar."""
+    raw = {}
+    for m, names in _SEC_BS_SERIES.items():
+        best = {}
+        for nm in names:
+            arr = (((gaap.get(nm) or {}).get("units") or {}).get("USD")) or []
+            cur = {}
+            for x in arr:
+                e, v = x.get("end"), x.get("val")
+                if not e or v is None or x.get("start"):
+                    continue
+                prev = cur.get(e)
+                if prev is None or str(x.get("filed", "")) >= prev[1]:
+                    cur[e] = (float(v), str(x.get("filed", "")))
+            if len(cur) > len(best):
+                best = cur
+        raw[m] = {e: v for e, (v, _) in best.items()}
+    out = {}
+    if raw.get("assets"):
+        out["assets"] = raw["assets"]
+    if raw.get("equity"):
+        out["equity"] = raw["equity"]
+    cash = {}
+    for e, v in (raw.get("cash") or {}).items():
+        cash[e] = v + (raw.get("sti") or {}).get(e, 0.0)
+    if cash:
+        out["cash"] = cash
+    ends = set(raw.get("ltd_nc") or {}) | set(raw.get("ltd_all") or {}) | set(raw.get("debt_c") or {}) | \
+        set(raw.get("ltd_c") or {}) | set(raw.get("stb") or {})
+    debt = {}
+    for e in ends:
+        nc = (raw.get("ltd_nc") or {}).get(e)
+        cur_ = (raw.get("debt_c") or {}).get(e)
+        if cur_ is None:
+            parts = [(raw.get("ltd_c") or {}).get(e), (raw.get("stb") or {}).get(e)]
+            cur_ = sum(p for p in parts if p is not None) if any(p is not None for p in parts) else None
+        if nc is None and (raw.get("ltd_all") or {}).get(e) is not None:
+            nc = raw["ltd_all"][e] - ((raw.get("ltd_c") or {}).get(e) or 0.0)
+        if nc is None and cur_ is None:
+            continue
+        debt[e] = (nc or 0.0) + (cur_ or 0.0)
+    if debt:
+        out["debt"] = debt
+    return out
 
 
 def _sec_periods(facts):
@@ -2959,6 +3019,10 @@ def get_sec_quarterly(t):
                 best, best_end = per, last
         if best:
             out["series"][metric] = best
+    try:
+        out["bs"] = _sec_instant_series(gaap)
+    except Exception:
+        out["bs"] = {}
     # ---- v4.0: bilanço kalemleri (son değer) + kapak sayfasındaki hisse sayısı + son dosyalama
     inst = {}
 
@@ -3004,7 +3068,11 @@ def get_yf_quarterly_fin(t):
             "op_income": ("Operating Income", "EBIT"), "net_income": ("Net Income Common Stockholders", "Net Income"),
             "eps": ("Diluted EPS", "Basic EPS")}
     cmaps = {"ocf": ("Operating Cash Flow",), "capex": ("Capital Expenditure",)}
-    for attr, mp in (("quarterly_income_stmt", maps), ("quarterly_cashflow", cmaps)):
+    bmaps = {"assets": ("Total Assets",), "equity": ("Stockholders Equity", "Common Stock Equity"),
+             "debt": ("Total Debt",),
+             "cash": ("Cash Cash Equivalents And Short Term Investments", "Cash And Cash Equivalents")}
+    for attr, mp in (("quarterly_income_stmt", maps), ("quarterly_cashflow", cmaps),
+                     ("quarterly_balance_sheet", bmaps)):
         try:
             df = getattr(tk, attr, None)
             if df is None or not hasattr(df, "empty") or df.empty:
@@ -3816,6 +3884,8 @@ def _social_sentiment(t):
     red, red_err = _reddit_posts(t, name)
     stw, stw_err, watchers = _stocktwits(t)
     xp, x_err = _x_posts(t)
+    # v4.2: X API kapalı / kısıtlıysa X gönderileri web araması ile süzülür
+    xw, xw_err = _x_web(t, name) if xp is None else (None, "")
     fh, fh_err = _finnhub_social(t)
     tr_ = get_reddit_trending()
     ape = (tr_.get("map") or {}).get(t)
@@ -3824,14 +3894,21 @@ def _social_sentiment(t):
     total_w = total = 0.0
     n_all = bull = bear = neu = 0
     top = []
-    for key, label, posts, err in (("reddit", "Reddit", red, red_err), ("stocktwits", "StockTwits", stw, stw_err),
-                                   ("x", "X (Twitter)", xp, x_err)):
+    feeds = [("reddit", "Reddit", red, red_err), ("stocktwits", "StockTwits", stw, stw_err),
+             ("x", "X (Twitter)", xp, x_err)]
+    if xp is None:
+        feeds.append(("x_web", "X via web search", xw, xw_err))
+    for key, label, posts, err in feeds:
         if posts is None:
             src[key] = {"name": label, "ok": False, "err": err, "n": 0, "kind": "posts"}
             continue
         sc = _score_posts(posts)
-        d24 = sum(1 for p_ in posts if now - p_["ts"] <= 86400)
-        src[key] = {"name": label, "ok": True, "err": "", **sc, "last24h": d24, "kind": "posts"}
+        rec = [p_["ts"] for p_ in posts if 0 < now - p_["ts"] <= 86400]
+        d24 = len(rec)
+        # mesaj hızı (saatte): son 24 saatteki gönderiler / en eskisinin yaşı (API sınırlı sayıda döndürür)
+        rate = (d24 / max(0.25, (now - min(rec)) / 3600.0)) if d24 >= 5 else None
+        src[key] = {"name": label, "ok": True, "err": "", **sc, "last24h": d24, "kind": "posts",
+                    "rate_h": round(rate, 1) if rate is not None else None}
         w = min(sc["n"], 60)
         total_w += w
         total += w * sc["score"]
@@ -3924,6 +4001,602 @@ def sentiment_reset():
 
 
 get_sentiment.clear = sentiment_reset
+
+
+# ======================================================================
+# v4.2 — Haber nabzı · birleşik piyasa duyarlılığı · hype göstergesi
+#   Haber (sürekli tarama, 10 dk): Google News (şirket araması, son 7 gün → akış hızı = "Google News trend"),
+#   Yahoo Finance RSS, Seeking Alpha RSS (analiz / blog), Nasdaq RSS, Finnhub şirket haberleri (FINNHUB_API_KEY),
+#   Alpha Vantage NEWS_SENTIMENT (ALPHAVANTAGE_API_KEY, hazır haber skorları), Brave Search haber araması
+#   (BRAVE_SEARCH_KEY) ve SEC EDGAR 8-K / 6-K (şirketin resmî bildirimleri).
+#   X: resmî API kısıtlıysa Brave web araması x.com gönderilerini süzer (aynı anahtar).
+#   Topluluk toplayıcıları: ApeWisdom (Reddit + 4chan sayımları), Tradestie (r/wallstreetbets top-50 + duyarlılık),
+#   StockTwits trend listesi, Finnhub Social Sentiment (v4.1).
+#   Her kaynak bağımsızdır: hata veren kaynak artan aralıklarla yeniden denenir, kalanlarla devam edilir.
+# ======================================================================
+_SA_RSS = "https://seekingalpha.com/api/sa/combined/{t}.xml"
+_NQ_RSS = "https://www.nasdaq.com/feed/rssoutbound"
+_BRAVE_NEWS = "https://api.search.brave.com/res/v1/news/search"
+_BRAVE_WEB = "https://api.search.brave.com/res/v1/web/search"
+NEWS_PR_RE = re.compile(r"business\s?wire|pr\s?newswire|globe\s?newswire|accesswire|newsfile|ein presswire|"
+                        r"cision|press release", re.I)
+NEWS_BLOG_RE = re.compile(r"seeking\s?alpha|motley fool|fool\.com|zacks|investorplace|tipranks|simply wall|gurufocus|"
+                          r"24/7 wall|247wallst|marketbeat|validea|insider\s?monkey|barchart|stocktwits|"
+                          r"benzinga pro|the street pro|substack|medium\.com", re.I)
+NEWS_TYPES = ("News", "Press release", "Blog / analysis", "Filing")
+NEWS_TYPE_W = {"News": 1.0, "Press release": 0.7, "Blog / analysis": 0.8, "Filing": 0.9}
+# başlık ifadeleri (ağırlıklı) — tek kelimelik sözlükten daha isabetli
+_NEWS_BULL = [(r"\bbeats?\b.{0,40}\b(estimates|expectations|forecasts?|consensus)|\btops? (estimates|expectations|"
+               r"forecasts?)|better[- ]than[- ]expected", 2.0),
+              (r"\b(raises?|lifts?|boosts?|hikes?|ups) (its |full[- ]year |annual |fy\d* )?(guidance|outlook|"
+               r"forecast)|guidance (raised|above)", 2.0),
+              (r"\bupgrade[sd]?\b|raised to (buy|outperform|overweight)", 1.6),
+              (r"\b(raises?|lifts?|boosts?|hikes?) (its )?(price )?target|price target (raised|increased|lifted)", 1.4),
+              (r"buyback|share repurchase|repurchase program|dividend (increase|hike)|raises? (its )?dividend", 1.2),
+              (r"\brecord (revenue|sales|quarter|profit|results|high)|all[- ]time high", 1.3),
+              (r"\b(wins?|awarded|secures?|lands?)\b.{0,30}\b(contract|order|deal)|strategic (partnership|deal|"
+               r"agreement)|partners? with|collaboration", 0.9),
+              (r"\bfda (approval|approves|clears|grants)|receives? approval", 1.5),
+              (r"\b(surg|soar|jump|rall|climb|rebound|spike)\w*", 1.0),
+              (r"\bstrong (demand|growth|results|quarter|sales)|accelerat\w*", 1.0),
+              (r"\b(buy|outperform|overweight) rating|initiat\w* (at|with) (buy|outperform|overweight)", 1.2)]
+_NEWS_BEAR = [(r"\bmiss(es|ed)?\b.{0,40}\b(estimates|expectations|forecasts?|consensus)|worse[- ]than[- ]expected|"
+               r"falls? short", 2.0),
+              (r"\b(cuts?|lowers?|slashes?|reduces?|withdraws?|trims?) (its |full[- ]year |annual |fy\d* )?(guidance|"
+               r"outlook|forecast)|weak (guidance|outlook|forecast)", 2.0),
+              (r"\bdowngrade[sd]?\b|cut to (sell|underperform|underweight|neutral|hold)", 1.6),
+              (r"\b(cuts?|lowers?|slashes?|trims?) (its )?(price )?target|price target (cut|lowered|reduced)", 1.4),
+              (r"lawsuit|\bsued\b|class action|investigation|\bprobe\b|subpoena|antitrust|\bfined?\b|penalt", 1.3),
+              (r"\brecall|\bhalt(s|ed)?\b|suspend|\bdelay", 1.0),
+              (r"layoffs?|job cuts|restructuring|impairment|write[- ]?down", 1.1),
+              (r"\b(plung|tumbl|slump|sink|sank|crash|plummet|slid|tank)\w*|sell[- ]?off|\bdrops?\b|\bfalls?\b|\bfell\b",
+               1.0),
+              (r"short seller|short report|\bfraud|accounting (issue|irregular)|restat(e|ement)", 1.8),
+              (r"(stock|share|equity|secondary) offering|dilut|convertible (notes|offering)", 1.1),
+              (r"bankrupt|chapter 11|\bdefault|going concern|delist", 2.0),
+              (r"\b(sell|underperform|underweight) rating", 1.2)]
+_NEWS_BULL_C = [(re.compile(p, re.I), w) for p, w in _NEWS_BULL]
+_NEWS_BEAR_C = [(re.compile(p, re.I), w) for p, w in _NEWS_BEAR]
+# 8-K maddeleri → (açıklama, duyarlılık)
+SEC_8K_ITEMS = {"1.01": ("Material agreement", 0.3), "1.02": ("Agreement terminated", -0.4),
+                "1.03": ("Bankruptcy", -1.0), "1.05": ("Cybersecurity incident", -0.6),
+                "2.01": ("Acquisition / disposal completed", 0.1), "2.02": ("Results of operations", 0.0),
+                "2.03": ("New debt obligation", -0.2), "2.05": ("Restructuring / exit costs", -0.5),
+                "2.06": ("Impairment", -0.6), "3.01": ("Listing standards notice", -0.8),
+                "3.02": ("Unregistered share sale", -0.3), "4.01": ("Auditor change", -0.4),
+                "4.02": ("Prior financials unreliable", -1.0), "5.02": ("Officer / director change", -0.1),
+                "5.03": ("Charter / bylaw change", 0.0), "5.07": ("Shareholder vote results", 0.0),
+                "7.01": ("Regulation FD disclosure", 0.0), "8.01": ("Other events", 0.0),
+                "9.01": ("Financial statements / exhibits", 0.0)}
+
+
+def news_text_score(text):
+    """Haber metni → −1 … +1 (ağırlıklı ifadeler + genel sözlük)."""
+    txt = str(text or "")
+    if not txt:
+        return 0.0
+    b = sum(w for rx, w in _NEWS_BULL_C if rx.search(txt))
+    s = sum(w for rx, w in _NEWS_BEAR_C if rx.search(txt))
+    b += 0.5 * min(3, len(_POS.findall(txt)))       # genel haber sözlüğü (v2) — yön ipucu, düşük ağırlık
+    s += 0.5 * min(3, len(_NEG.findall(txt)))
+    if b + s == 0:
+        return 0.0
+    return float(max(-1.0, min(1.0, (b - s) / (b + s) * min(1.0, (b + s) / 1.4))))
+
+
+def news_type(source, url, title="", provider=""):
+    if provider == "sec":
+        return "Filing"
+    s = f"{source or ''} {url or ''}"
+    if NEWS_PR_RE.search(s) or re.search(r"(businesswire|prnewswire|globenewswire|accesswire|newsfilecorp)\.com",
+                                         str(url or ""), re.I):
+        return "Press release"
+    if provider == "seekingalpha" or NEWS_BLOG_RE.search(s):
+        return "Blog / analysis"
+    return "News"
+
+
+def _nitem(title, url, source, ts, provider, summary="", av=None):
+    title = re.sub(r"\s+", " ", str(title or "")).strip()
+    summary = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(summary or ""))).strip()[:300]
+    lex = news_text_score(title) * 0.75 + (news_text_score(summary) * 0.25 if summary else 0.0)
+    if not summary:
+        lex = news_text_score(title)
+    s = lex if av is None else 0.65 * max(-1.0, min(1.0, av / 0.35)) + 0.35 * lex
+    return {"title": title, "url": url or "", "source": str(source or "").strip() or provider, "ts": float(ts or 0),
+            "provider": provider, "summary": summary, "type": news_type(source, url, title, provider),
+            "s": round(float(s), 3), "av": av}
+
+
+def alphavantage_key():
+    return os.environ.get("ALPHAVANTAGE_API_KEY") or os.environ.get("ALPHA_VANTAGE_KEY") or ""
+
+
+def brave_key():
+    return os.environ.get("BRAVE_SEARCH_KEY") or os.environ.get("BRAVE_API_KEY") or ""
+
+
+def _rss_news(url, params, provider, default_src):
+    raw = _rss_fetch(url, params)
+    out = []
+    for r in raw:
+        title, src = (r.get("title") or ""), (r.get("source") or "")
+        if " - " in title and provider == "google":
+            head, tail = title.rsplit(" - ", 1)
+            title, src = head, (src or tail)
+        try:
+            ts = pd.Timestamp(r["pub"]).timestamp() if r.get("pub") else 0.0
+        except (ValueError, TypeError):
+            ts = 0.0
+        out.append(_nitem(title, r.get("link"), src or default_src, ts, provider, r.get("desc") or ""))
+    return out
+
+
+def _gated(key, label, fn):
+    """Kaynağı geri çekilme kuralıyla çağırır. Döner: (liste | None, hata)."""
+    if not _HAS_REQ:
+        return None, "offline"
+    if not _gate_ok(key):
+        return None, _gate_msg(key, f"{label} not available")
+    try:
+        val = fn()
+    except Exception as ex:
+        _gate_fail(key)
+        return None, _gate_msg(key, f"{label} not reachable ({type(ex).__name__})")
+    if isinstance(val, tuple):           # (None, 'neden') → hata
+        _gate_fail(key)
+        return None, _gate_msg(key, val[1])
+    _gate_ok_reset(key)
+    return val, ""
+
+
+def _news_google(t, name):
+    q = f'"{name}" when:7d' if name and name.upper() != t else f'"{t}" stock when:7d'
+    return _gated("n_google", "Google News", lambda: _rss_news(
+        _GN_RSS, {"q": q, "hl": "en-US", "gl": "US", "ceid": "US:en"}, "google", "Google News"))
+
+
+def _news_yahoo(t):
+    return _gated("n_yahoo", "Yahoo Finance", lambda: _rss_news(
+        _YF_RSS, {"s": t, "region": "US", "lang": "en-US"}, "yahoo", "Yahoo Finance"))
+
+
+def _news_sa(t):
+    return _gated("n_sa", "Seeking Alpha", lambda: _rss_news(_SA_RSS.format(t=t), None, "seekingalpha",
+                                                            "Seeking Alpha"))
+
+
+def _news_nasdaq(t):
+    return _gated("n_nasdaq", "Nasdaq", lambda: _rss_news(_NQ_RSS, {"symbol": t}, "nasdaq", "Nasdaq"))
+
+
+def _news_finnhub(t):
+    key = finnhub_key()
+    if not key:
+        return None, "not connected"
+
+    def run():
+        now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+        r = requests.get("https://finnhub.io/api/v1/company-news", timeout=10,
+                         params={"symbol": t, "from": (now - pd.Timedelta(days=7)).strftime("%Y-%m-%d"),
+                                 "to": now.strftime("%Y-%m-%d"), "token": key})
+        if r.status_code != 200:
+            return None, {401: "Finnhub key rejected", 429: "Finnhub rate limit"}.get(
+                r.status_code, f"Finnhub HTTP {r.status_code}")
+        js = r.json()
+        if not isinstance(js, list):
+            return None, "unexpected Finnhub answer"
+        return [_nitem(x.get("headline"), x.get("url"), x.get("source"), x.get("datetime"), "finnhub",
+                       x.get("summary") or "") for x in js[:80] if isinstance(x, dict) and x.get("headline")]
+    return _gated("n_finnhub", "Finnhub news", run)
+
+
+def _news_av(t):
+    key = alphavantage_key()
+    if not key:
+        return None, "not connected"
+
+    def run():
+        r = requests.get("https://www.alphavantage.co/query", timeout=15,
+                         params={"function": "NEWS_SENTIMENT", "tickers": t, "sort": "LATEST", "limit": 50,
+                                 "apikey": key})
+        if r.status_code != 200:
+            return None, f"Alpha Vantage HTTP {r.status_code}"
+        js = r.json() or {}
+        if "feed" not in js:             # günlük kota dolunca HTTP 200 + "Information" / "Note" döner
+            return None, "Alpha Vantage daily limit reached" if (js.get("Information") or js.get("Note")) \
+                else "unexpected Alpha Vantage answer"
+        out = []
+        for x in js["feed"]:
+            av, rel = None, 0.0
+            for ts_ in x.get("ticker_sentiment") or []:
+                if str(ts_.get("ticker", "")).upper() == t:
+                    av, rel = _num(ts_.get("ticker_sentiment_score")), _num(ts_.get("relevance_score")) or 0.0
+            if av is None or rel < 0.15:     # hisseyle ilgisi zayıf haber
+                continue
+            try:
+                ts = pd.to_datetime(str(x.get("time_published"))[:15], format="%Y%m%dT%H%M%S",
+                                    utc=True).timestamp()
+            except Exception:
+                ts = 0.0
+            out.append(_nitem(x.get("title"), x.get("url"), x.get("source"), ts, "alphavantage",
+                              x.get("summary") or "", av=av))
+        return out
+    return _gated("n_av", "Alpha Vantage", run)
+
+
+def _brave_get(url, params):
+    return requests.get(url, params=params, timeout=10,
+                        headers={"Accept": "application/json", "X-Subscription-Token": brave_key()})
+
+
+def _brave_ts(x):
+    for k in ("page_age", "age"):
+        v = x.get(k)
+        if not v:
+            continue
+        try:
+            return pd.Timestamp(v).tz_localize("UTC").timestamp() if pd.Timestamp(v).tzinfo is None \
+                else pd.Timestamp(v).timestamp()
+        except (ValueError, TypeError):
+            m = re.match(r"(\d+)\s+(minute|hour|day|week)s?\s+ago", str(v))
+            if m:
+                mult = {"minute": 60, "hour": 3600, "day": 86400, "week": 604800}[m.group(2)]
+                return time.time() - int(m.group(1)) * mult
+    return 0.0
+
+
+def _news_brave(t, name):
+    if not brave_key():
+        return None, "not connected"
+
+    def run():
+        r = _brave_get(_BRAVE_NEWS, {"q": f'"{name}" stock' if name else f"{t} stock", "count": 20,
+                                     "freshness": "pw", "search_lang": "en"})
+        if r.status_code != 200:
+            return None, {401: "Brave key rejected", 422: "Brave key rejected", 429: "Brave rate limit"}.get(
+                r.status_code, f"Brave HTTP {r.status_code}")
+        return [_nitem(x.get("title"), x.get("url"), (x.get("meta_url") or {}).get("hostname") or "Brave",
+                       _brave_ts(x), "brave", x.get("description") or "")
+                for x in (r.json() or {}).get("results") or [] if x.get("title")]
+    return _gated("n_brave", "Brave news", run)
+
+
+def _x_web(t, name):
+    """X-gönderilerini web araması ile süzer (resmî X API kısıtlıyken). Döner: (gönderiler | None, hata)."""
+    if not brave_key():
+        return None, "not connected"
+
+    def run():
+        r = _brave_get(_BRAVE_WEB, {"q": f'"${t}" site:x.com', "count": 20, "freshness": "pd"})
+        if r.status_code != 200:
+            return None, {401: "Brave key rejected", 422: "Brave key rejected", 429: "Brave rate limit"}.get(
+                r.status_code, f"Brave HTTP {r.status_code}")
+        out = []
+        for x in ((r.json() or {}).get("web") or {}).get("results") or []:
+            u = str(x.get("url") or "")
+            if not re.search(r"https?://(www\.)?(x|twitter)\.com/", u):
+                continue
+            txt = re.sub(r"<[^>]+>", "", f"{x.get('title') or ''} {x.get('description') or ''}")
+            if not _mentions(t, name, txt):
+                continue
+            out.append({"title": txt[:400], "text": "", "ts": _brave_ts(x) or time.time() - 6 * 3600, "sub": "",
+                        "score": 0.0, "comments": 0.0, "url": u})
+        return out
+    return _gated("x_web", "X web search", run)
+
+
+def _sec_8k(t):
+    if not _sec_cik_map():
+        return None, "SEC EDGAR not reachable"
+    cik = sec_cik(t)
+    if not cik:
+        return [], ""                    # SEC'e rapor vermeyen şirket (ör. yabancı / ETF)
+
+    def run():
+        js = _sec_get("https://data.sec.gov/submissions/CIK%010d.json" % int(cik), timeout=15).json()
+        rc = (js.get("filings") or {}).get("recent") or {}
+        cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=14)
+        out = []
+        forms = rc.get("form") or []
+        for i, form in enumerate(forms[:400]):
+            if form not in ("8-K", "6-K"):
+                continue
+            filed = (rc.get("filingDate") or [""] * len(forms))[i]
+            try:
+                fd = pd.Timestamp(filed)
+            except (ValueError, TypeError):
+                continue
+            if fd < cutoff:
+                break
+            items = [x.strip() for x in str((rc.get("items") or [""] * len(forms))[i] or "").split(",") if x.strip()]
+            named = [SEC_8K_ITEMS[x] for x in items if x in SEC_8K_ITEMS and x != "9.01"]
+            what = " · ".join(n for n, _ in named) or (rc.get("primaryDocDescription") or [""] * len(forms))[i] \
+                or "Current report"
+            sv = [v for _, v in named]
+            s = (min(sv) if min(sv, default=0) < -0.05 else max(sv, default=0.0)) if sv else 0.0
+            acc = str(rc["accessionNumber"][i])
+            doc = (rc.get("primaryDocument") or [""] * len(forms))[i]
+            url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc.replace('-', '')}/{doc}"
+            acc_ts = (rc.get("acceptanceDateTime") or [""] * len(forms))[i]
+            try:
+                ts = pd.Timestamp(acc_ts).timestamp() if acc_ts else (fd + pd.Timedelta(hours=21)).timestamp()
+            except (ValueError, TypeError):
+                ts = (fd + pd.Timedelta(hours=21)).timestamp()
+            it = _nitem(f"{form}: {what}", url, "SEC EDGAR", ts, "sec")
+            it["s"] = float(s)
+            it["items"] = items
+            out.append(it)
+        return out
+    return _gated("n_sec", "SEC EDGAR", run)
+
+
+@_ttl_cache(1800, fail_ttl=600)
+def get_wsb_top():
+    """Tradestie: r/wallstreetbets'te en çok konuşulan 50 hisse + duyarlılık."""
+    if not _HAS_REQ:
+        return {"src": "none", "map": {}}
+    try:
+        r = requests.get("https://tradestie.com/api/v1/apps/reddit", headers=_HEADERS, timeout=10)
+        js = r.json() if r.status_code == 200 else []
+        m = {}
+        for i, x in enumerate(js if isinstance(js, list) else []):
+            tk = str(x.get("ticker") or "").upper()
+            if tk:
+                m[tk] = {"rank": i + 1, "comments": int(_num(x.get("no_of_comments")) or 0),
+                         "sentiment": str(x.get("sentiment") or ""), "score": _num(x.get("sentiment_score"))}
+        return {"src": "real" if m else "none", "map": m}
+    except Exception:
+        return {"src": "none", "map": {}}
+
+
+@_ttl_cache(900, fail_ttl=300)
+def get_stocktwits_trending():
+    """StockTwits'te şu an trend olan semboller (sıra)."""
+    if not _HAS_REQ:
+        return {"src": "none", "map": {}}
+    try:
+        r = requests.get("https://api.stocktwits.com/api/2/trending/symbols.json", headers=_HEADERS, timeout=10)
+        js = r.json() if r.status_code == 200 else {}
+        m = {str(x.get("symbol") or "").upper(): i + 1 for i, x in enumerate((js or {}).get("symbols") or [])
+             if x.get("symbol")}
+        return {"src": "real" if m else "none", "map": m}
+    except Exception:
+        return {"src": "none", "map": {}}
+
+
+NEWS_SOURCES = [("google", "Google News"), ("yahoo", "Yahoo Finance"), ("sa", "Seeking Alpha"),
+                ("nasdaq", "Nasdaq"), ("finnhub", "Finnhub news"), ("av", "Alpha Vantage"),
+                ("brave", "Brave news search"), ("sec", "SEC EDGAR (8-K)")]
+
+
+def _news_scan(t):
+    """Tüm haber kaynaklarını paralel tarar → tekilleştirilmiş, ilgili haberler + kaynak durumu."""
+    name = company_name(t) or t
+    jobs = {"google": lambda: _news_google(t, name), "yahoo": lambda: _news_yahoo(t), "sa": lambda: _news_sa(t),
+            "nasdaq": lambda: _news_nasdaq(t), "finnhub": lambda: _news_finnhub(t), "av": lambda: _news_av(t),
+            "brave": lambda: _news_brave(t, name), "sec": lambda: _sec_8k(t)}
+    keys = [k for k, _ in NEWS_SOURCES]
+    res = dict(zip(keys, _pmap(lambda k: jobs[k](), keys, workers=8)))
+    src, items = {}, []
+    now = time.time()
+    for k, label in NEWS_SOURCES:
+        lst, err = res.get(k) or (None, "no answer")
+        if lst is None:
+            src[k] = {"name": label, "ok": False, "err": err, "n": 0}
+            continue
+        keep = []
+        for it in lst:
+            if not it["title"] or (it["ts"] and now - it["ts"] > 8 * 86400):
+                continue
+            # arama kaynaklarında (Google / Brave) haberin gerçekten bu şirketle ilgili olması gerekir
+            if k in ("google", "brave") and not _mentions(t, name, it["title"] + " " + it["summary"]):
+                continue
+            keep.append(it)
+        src[k] = {"name": label, "ok": True, "err": "", "n": len(keep)}
+        items += keep
+    # tekilleştir: aynı başlık birden fazla kaynakta → hazır skoru (Alpha Vantage) olan / en yeni tutulur
+    best = {}
+    for it in items:
+        key = re.sub(r"[^a-z0-9]+", "", it["title"].lower())[:64]
+        if not key:
+            continue
+        cur = best.get(key)
+        if cur is None or (it["av"] is not None and cur["av"] is None) or \
+                (it["av"] is None) == (cur["av"] is None) and it["ts"] > cur["ts"]:
+            if cur is not None:
+                it.setdefault("also", []).extend([cur["source"]] + cur.get("also", []))
+            best[key] = it
+        else:
+            cur.setdefault("also", []).append(it["source"])
+    out = sorted(best.values(), key=lambda x: -x["ts"])
+    return out, src
+
+
+def _news_pulse(t):
+    items, src = _news_scan(t)
+    now = time.time()
+    wsum = acc = 0.0
+    bull = bear = neu = 0
+    by_type = {k: 0 for k in NEWS_TYPES}
+    n24 = nprev = 0
+    for it in items:
+        age_h = max(0.0, (now - it["ts"]) / 3600) if it["ts"] else 48.0
+        if age_h <= 24:
+            n24 += 1
+        elif age_h <= 7 * 24:
+            nprev += 1
+        if age_h > 7 * 24:
+            continue
+        w = NEWS_TYPE_W.get(it["type"], 1.0) * float(np.exp(-age_h / 36.0)) * (1.0 + 0.25 * min(3, len(it.get("also", []))))
+        wsum += w
+        acc += w * it["s"]
+        by_type[it["type"]] = by_type.get(it["type"], 0) + 1
+        if it["s"] > 0.15:
+            bull += 1
+        elif it["s"] < -0.15:
+            bear += 1
+        else:
+            neu += 1
+    n7 = bull + bear + neu
+    score = float(acc / wsum * 100) if wsum else 0.0
+    base = nprev / 6.0
+    vel = (n24 / max(base, 0.5)) if (n24 + nprev) else None
+    ok_any = any(v["ok"] for v in src.values())
+    for it in items:
+        it["sent"] = 1 if it["s"] > 0.15 else -1 if it["s"] < -0.15 else 0
+        it["age"] = _age(it["ts"])[2] if it["ts"] else ""
+    return {"sym": t, "src": "real" if ok_any else "none", "score": round(score, 1), "n": n7,
+            "label": ("Not enough news" if n7 < 3 else "Bullish" if score >= 15 else "Bearish" if score <= -15
+                      else "Neutral"),
+            "bull": bull, "bear": bear, "neutral": neu, "n24": n24, "nprev": nprev,
+            "velocity": round(vel, 2) if vel is not None else None, "types": by_type,
+            "items": items[:40], "sources": src, "checked": pd.Timestamp.now(tz=TZ).strftime("%H:%M")}
+
+
+_NEWSP, _PULSE, _HYPE_HIST = {}, {}, {}
+
+
+def get_news_pulse(t):
+    """Haber nabzı — 10 dakikada bir yeniden taranır."""
+    now = time.time()
+    hit = _NEWSP.get(t)
+    if hit is not None and now - hit[0] < hit[1]:
+        return hit[2]
+    try:
+        val = _news_pulse(t)
+    except Exception:
+        val = {"sym": t, "src": "none", "score": 0.0, "n": 0, "label": "Not enough news", "bull": 0, "bear": 0,
+               "neutral": 0, "n24": 0, "nprev": 0, "velocity": None, "types": {}, "items": [], "sources": {},
+               "checked": ""}
+    _NEWSP[t] = (now, 600 if val.get("src") == "real" else 180, val)
+    if len(_NEWSP) > 300:
+        for k in list(_NEWSP)[:100]:
+            _NEWSP.pop(k, None)
+    return val
+
+
+def _rate_score(rate):
+    """Mesaj / saat → 0 … 100 (logaritmik: 1/sa ≈ 18, 7/sa ≈ 54, 31/sa ≈ 90)."""
+    return float(max(0.0, min(100.0, 18.0 * np.log2(1.0 + max(0.0, rate)))))
+
+
+def hype_index(soc, nw, t=None):
+    """Hype göstergesi 0 … 100: Reddit anılma sırası / artışı, WSB top-50, haber akış hızı, X ve StockTwits
+    mesaj hızı, StockTwits trend listesi. Döner: {'score','level','viral','drivers':[...], 'parts':{...}}."""
+    t = t or soc.get("sym") or nw.get("sym")
+    parts, drivers = {}, []
+    h = soc.get("hype") or {}
+    # Reddit (ApeWisdom)
+    if h.get("tracked") and h.get("mentions") is not None:
+        r_ = 0.0
+        rank, m, prev = h.get("rank"), h.get("mentions") or 0.0, h.get("mentions_prev")
+        if rank:
+            r_ = next((v for lim, v in ((5, 95), (10, 85), (25, 70), (50, 55), (100, 40), (300, 22)) if rank <= lim), 10)
+        if prev and m >= 20 and m > prev:
+            r_ = max(r_, min(100.0, 40 + 30 * np.log2(m / prev)))
+        parts["reddit"] = r_
+        txt = f"Reddit: #{int(rank)} most-mentioned" if rank else "Reddit: barely mentioned"
+        if h.get("change_pct") is not None and m >= 5:
+            txt += f" · mentions {h['change_pct']:+.0f}% in 24 h"
+        drivers.append((r_, txt))
+    # r/wallstreetbets top-50 (Tradestie)
+    wsb = (get_wsb_top().get("map") or {}).get(t)
+    if wsb:
+        s_ = min(100.0, 55 + (50 - wsb["rank"]) * 0.9)
+        parts["wsb"] = s_
+        drivers.append((s_, f"r/wallstreetbets top-50: #{wsb['rank']} · {wsb['comments']:,} comments"
+                            + (f" · {wsb['sentiment'].lower()}" if wsb.get("sentiment") else "")))
+    # haber akış hızı (Google News + diğerleri)
+    vel = nw.get("velocity")
+    if vel is not None and (nw.get("n24", 0) + nw.get("nprev", 0)) >= 3:
+        s_ = float(max(0.0, min(100.0, 25.0 * vel))) if nw.get("n24", 0) >= 2 else 10.0
+        parts["news"] = s_
+        drivers.append((s_, f"News flow {vel:.1f}× normal ({nw.get('n24', 0)} articles in 24 h)"))
+    # X: doğrudan gönderi hızı ya da Finnhub sayıları
+    src = soc.get("sources") or {}
+    xs = src.get("x") or {}
+    if xs.get("ok") and xs.get("rate_h") is not None:
+        s_ = _rate_score(xs["rate_h"])
+        parts["x"] = s_
+        drivers.append((s_, f"X: {xs['rate_h']:.0f} posts / h"))
+    elif h.get("x_mentions"):
+        tot, d24 = float(h.get("x_mentions") or 0), float(h.get("x_last24h") or 0)
+        base = max(0.5, (tot - d24) / 6.0)
+        s_ = float(max(0.0, min(100.0, 25.0 * d24 / base)))
+        parts["x"] = s_
+        drivers.append((s_, f"X (via Finnhub): {d24:.0f} mentions in 24 h · {d24 / base:.1f}× the weekly pace"))
+    xw = src.get("x_web") or {}
+    if "x" not in parts and xw.get("ok") and xw.get("n"):
+        s_ = min(60.0, 3.0 * xw["n"])
+        parts["x"] = s_
+        drivers.append((s_, f"X (web search): {xw['n']} posts found in the last day"))
+    # StockTwits: mesaj hızı + trend listesi
+    sts = src.get("stocktwits") or {}
+    if sts.get("ok") and sts.get("rate_h") is not None:
+        s_ = _rate_score(sts["rate_h"])
+        trank = (get_stocktwits_trending().get("map") or {}).get(t)
+        txt = f"StockTwits: {sts['rate_h']:.0f} messages / h"
+        if trank:
+            s_ = max(s_, min(100.0, 62 + (30 - trank) * 1.2))
+            txt += f" · trending #{trank}"
+        parts["stocktwits"] = s_
+        drivers.append((s_, txt))
+    if not parts:
+        return {"score": None, "level": "Unknown", "viral": False, "drivers": [], "parts": {}}
+    vals = sorted(parts.values(), reverse=True)
+    score = 0.55 * vals[0] + 0.45 * (sum(vals[:3]) / len(vals[:3]))
+    hot = sum(1 for v in vals if v >= 75)
+    level = ("Viral" if score >= 80 or hot >= 3 else "High" if score >= 62 else "Elevated" if score >= 42
+             else "Normal" if score >= 22 else "Quiet")
+    drivers.sort(key=lambda d: -d[0])
+    return {"score": round(float(score)), "level": level, "viral": level == "Viral" or hot >= 2,
+            "drivers": [{"score": round(float(a)), "text": b} for a, b in drivers], "parts": parts}
+
+
+def overall_sentiment(soc, nw):
+    """Haber + topluluk → tek skor (−100 … +100) ve Bullish / Bearish / Neutral.
+    Ağırlık veri miktarına göre: az haber / az gönderi varsa o taraf daha az sayılır."""
+    w_n = min(1.0, nw.get("n", 0) / 12.0) if nw.get("n", 0) >= 3 else 0.0
+    w_s = min(1.0, soc.get("n", 0) / 40.0) if soc.get("n", 0) >= 5 else 0.0
+    if w_n + w_s == 0:
+        return {"score": 0.0, "label": "Not enough data", "conf": "None", "w_news": 0.0, "w_social": 0.0}
+    sc = (w_n * nw.get("score", 0.0) + w_s * soc.get("score", 0.0)) / (w_n + w_s)
+    lab = "Bullish" if sc >= 15 else "Bearish" if sc <= -15 else "Neutral"
+    agree = w_n > 0 and w_s > 0 and np.sign(round(nw.get("score", 0.0) / 15)) == np.sign(round(soc.get("score", 0.0) / 15))
+    conf = "High" if (w_n >= 0.5 and w_s >= 0.5 and agree) else "Medium" if (w_n + w_s) >= 0.8 else "Low"
+    return {"score": round(float(sc), 1), "label": lab, "conf": conf, "agree": bool(agree),
+            "w_news": round(w_n / (w_n + w_s), 2), "w_social": round(w_s / (w_n + w_s), 2)}
+
+
+def get_market_pulse(t):
+    """Short Term ve izleyici için tek giriş noktası: topluluk + haber + genel skor + hype."""
+    t = str(t or "").upper()
+    soc = get_sentiment(t)
+    nw = get_news_pulse(t)
+    ov = overall_sentiment(soc, nw)
+    hy = hype_index(soc, nw, t)
+    now = time.time()
+    if hy.get("score") is not None:
+        hist = _HYPE_HIST.setdefault(t, [])
+        if not hist or now - hist[-1][0] > 540:
+            hist.append((now, hy["score"]))
+            del hist[:-144]
+        hy["hist"] = list(hist)
+    return {"sym": t, "overall": ov, "social": soc, "news": nw, "hype": hy,
+            "src": "real" if (soc.get("src") == "real" or nw.get("src") == "real") else "none",
+            "checked": pd.Timestamp.now(tz=TZ).strftime("%H:%M")}
+
+
+def market_pulse_reset():
+    sentiment_reset()
+    _NEWSP.clear()
+    _HYPE_HIST.clear()
+    get_wsb_top.clear()
+    get_stocktwits_trending.clear()
+
+
+get_market_pulse.clear = market_pulse_reset
 
 
 
