@@ -1,3 +1,24 @@
+# Pulse — Market Dashboard (Streamlit) · v4.5
+
+## Neu in v4.5 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Keine neuen Secrets.
+
+* **Valuation: Sektion „Methods“ entfernt.** Die ganze Tabelle mit allen Zeilen (EV/EBITDA, Owner-earnings
+  DCF, ROIC vs WACC, Mid-cycle earnings, Dividend discount, Market-implied path …) ist aus der Oberfläche
+  **und** aus der Render-Logik raus. Die Referenzzeile *Market-implied path* wird gar nicht mehr berechnet.
+  Der Prüf-Block (z. B. „Debt, Profit Growth & Consistency“) steht jetzt in voller Breite direkt unter der
+  Modellauswahl.
+  **Beibehalten:** *Blended Fair Value* samt Gewichtung — dort stehen weiterhin die beitragenden Methoden
+  mit ihrem Anteil, weil du dir diese Erklärung in v4.0 ausdrücklich gewünscht hast. Sag Bescheid, wenn
+  auch diese Zeilen verschwinden sollen.
+* **Short Term, Detailkarte:** Unter „Sell 40 % at TP1 …“ ist jetzt deutlich mehr Abstand. „Why this
+  opportunity is listed“ sitzt in einer eigenen, voll breiten Zeile; beim Ausklappen schiebt es den Button
+  „Add to trade journal“ sauber nach unten, ohne in den Text darüber zu ragen.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.4
 
 ## Neu in v4.4 (Deutsch)
