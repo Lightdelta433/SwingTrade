@@ -1,3 +1,81 @@
+# Pulse — Market Dashboard (Streamlit) · v4.2
+
+## Neu in v4.2 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Alle Secrets aus v4.0 / v4.1 gelten weiter; zwei neue sind optional (unten).
+
+* **Fundamentals: Quartale per Klick.** Ein Klick auf ein Geschäftsjahr in *Income Statement*, *Margins*,
+  *Cash Flow* oder *Balance Sheet* ersetzt die 4-Jahres-Übersicht an dieser Stelle durch eine große
+  Detailansicht: Q1–Q4 dieses Jahres, nur für die angeklickte Kategorie, in voller Breite. Sie enthält ein
+  Säulendiagramm (Vorjahresquartal als Raute, noch nicht berichtete Quartale als Schätzbereich), Kacheln mit
+  den Jahreswerten und eine Tabelle mit Veränderung zum Vorquartal und zum Vorjahresquartal (Margen in
+  Prozentpunkten). Oben kannst du die Kategorie und das Jahr direkt wechseln. **✕ Close** oder ein erneuter
+  Klick auf dasselbe Jahr bringt die 4-Jahres-Übersicht zurück. Die Bilanz-Quartale kommen aus den
+  SEC-Meldungen (10-Q / 10-K), sonst aus Yahoo.
+* **Short Term: keine Überlappungen mehr im Chart.**
+  * Level, Stop, TP1 und TP2 stehen als farbige Schilder **direkt auf der Preisachse**. Die Achse wird so
+    breit wie das längste Schild, damit nichts abgeschnitten wird.
+  * Liegen Preise eng beieinander, werden die Schilder sauber versetzt und mit einer feinen Linie mit ihrem
+    Preis verbunden. Das gilt auch für das Schild mit dem letzten Kurs.
+  * Order-Block-, Support/Resistance-, Gap-, Dark-Pool- und Alarm-Beschriftungen laufen in einer eigenen
+    Spalte am rechten Rand. Dort überlappen sie sich nie und sind jeweils mit ihrer Zone verbunden.
+  * In der Standardansicht lässt der Chart rechts so viel Platz frei, dass diese Spalte keine Kerzen
+    verdeckt. Wird es eng, nimmt sie automatisch die Kurzform (z. B. „Bull OB 2.4×“).
+  * Die Y-Achse bezieht die Plan-Levels, nahe Order Blocks und Dark-Pool-Levels immer mit ein. Am Rand
+    bleibt genug Abstand, damit kein Schild halb herausragt. Bei manuell gezoomter Achse wird ein Level
+    außerhalb des Bildes mit ▲ / ▼ am Rand angezeigt.
+  * Der Short-Term-Chart wächst mit der Bildschirmhöhe (ca. 84 % des sichtbaren Fensters, mindestens 700 px,
+    Kursbereich mindestens 470 px). Passen die Beschriftungen trotzdem nicht hinein, wird er automatisch
+    höher (bis 1180 px).
+  * Formations-Beschriftungen suchen sich einen freien Platz.
+* **Sentiment-Modul: Nachrichten + Community → ein Gesamtwert.**
+  * **Market Sentiment** fasst Nachrichten und Community zu einem Wert von −100 bis +100 zusammen
+    (Bullish ≥ +15, Bearish ≤ −15, sonst Neutral). Gewichtet wird nach Datenmenge. Darunter stehen der
+    News- und der Community-Teilwert sowie eine Konfidenz („High“, wenn beide Seiten genug Daten haben und
+    übereinstimmen).
+  * **Live-News-Scanner** (alle 10 Minuten, auch automatisch, solange die Seite offen ist): Google News
+    (Firmensuche, 7 Tage), Yahoo Finance, Seeking Alpha (Analysen / Blogs), Nasdaq und SEC EDGAR 8-K
+    (offizielle Firmenmeldungen, nach Item gelesen, z. B. 2.05 Restrukturierung oder 4.02 korrigierte
+    Abschlüsse). Optional kommen Finnhub Company News, Alpha Vantage (Nachrichten mit eigenem
+    Sentiment-Score) und Brave News Search dazu.
+  * Jede Meldung wird als *News*, *Press release*, *Blog / analysis* oder *Filing* markiert und nach
+    Formulierungen bewertet, etwa „beats estimates“, „raises guidance“, „downgrade“, „cuts outlook“ oder
+    „probe“. Neue Meldungen zählen stärker (Halbwertszeit ≈ 1 Tag), Pressemitteilungen etwas weniger.
+    Doppelte Schlagzeilen aus mehreren Quellen werden zusammengelegt.
+  * **X ohne X-API:** Ist der X-Zugang gesperrt oder nicht vorhanden, sucht Pulse über die Brave-Websuche
+    nach aktuellen X-Posts zum Ticker und bewertet sie. Daneben laufen Finnhub Social Sentiment, Reddit
+    (r/wallstreetbets, r/stocks, r/options) und StockTwits wie in v4.1.
+  * **Hype-Indikator (getrennt von Bullish / Bearish):** eine Skala von 0–100 mit den Stufen Quiet, Normal,
+    Elevated, High und Viral. Er speist sich aus diesen Treibern, die einzeln angezeigt werden:
+    * Reddit-Rang und Anstieg der Erwähnungen (ApeWisdom)
+    * Top 50 auf r/wallstreetbets (Tradestie)
+    * Nachrichtenfluss im Vergleich zum 7-Tage-Schnitt (Google-News-Trend)
+    * Tempo der X- und StockTwits-Nachrichten
+    * StockTwits-Trendliste
+
+    Bei *High* oder *Viral* erscheint über dem Bereich ein hervorgehobenes Banner.
+  * **Im Hintergrund:** Der Monitor scannt die Watchlist-Aktien reihum. Wird eine davon *Viral*, kommt auf
+    Wunsch eine Benachrichtigung, höchstens einmal pro Tag. Die neue Option heißt **„Viral buzz“** in den
+    Benachrichtigungs-Einstellungen.
+  * Unter **Sources & status** siehst du für jede Quelle, ob sie antwortet, wie viele Treffer sie liefert
+    und welcher Schlüssel fehlt. Fällt eine Quelle aus, wird sie in wachsenden Abständen automatisch erneut
+    versucht; die übrigen liefern weiter.
+
+### Neue optionale Secrets (v4.2)
+
+```toml
+ALPHAVANTAGE_API_KEY = "…"   # alphavantage.co → kostenloser Key (25 Abfragen/Tag) — News mit Sentiment-Score
+BRAVE_SEARCH_KEY     = "…"   # api-dashboard.search.brave.com — News-Suche + X-Posts per Websuche
+# schon aus v4.1: FINNHUB_API_KEY (jetzt auch Company News), X_BEARER_TOKEN
+```
+
+Ohne diese Schlüssel funktioniert alles mit Google News, Yahoo, Seeking Alpha, Nasdaq, SEC, Reddit,
+StockTwits, ApeWisdom und Tradestie. StockGeist ist **nicht** eingebaut: Die API-Endpunkte ließen sich nicht
+öffentlich prüfen. ApeWisdom, Tradestie, Finnhub Social Sentiment und Alpha Vantage decken denselben Zweck ab.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.1
 
 ## Neu in v4.1 (Deutsch)
