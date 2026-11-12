@@ -1,3 +1,58 @@
+# Pulse — Market Dashboard (Streamlit) · v4.8
+
+## Neu in v4.8 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py`, `pulse_chart/index.html` und
+**neu: der Ordner `pulse_list` mit der Datei `index.html`** (auf GitHub: *Add file → Create new file*, als Namen
+`pulse_list/index.html` eingeben und den Inhalt einfügen, oder den Ordner hochladen) — dann *Reboot app*.
+Keine neuen Secrets. Fehlt `pulse_list/index.html`, funktionieren die Watchlists weiter mit ↑ / ↓-Pfeilen
+und zeigen einen Hinweis zum Hochladen.
+
+### Watchlist: eigene Reihenfolge
+* **Drag & Drop** über den dezenten Griff **⋮⋮** links neben Logo/Ticker – mit der Maus und auf dem Handy
+  per Finger. Die anderen Zeilen rücken beim Ziehen sichtbar zur Seite; am oberen/unteren Rand scrollt die
+  Liste automatisch weiter.
+* **Kompakte Pfeile ↑ / ↓** rechts in jeder Zeile verschieben einen Eintrag um genau eine Position (oben bzw.
+  unten ausgegraut). Tastatur: Griff anklicken, dann ↑ / ↓ / Pos1 / Ende.
+* Gilt für die **Watchlist in Markets** (Klick auf Name/Preis öffnet weiterhin den Chart) und die
+  **Demo-Watchlist** (pro Konto, mit × zum Entfernen).
+* **Sofort gespeichert:** Hauptliste im Profil (eingeloggt → dauerhafter GitHub-Speicher, sonst in der
+  Sitzung), Demo-Liste im jeweiligen Demo-Konto. Die Reihenfolge bleibt beim Neuladen, beim Wechsel der
+  Reiter und beim Wechsel der Demo-Konten exakt erhalten; neu hinzugefügte Ticker landen am Ende.
+* Auf schmalen Bildschirmen blendet die Demo-Liste rechte Spalten (z. B. „In account“) aus, statt Zahlen
+  abzuschneiden.
+
+### Demo Account: Stop-Loss & Take-Profit
+* **Order Ticket (Kauf):** zwei getrennte Schalter **Take profit** und **Stop loss**. Eingeschaltet erscheint
+  jeweils ein Preisfeld mit **− / +** (Schrittweite passend zum Kurs) und direkter Eingabe; Vorschlag +5 % bzw.
+  −3 %. Direkt darunter steht dynamisch das erwartete Ergebnis **„Result: +$X.XX“ / „Result: −€X.XX“**
+  (Stückzahl × Abstand zum aktuellen Kurs, in der Kontowährung, mit Prozent).
+* **Stop-Typ:** *Regular* (fester Preis) oder *Trailing* (nachziehender Stop: der Abstand zum Kurs bleibt
+  gleich, der Stop steigt mit jedem neuen Hoch und fällt nie). In der Tabelle mit ↗ markiert.
+* Ungültige Werte (SL über bzw. TP unter dem aktuellen Kurs) werden direkt am Feld markiert und nicht
+  angenommen.
+* **Open Positions:** jede Position hat neben „Sell all“ einen Knopf **„SL / TP“**. Er öffnet den Bereich
+  *Stop loss / take profit for open positions* mit genau dieser Position: dieselben Schalter, Felder und
+  Ergebnis-Zeilen. **Schalter aus = Order sofort gelöscht**; Änderungen mit *Save orders* übernehmen. Das geht
+  auch für Bot-Positionen – deine Werte ersetzen dann den Plan des Bots.
+* **Automatische Schließung zum Live-Kurs:** Sobald der Kurs das TP- oder SL-Niveau erreicht oder
+  überschreitet, wird die Position glattgestellt. Geprüft wird mit dem letzten 1-Minuten-Kurs (höchstens
+  ~40 s alt): auf dem Server alle 30 Sekunden, beim Öffnen der Seite und alle 30 Sekunden, solange der Demo-
+  Reiter offen ist. (Bisher: alle 15 Minuten auf geschlossenen 15-Minuten-Kerzen.)
+* **Trade History** bekommt den Trade sofort, im Feld **WHY** mit „Take Profit hit“, „Stop Loss triggered“
+  oder „Trailing Stop triggered“. **Cash** und **Realised P/L** werden im selben Moment aktualisiert; eine
+  offene Demo-Seite lädt sich selbst neu und zeigt eine Meldung. Mit aktivierter Benachrichtigung „Demo
+  trades“ kommt zusätzlich Push / E-Mail.
+* Manuelle Demo-Orders werden jetzt ebenfalls zum 1-Minuten-Kurs ausgeführt.
+* Hinweis: Streamlit Cloud legt die App nach längerer Inaktivität schlafen. Solange sie läuft, werden die
+  Orders auch ohne geöffnete Seite überwacht; nach dem Aufwachen wird sofort zum aktuellen Kurs geprüft.
+
+**Getestet:** alle 59 Szenarien in 4 Modi (online/offline × neue/alte Streamlit-Version), Browser-Test der
+sortierbaren Liste (Maus- und Touch-Drag, Pfeile, Tastatur, Entfernen, Öffnen, Breiten 300–760 px, helles
+Theme – keine Überschneidungen) und Abstands-Test der SL/TP-Bereiche bei 760 / 600 / 360 px.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.7
 
 ## Neu in v4.7 (Deutsch)
