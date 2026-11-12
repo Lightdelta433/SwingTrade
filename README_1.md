@@ -1,3 +1,35 @@
+# Pulse — Market Dashboard (Streamlit) · v4.7
+
+## Neu in v4.7 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py` und `pulse_chart/index.html` —
+alle hochladen, dann *Reboot app*. Keine neuen Secrets.
+
+* **Mehrere Demo-Konten.** Im Reiter *Demo* steht links oben die Kontoauswahl *Paper trading account* mit
+  allen Konten (Name · aktueller Wert) und als letzter Eintrag **„+ Create account…“**. Dort vergibst du
+  einen eigenen Namen (z. B. FundedAccount, Swing-Depot, CFD EUR), wählst die Währung ($ / €) und das
+  Startkapital (10.000 / 25.000 / 50.000 / 100.000 / 500.000). Bis zu 12 Konten, Namen sind eindeutig.
+* **Kein Datenverlust beim Wechseln.** Jedes Konto hat seinen eigenen Kontostand, offene Positionen,
+  Stop-Loss/Take-Profit-Orders, Handelsverlauf, Equity-Kurve, Watchlist **und eigene Bots**. Beim Wechsel
+  wird nur das aktive Konto umgestellt – nichts wird zurückgesetzt. Alles liegt im selben dauerhaften
+  Speicher wie dein Profil (GitHub-Store aus v4.0) und übersteht Neustarts von Streamlit Cloud.
+  Dein bisheriges Demokonto wird automatisch als **„Main account“** übernommen.
+* **Zahnrad ⚙ neben der Auswahl:** das aktive Konto **umbenennen**, **zurücksetzen** (mit neuer Währung /
+  neuem Startkapital; Name, Watchlist und Bots bleiben, Bots pausiert; andere Konten unberührt) oder
+  **dauerhaft löschen** (mit Bestätigung; das letzte Konto lässt sich nicht löschen, nur zurücksetzen).
+* **Stop-Loss / Take-Profit für manuelle Orders.** Im Order Ticket beim Kauf optional SL und TP angeben;
+  sie werden wie die Bot-Orders alle 15 Minuten auf den geschlossenen 15-Minuten-Kerzen geprüft. Die
+  Tabelle *Open positions* zeigt SL / TP, und unter „Stop-loss / take-profit for your manual positions“
+  lassen sie sich nachträglich ändern oder entfernen.
+* **Bots:** Neue Bots gehören zum aktiven Konto; der 15-Minuten-Lauf bedient alle Konten. Short Term und
+  die Karte im Seitenmenü zeigen, welches Konto gerade aktiv ist; Bot-Benachrichtigungen nennen den
+  Kontonamen.
+* **Spacing:** Kontoauswahl, Zahnrad-Menü und Formular wurden im Browser-Nachbau (mit einem 32 Zeichen
+  langen Kontonamen, auch bei schmaler Spalte) auf Überschneidungen geprüft – keine gefunden; „Create
+  account“ und „Cancel“ stehen untereinander, damit in der schmalen Spalte nichts abgeschnitten wird.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.6
 
 ## Neu in v4.6 (Deutsch)
