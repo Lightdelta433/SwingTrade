@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "4.7"
+BACKEND_VERSION = "4.8"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -934,28 +934,60 @@ def demo_reset(email, start, ccy, keep=True, acc_id=None):
     return demo_edit(email, run, acc_id)
 
 
-def demo_set_orders(email, key, stop=None, tp=None, acc_id=None):
-    """Elle açılmış pozisyonun Stop-Loss / Take-Profit emrini ayarlar (None ya da 0 = yok).
-    Döner: (ok, mesaj). Kontrol: stop < son fiyat < hedef."""
+_KEEP = object()
+
+
+def pos_orders(p):
+    """Pozisyonun bekleyen emirleri: {'stop','tp','mode','trail'} (0 = yok)."""
+    tp = float(p.get("tp2") or 0) or (float(p.get("tp1") or 0) if not p.get("tp1_done") else 0.0)
+    return {"stop": float(p.get("stop") or 0) if has_orders(p) else 0.0, "tp": tp if has_orders(p) else 0.0,
+            "mode": "trailing" if p.get("trail") else "regular", "trail": float(p.get("trail") or 0)}
+
+
+def demo_set_orders(email, key, stop=_KEEP, tp=_KEEP, mode=_KEEP, acc_id=None, last=None):
+    """Bir pozisyonun Stop-Loss / Take-Profit emrini ayarlar ya da kapatır (0 / None = kapalı; verilmeyen taraf
+    aynen kalır). mode: 'regular' (sabit fiyat) | 'trailing' (en yüksek fiyatın, ayar anındaki mesafe kadar altı).
+    Bot pozisyonunda kendi emirlerin botun çıkış planının yerine geçer. Döner: (ok, mesaj)."""
     def run(acct):
         p = acct["pos"].get(key)
         if not p:
             return False, "Position not found."
-        last = float(p.get("last") or p["entry"])
-        st_ = float(stop) if stop else 0.0
-        tp_ = float(tp) if tp else 0.0
-        if st_ and st_ >= last:
-            return False, f"The stop-loss must be below the last price ({last:.2f})."
-        if tp_ and tp_ <= last:
-            return False, f"The take-profit must be above the last price ({last:.2f})."
-        if st_ or tp_:
-            p.update({"stop": st_, "tp2": tp_, "tp1": 0.0, "atr": 0.0, "manual_orders": True,
-                      "checked": max(float(p.get("checked") or 0), time.time()), "hi": max(float(p.get("hi") or 0), last),
-                      "tp1_done": True})
+        lp = float(last) if last else float(p.get("last") or p["entry"])     # canlı fiyat (arayüzden) öncelikli
+        cur = pos_orders(p)
+        st_ = cur["stop"] if stop is _KEEP else float(stop or 0)
+        tp_ = cur["tp"] if tp is _KEEP else float(tp or 0)
+        md_ = cur["mode"] if mode is _KEEP else ("trailing" if str(mode or "").lower().startswith("trail") else "regular")
+        if stop is not _KEEP and st_ and st_ >= lp:
+            return False, f"The stop-loss must be below the current price ({lp:.2f})."
+        if tp is not _KEEP and tp_ and tp_ <= lp:
+            return False, f"The take-profit must be above the current price ({lp:.2f})."
+        if st_ < 0 or tp_ < 0:
+            return False, "Prices cannot be negative."
+        changed = (st_ != cur["stop"]) or (tp_ != cur["tp"]) or (md_ != cur["mode"])
+        if not st_ and not tp_:
+            if p["owner"] == "manual":
+                for k_ in ("stop", "tp1", "tp2", "atr", "manual_orders", "checked", "hi", "tp1_done", "trail"):
+                    p.pop(k_, None)
+            else:                     # bot pozisyonu: botun planı da kapanır (kullanıcı istedi)
+                p.update({"stop": 0.0, "tp1": 0.0, "tp2": 0.0, "atr": 0.0, "tp1_done": True, "manual_orders": True})
+                p.pop("trail", None)
+            return True, "Stop-loss and take-profit cancelled"
+        p.update({"stop": st_, "tp1": 0.0, "tp2": tp_, "atr": 0.0, "tp1_done": True, "manual_orders": True,
+                  "hi": max(float(p.get("hi") or 0), lp)})
+        if md_ == "trailing" and st_:
+            if stop is not _KEEP or mode is not _KEEP or not p.get("trail"):
+                p["trail"] = round(lp - st_, 6)
+                p["hi"] = lp
         else:
-            for k in ("stop", "tp1", "tp2", "atr", "manual_orders", "checked", "hi", "tp1_done"):
-                p.pop(k, None)
-        return True, "Orders saved" if (st_ or tp_) else "Orders removed"
+            p.pop("trail", None)
+        if changed:                   # yeni emir geçmiş mumlara karşı denenmez
+            p["checked"] = max(float(p.get("checked") or 0), time.time())
+        parts = []
+        if st_:
+            parts.append(("trailing stop " if p.get("trail") else "stop-loss ") + f"{st_:.2f}")
+        if tp_:
+            parts.append(f"take-profit {tp_:.2f}")
+        return True, "Orders saved: " + " · ".join(parts)
     return demo_edit(email, run, acc_id)
 
 
@@ -984,7 +1016,7 @@ def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan
                    "last": price}
             acct["pos"][key] = pos
         if plan:
-            pos.update({k: plan[k] for k in ("stop", "tp1", "tp2", "atr", "why", "cfg") if k in plan})
+            pos.update({k: plan[k] for k in ("stop", "tp1", "tp2", "atr", "why", "cfg", "trail") if k in plan})
             pos.update({"hi": max(price, float(pos.get("hi") or 0)), "tp1_done": bool(plan.get("tp1_done", False)),
                         "checked": plan.get("checked") or ts})
             if owner == "manual":
@@ -1027,6 +1059,8 @@ def demo_value(acct, quotes=None, eurusd=None):
                      "entry": p["entry"], "last": last, "value": val, "pnl": pl,
                      "pnl_pct": (pl / p["cost"] * 100) if p["cost"] else 0.0, "stop": p.get("stop"),
                      "tp1": p.get("tp1"), "tp2": p.get("tp2"), "tp1_done": p.get("tp1_done"),
+                     "trail": p.get("trail"), "orders": has_orders(p), "manual_orders": bool(p.get("manual_orders")),
+                     "fxm": fxm,
                      "opened": p.get("opened"), "why": p.get("why") or "", "live": q.get("src") == "real"})
     rpl = sum(t["pnl"] for t in acct.get("trades") or [] if t.get("pnl") is not None)
     eq = float(acct["cash"]) + inv
@@ -1104,7 +1138,7 @@ def bots_collect(md, acct):
     """Kilidin DIŞINDA: botların ihtiyacı olan tüm veriyi çeker ve sinyalleri hesaplar."""
     en = _engine()
     bots = [b for b in acct.get("bots") or [] if b.get("on")]
-    held = sorted({p["sym"] for p in acct["pos"].values() if p["owner"] != "manual" or p.get("manual_orders")})
+    held = sorted({p["sym"] for p in acct["pos"].values() if has_orders(p)})
     watch = [s for s in acct.get("watch") or [] if inst_ccy(s)]
     data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "eurusd": None, "err": {}}
     try:
@@ -1209,41 +1243,11 @@ def bots_apply(acct, data, now=None):
         acct.setdefault("log", []).append({"ts": round(now), "bot": bot, "sym": sym, "text": text})
         del acct["log"][:-200]
 
-    # 1) çıkışlar
-    sells = {}
-    for key, p in list(acct["pos"].items()):
-        manual = p["owner"] == "manual"
-        if (manual and not p.get("manual_orders")) or not (p.get("stop") or p.get("tp2")):
-            continue
-        df = data["i15"].get(p["sym"])
-        bars = _bars15(df, float(p.get("checked") or p.get("opened") or 0))
-        if not bars:
-            continue
-        p["last"] = bars[-1][4]
-        fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd)
-        if fxm is None:
-            continue
-        if manual:     # elle verilen emir: yalnızca stop / hedef (kısmi satış, iz süren stop ve süre sınırı yok)
-            evs, upd = en.bot_manage(dict(p, tp1=0.0, atr=0.0, tp1_done=True), bars, {"trail_atr": 6.0}, None)
-            evs = [dict(e, reason=("Stop-loss order" if "stop" in e["reason"].lower() else "Take-profit order"))
-                   for e in evs]
-        else:
-            evs, upd = en.bot_manage(p, bars, p.get("cfg"), now)
-        bname = "Manual" if manual else (names.get(p["owner"]) or p.get("bot") or "Bot")
-        for e in evs:
-            ok, _, tr = demo_trade(acct, p["sym"], "sell", float(e["qty"]), float(e["price"]), fxm, p["owner"],
-                                   e["reason"], ts=e["ts"], bot=bname)
-            if ok:
-                events.append({"kind": "sell", "sym": p["sym"], "qty": float(e["qty"]), "price": float(e["price"]),
-                               "bot": bname, "reason": e["reason"], "pnl": tr["pnl"]})
-                log(bname, p["sym"], f'SELL {e["qty"]:g} @ {e["price"]:.2f} — {e["reason"]} ({tr["pnl"]:+.2f})')
-                sells[p["owner"]] = sells.get(p["owner"], 0) + 1
-                if not manual and "stop" in e["reason"].lower() and tr["pnl"] < 0:
-                    for b in acct.get("bots") or []:
-                        if b["id"] == p["owner"]:
-                            b.setdefault("cool", {})[p["sym"]] = now
-        if key in acct["pos"]:
-            acct["pos"][key].update({k: upd[k] for k in ("stop", "hi", "tp1_done", "checked")})
+    # 1) çıkışlar (kapanmış 15 dk mumlarıyla)
+    def bars_of(p):
+        return _bars15(data["i15"].get(p["sym"]), float(p.get("checked") or p.get("opened") or 0))
+    ev_x, sells = apply_exits(acct, bars_of, eurusd, now, live=False, log=log)
+    events += ev_x
     # 2) alımlar
     is_open = (not BOT_HOURS_ONLY) or us_session_open(now)
     for b in acct.get("bots") or []:
@@ -1301,6 +1305,167 @@ def bots_apply(acct, data, now=None):
     return events
 
 
+EXIT_WHY = {"stop": "Stop Loss triggered", "trail": "Trailing Stop triggered", "be": "Break-even Stop triggered",
+            "tp1": "Take Profit 1 hit — partial exit, stop moved to entry", "tp": "Take Profit hit"}
+
+
+def _exit_reason(raw, manual, p):
+    """bot_manage gerekçesi → İşlem geçmişindeki "Why" metni (Take Profit hit / Stop Loss triggered …)."""
+    r = str(raw or "").lower()
+    if r.startswith("time exit"):
+        return raw
+    if r.startswith("tp1"):
+        return EXIT_WHY["tp1"]
+    if r.startswith("tp2") or "take" in r:
+        return EXIT_WHY["tp"]
+    if manual:
+        return EXIT_WHY["trail"] if p.get("trail") else EXIT_WHY["stop"]
+    if r.startswith("trailing"):
+        return EXIT_WHY["trail"]
+    if r.startswith("break-even"):
+        return EXIT_WHY["be"]
+    return EXIT_WHY["stop"]
+
+
+def has_orders(p):
+    """Pozisyonun bekleyen Stop-Loss / Take-Profit emri var mı? (bot pozisyonlarında her zaman stop vardır)"""
+    if p["owner"] == "manual" and not p.get("manual_orders"):
+        return False
+    return bool(p.get("stop") or p.get("tp2") or (p.get("tp1") and not p.get("tp1_done")))
+
+
+def apply_exits(acct, bars_of, eurusd, now, live=False, log=None):
+    """Kilit İÇİNDE: emirli tüm pozisyonları verilen mumlarla yönetir (stop, TP1 kısmi, TP / TP2, iz süren stop,
+    bot pozisyonlarında süre sınırı). live=True: canlı fiyatla tek "mum" — 'checked' ilerletilmez, süre çıkışı yok.
+    Döner: (olaylar, {sahip: satış sayısı})."""
+    en = _engine()
+    names = {b["id"]: b["name"] for b in acct.get("bots") or []}
+    events, sells = [], {}
+    for key, p in list(acct["pos"].items()):
+        if not has_orders(p):
+            continue
+        bars = bars_of(p)
+        if not bars:
+            continue
+        p["last"] = bars[-1][4]
+        fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd)
+        if fxm is None:
+            continue
+        manual = bool(p.get("manual_orders"))
+        if manual:     # kullanıcının emirleri: stop (sabit / iz süren) + hedef; kısmi satış ve süre sınırı yok
+            evs, upd = en.bot_manage(dict(p, tp1=0.0, atr=0.0, tp1_done=True), bars, {"trail_atr": 6.0}, None)
+        else:
+            evs, upd = en.bot_manage(p, bars, p.get("cfg"), None if live else now)
+        bname = ("Manual" if p["owner"] == "manual" else (names.get(p["owner"]) or p.get("bot") or "Bot"))
+        for e in evs:
+            why = _exit_reason(e["reason"], manual, p)
+            ok, _, tr = demo_trade(acct, p["sym"], "sell", float(e["qty"]), float(e["price"]), fxm, p["owner"],
+                                   why, ts=e["ts"], bot=bname)
+            if not ok:
+                continue
+            events.append({"kind": "sell", "sym": p["sym"], "qty": float(e["qty"]), "price": float(e["price"]),
+                           "bot": bname, "reason": why, "pnl": tr["pnl"], "manual": p["owner"] == "manual"})
+            if log:
+                log(bname, p["sym"], f'SELL {e["qty"]:g} @ {e["price"]:.2f} — {why} ({tr["pnl"]:+.2f})')
+            sells[p["owner"]] = sells.get(p["owner"], 0) + 1
+            if p["owner"] != "manual" and not manual and "stop" in why.lower() and tr["pnl"] < 0:
+                for b in acct.get("bots") or []:
+                    if b["id"] == p["owner"]:
+                        b.setdefault("cool", {})[p["sym"]] = now
+        if key in acct["pos"]:
+            keys = ("stop", "hi", "tp1_done") if live else ("stop", "hi", "tp1_done", "checked")
+            acct["pos"][key].update({k: upd[k] for k in keys})
+    return events, sells
+
+
+_ORD_LAST = {}
+ORD_GAP = 20.0               # aynı hesap için canlı fiyat kontrolleri arası en az (sn)
+
+
+def _live_hit(p, px):
+    """Canlı fiyat bir emri tetikliyor ya da iz süren stopu yukarı taşıyor mu? (kilitsiz ön kontrol)"""
+    if px is None or not has_orders(p):
+        return False
+    stop = float(p.get("stop") or 0)
+    if stop and px <= stop:
+        return True
+    tp1 = float(p.get("tp1") or 0) if not p.get("tp1_done") else 0.0
+    tp2 = float(p.get("tp2") or 0)
+    if (tp1 and px >= tp1) or (tp2 and px >= tp2):
+        return True
+    tr_ = float(p.get("trail") or 0)
+    if tr_ and px - tr_ > stop + 1e-9:
+        return True
+    a, done = float(p.get("atr") or 0), bool(p.get("tp1_done"))
+    if not p.get("manual_orders") and done and a > 0:
+        mult = float((p.get("cfg") or {}).get("trail_atr") or 2.0)
+        return px - mult * a > stop + 1e-9
+    return False
+
+
+def orders_tick(md, only=None, gap=ORD_GAP, now=None):
+    """v4.8: Stop-Loss / Take-Profit emirlerini CANLI fiyatla kontrol eder (izleyici her turda, sayfa her açılışta).
+    Tetiklenen pozisyon anında kapanır, nakit ve gerçekleşen K/Z güncellenir, işlem geçmişine "Why" ile yazılır.
+    Döner: olay listesi [{'email','account','kind','sym','qty','price','reason','pnl', ...}]."""
+    now = float(now or time.time())
+    out = []
+    for email in list(_demo_all()["users"].keys()):
+        if only and email != str(only).lower():
+            continue
+        for acct in list(demo_user(email)["accounts"].values()):
+            cand = [p for p in acct["pos"].values() if has_orders(p)]
+            if not cand:
+                continue
+            k = (email, acct["id"])
+            if now - _ORD_LAST.get(k, 0) < gap:
+                continue
+            _ORD_LAST[k] = now
+            syms = sorted({p["sym"] for p in cand})
+            try:
+                q = (getattr(md, "get_live_quotes", None) or md.get_quotes)(syms + ["EURUSD=X"])
+            except Exception:
+                continue
+            live = {s_: float(q[s_]["last"]) for s_ in syms
+                    if (q.get(s_) or {}).get("src") == "real" and (q.get(s_) or {}).get("last")}
+            e_ = q.get("EURUSD=X") or {}
+            eurusd = float(e_["last"]) if (e_.get("src") == "real" and e_.get("last")) else acct.get("fx")
+            if not any(_live_hit(p, live.get(p["sym"])) for p in cand):
+                continue
+            aid, an = acct["id"], acct.get("name") or "Demo account"
+
+            def run(a, live=live, eurusd=eurusd):
+                def log(bot, sym, text):
+                    a.setdefault("log", []).append({"ts": round(now), "bot": bot, "sym": sym, "text": text})
+                    del a["log"][:-200]
+                evs, _ = apply_exits(a, lambda p: ([(now, live[p["sym"]], live[p["sym"]], live[p["sym"]], live[p["sym"]])]
+                                                   if p["sym"] in live else []), eurusd, now, live=True, log=log)
+                if evs:
+                    val = demo_value(a, {s_: {"last": v, "src": "real"} for s_, v in live.items()}, eurusd)
+                    _eq_point(a, val["equity"], now)
+                return evs
+            try:
+                if aid not in demo_user(email)["accounts"]:
+                    continue
+                evs = demo_edit(email, run, aid)
+            except Exception as ex:
+                _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
+                continue
+            for e in evs:
+                out.append(dict(e, email=email, account=an, acc_id=aid))
+            if evs:
+                try:
+                    prefs = notify_prefs(profile_get(email))
+                    if prefs.get("on") and prefs.get("bot"):
+                        for e in evs:
+                            deliver(email, prefs, "bot", f'{e["reason"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}',
+                                    f'{e["bot"]} position closed. Result {e["pnl"]:+.2f}. Demo account “{an}”.',
+                                    sym=e["sym"], tags=["chart_with_downwards_trend" if e["pnl"] < 0 else "moneybag"],
+                                    priority=3)
+                except Exception as ex:
+                    _MON["err"] = f"orders notify: {type(ex).__name__}: {ex}"[:200]
+    return out
+
+
 def bots_tick(md, only=None, force=False):
     """Tüm (ya da tek) kullanıcının botlarını çalıştırır — 15 dakikalık dilim başına bir kez. Döner: işlem sayısı."""
     now = time.time()
@@ -1319,7 +1484,7 @@ def bots_tick(md, only=None, force=False):
 def _bots_tick_acct(md, email, acct, slot, now, force):
     """Tek hesabın 15 dakikalık turu: veriyi kilit dışında topla, hesabı kilit içinde güncelle, haber ver."""
     active = any(b.get("on") for b in acct.get("bots") or [])
-    owned = any(p["owner"] != "manual" or p.get("manual_orders") for p in acct["pos"].values())
+    owned = any(has_orders(p) for p in acct["pos"].values())
     if not (active or owned) or (not force and acct.get("bot_slot") == slot):
         return 0
     aid = acct["id"]
@@ -1426,6 +1591,10 @@ def monitor_tick(md):
     except Exception as ex:
         _MON["err"] = f"check_buzz: {type(ex).__name__}: {ex}"[:200]
     try:
+        total += len(orders_tick(md))       # v4.8: Stop-Loss / Take-Profit canlı fiyatla (her turda)
+    except Exception as ex:
+        _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
+    try:
         total += bots_tick(md)              # v4.3: otomatik işlem botları (15 dakikada bir)
     except Exception as ex:
         _MON["err"] = f"bots_tick: {type(ex).__name__}: {ex}"[:200]
@@ -1434,6 +1603,9 @@ def monitor_tick(md):
     _MON["ticks"] += 1
     _MON["last"] = time.time()
     return total
+
+
+ORD_LOOP = 30        # v4.8: tam turlar arasında SL / TP her 30 sn'de bir canlı fiyatla denetlenir
 
 
 def _loop(md):
@@ -1447,7 +1619,18 @@ def _loop(md):
             kv_flush()
         except Exception:  # pragma: no cover
             pass
-        time.sleep(TICK_SEC)
+        end = time.time() + TICK_SEC
+        while True:
+            left = end - time.time()
+            if left <= 1:
+                break
+            time.sleep(min(ORD_LOOP, left))
+            if end - time.time() > 1:
+                try:
+                    if orders_tick(md):
+                        kv_flush()
+                except Exception as ex:  # pragma: no cover
+                    _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
 
 
 def start_monitor(md):
