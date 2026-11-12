@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.7"
+ENGINE_VERSION = "4.8"
 NAN = float("nan")
 
 
@@ -5262,6 +5262,7 @@ def bot_manage(pos, bars, cfg=None, now=None):
     stop, tp1, tp2 = float(pos["stop"]), float(pos.get("tp1") or 0), float(pos.get("tp2") or 0)
     entry, a = float(pos["entry"]), float(pos.get("atr") or 0)
     hi = float(pos.get("hi") or entry)
+    trail = float(pos.get("trail") or 0)
     done1 = bool(pos.get("tp1_done"))
     ev = []
     last_ts = pos.get("checked") or 0
@@ -5291,6 +5292,8 @@ def bot_manage(pos, bars, cfg=None, now=None):
         hi = max(hi, h)
         if done1 and a > 0:
             stop = max(stop, hi - c["trail_atr"] * a)
+        if trail > 0:                                   # v4.8: elle "Trailing" stop — en yüksek fiyatın sabit altı
+            stop = max(stop, hi - trail)
     if qty > 0 and now is not None and bars:
         held = (float(now) - float(pos.get("opened") or now)) / 86400.0
         if held >= c["max_days"]:
