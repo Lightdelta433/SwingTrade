@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "4.7"
+DATA_VERSION = "4.8"
 
 try:
     import yfinance as yf
@@ -579,6 +579,37 @@ def get_quotes(tickers):
         out[t] = {"ticker": t, "name": name, "sector": sector, "last": last, "prev": prev,
                   "volume": vol, "change_pct": (last / prev - 1) * 100 if prev else 0.0, "src": src}
     return out
+
+
+@_ttl_cache(40, fail_ttl=30)
+def _batch_live(tickers):
+    return _download(tickers, "1d", "1m")
+
+
+def get_live_quotes(tickers):
+    """v4.8: Stop-Loss / Take-Profit ve demo emirleri için en taze fiyat — son 1 dakikalık bar (≤ 40 sn önbellek).
+    1 dakikalık veri gelmezse (istek hatası, veri yok) get_quotes'taki fiyat kalır. Yalnızca gerçek fiyatlar."""
+    base = get_quotes(tickers)
+    syms = tuple(sorted(t for t, q in base.items() if q.get("src") == "real"))
+    if not syms:
+        return base
+    try:
+        data = _batch_live(syms)
+    except Exception:
+        data = {}
+    for t in syms:
+        df = data.get(t)
+        try:
+            last = float(df["Close"].dropna().iloc[-1]) if df is not None and len(df) else None
+        except Exception:
+            last = None
+        if last and last > 0 and np.isfinite(last):
+            q = dict(base[t])
+            q["last"], q["live"] = last, True
+            if q.get("prev"):
+                q["change_pct"] = (last / q["prev"] - 1) * 100
+            base[t] = q
+    return base
 
 
 def get_quote(t):
