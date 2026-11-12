@@ -27,7 +27,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "4.6"
+CHART_VERSION = "4.7"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -463,7 +463,7 @@ def data_token(sym, tf, lb=None):
 # ----------------------------------------------------------------------
 # Bileşen
 # ----------------------------------------------------------------------
-UI_VERSION = "4.6"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+UI_VERSION = "4.7"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
 
 
 def frontend_version():
