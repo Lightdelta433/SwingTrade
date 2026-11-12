@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.6"
+ENGINE_VERSION = "4.7"
 NAN = float("nan")
 
 
