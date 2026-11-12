@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import smtplib
 import ssl
@@ -37,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "4.6"
+BACKEND_VERSION = "4.7"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -734,55 +735,228 @@ def fx_mult(acct_ccy, inst, eurusd):
     return (1.0 / eurusd) if (inst == "USD" and acct_ccy == "EUR") else float(eurusd)
 
 
-def demo_new(start=25000, ccy="USD", watch=None, bots=None):
+DEMO_MAX_ACCTS = 12          # kullanıcı başına en fazla demo hesabı
+DEMO_NAME_MAX = 32
+
+
+def demo_new(start=25000, ccy="USD", watch=None, bots=None, name="Main account", acc_id=None):
     start = float(start if start in DEMO_STARTS else 25000)
-    return {"v": 1, "start": start, "ccy": ccy if ccy in DEMO_CCYS else "USD", "cash": start, "pos": {},
+    return {"v": 2, "id": acc_id or secrets.token_hex(4), "name": demo_clean_name(name) or "Main account",
+            "start": start, "ccy": ccy if ccy in DEMO_CCYS else "USD", "cash": start, "pos": {},
             "trades": [], "eq": [[time.time(), start]], "watch": list(watch if watch is not None else DEMO_WATCH),
             "bots": list(bots or []), "log": [], "seq": 0, "created": time.time(), "fx": None, "bot_slot": None}
 
 
+def demo_clean_name(name):
+    """Hesap adı: boşluklar sadeleşir, kontrol karakterleri atılır, en fazla 32 karakter."""
+    s_ = re.sub(r"[\x00-\x1f\x7f]", "", str(name or ""))
+    return re.sub(r"\s+", " ", s_).strip()[:DEMO_NAME_MAX]
+
+
 def _demo_all():
     d = kv_get("demo")
-    return d if isinstance(d, dict) and isinstance(d.get("users"), dict) else {"v": 1, "users": {}}
+    return d if isinstance(d, dict) and isinstance(d.get("users"), dict) else {"v": 2, "users": {}}
 
 
-def demo_get(email):
-    """Hesabın kopyası; yoksa varsayılan (25.000 $) hesap."""
-    a = _demo_all()["users"].get(str(email or "").lower())
-    return a if isinstance(a, dict) and "cash" in a else demo_new()
+def _demo_user(raw):
+    """Kullanıcı kaydı (v2): {'active': id, 'order': [id…], 'accounts': {id: hesap}}.
+    v1'deki tek hesap ('cash' alanı doğrudan kayıtta) kayıpsız olarak "Main account" adıyla taşınır."""
+    if isinstance(raw, dict) and isinstance(raw.get("accounts"), dict) and raw["accounts"]:
+        u = raw
+    elif isinstance(raw, dict) and "cash" in raw:
+        a = dict(raw)
+        a.setdefault("id", "main")            # sabit kimlik: kayıt yazılmadan önceki okumalar da aynı hesabı görür
+        a.setdefault("name", "Main account")
+        a["v"] = 2
+        u = {"active": a["id"], "order": [a["id"]], "accounts": {a["id"]: a}}
+    else:
+        a = demo_new(acc_id="main")
+        u = {"active": a["id"], "order": [a["id"]], "accounts": {a["id"]: a}}
+    acc = u["accounts"]
+    for k, a in list(acc.items()):            # eksik alanları tamamla (eski kayıtlar)
+        a.setdefault("id", k)
+        a.setdefault("name", "Account")
+        a.setdefault("watch", list(DEMO_WATCH))
+        a.setdefault("bots", [])
+        a.setdefault("log", [])
+        a.setdefault("eq", [[time.time(), a.get("start", 25000)]])
+    order = [i for i in (u.get("order") or []) if i in acc]
+    order += [i for i in acc if i not in order]
+    u["order"] = order
+    if u.get("active") not in acc:
+        u["active"] = order[0]
+    return u
+
+
+def demo_user(email):
+    """Kullanıcının tüm demo hesapları (kopya)."""
+    return _demo_user(_demo_all()["users"].get(str(email or "").lower()))
+
+
+def demo_accounts(email):
+    """Seçim listesi için: [{'id','name','ccy','start','equity','active','bots'}] (sıralı)."""
+    u = demo_user(email)
+    out = []
+    for i in u["order"]:
+        a = u["accounts"][i]
+        eq = float((a.get("eq") or [[0, a.get("start", 0)]])[-1][1])
+        out.append({"id": i, "name": a.get("name") or "Account", "ccy": a.get("ccy", "USD"),
+                    "start": float(a.get("start", 0)), "equity": eq, "active": i == u["active"],
+                    "bots": sum(1 for b in a.get("bots") or [] if b.get("on")),
+                    "positions": len(a.get("pos") or {})})
+    return out
+
+
+def _demo_save_user(email, u, sync=False):
+    email = str(email or "").lower()
+    if not email:
+        return False
+    allp = _demo_all()
+    allp["v"] = 2
+    allp["users"][email] = u
+    return kv_put("demo", allp, sync=sync)
+
+
+def demo_get(email, acc_id=None):
+    """Hesabın kopyası — verilmezse kullanıcının etkin hesabı; hiç yoksa varsayılan (25.000 $) hesap."""
+    u = demo_user(email)
+    return u["accounts"].get(acc_id or u["active"]) or u["accounts"][u["active"]]
 
 
 def demo_put(email, acct, sync=False):
+    """Hesabı kendi kimliğiyle (acct['id']) kaydeder; diğer hesaplara dokunmaz."""
     email = str(email or "").lower()
     if not email:
         return False
     with _DLOCK:
-        allp = _demo_all()
-        allp["users"][email] = acct
-        return kv_put("demo", allp, sync=sync)
+        u = demo_user(email)
+        aid = acct.get("id") or u["active"]
+        acct["id"] = aid
+        u["accounts"][aid] = acct
+        if aid not in u["order"]:
+            u["order"].append(aid)
+        return _demo_save_user(email, u, sync=sync)
 
 
-def demo_edit(email, fn):
-    """Hesabı kilit altında okur, fn(acct) ile değiştirir, kaydeder. fn'in döndürdüğünü döndürür."""
+def demo_edit(email, fn, acc_id=None):
+    """Hesabı (verilmezse etkin hesap) kilit altında okur, fn(acct) ile değiştirir, kaydeder."""
     with _DLOCK:
-        acct = demo_get(email)
+        acct = demo_get(email, acc_id)
         res = fn(acct)
         demo_put(email, acct)
         return res
 
 
-def demo_reset(email, start, ccy, keep=True):
-    """Yeni başlangıç tutarı / para birimi: hesap sıfırlanır; izleme listesi ve botlar (kapalı olarak) kalır."""
+def _name_taken(u, name, skip=None):
+    n = name.casefold()
+    return any((a.get("name") or "").casefold() == n for i, a in u["accounts"].items() if i != skip)
+
+
+def demo_create(email, name, start, ccy, watch=None):
+    """Yeni demo hesabı açar ve etkin yapar. Döner: (ok, mesaj, hesap kimliği)."""
+    name = demo_clean_name(name)
+    if not name:
+        return False, "Give the account a name.", None
+    if start not in DEMO_STARTS or ccy not in DEMO_CCYS:
+        return False, "Choose a currency and a starting balance.", None
+    with _DLOCK:
+        u = demo_user(email)
+        if len(u["accounts"]) >= DEMO_MAX_ACCTS:
+            return False, f"You can keep up to {DEMO_MAX_ACCTS} demo accounts. Delete one first.", None
+        if _name_taken(u, name):
+            return False, f"An account called “{name}” already exists.", None
+        a = demo_new(start, ccy, watch, name=name)
+        u["accounts"][a["id"]] = a
+        u["order"].append(a["id"])
+        u["active"] = a["id"]
+        _demo_save_user(email, u, sync=True)
+        return True, f"“{name}” created", a["id"]
+
+
+def demo_switch(email, acc_id):
+    """Etkin hesabı değiştirir — hiçbir hesabın verisine dokunmaz."""
+    with _DLOCK:
+        u = demo_user(email)
+        if acc_id not in u["accounts"]:
+            return False
+        if u["active"] != acc_id:
+            u["active"] = acc_id
+            _demo_save_user(email, u, sync=True)
+        return True
+
+
+def demo_rename(email, acc_id, name):
+    name = demo_clean_name(name)
+    if not name:
+        return False, "The name cannot be empty."
+    with _DLOCK:
+        u = demo_user(email)
+        if acc_id not in u["accounts"]:
+            return False, "Account not found."
+        if _name_taken(u, name, skip=acc_id):
+            return False, f"An account called “{name}” already exists."
+        u["accounts"][acc_id]["name"] = name
+        _demo_save_user(email, u, sync=True)
+        return True, f"Renamed to “{name}”"
+
+
+def demo_delete(email, acc_id):
+    """Hesabı kalıcı olarak siler (en az bir hesap kalır). Silinen etkin hesapsa sıradaki etkin olur."""
+    with _DLOCK:
+        u = demo_user(email)
+        if acc_id not in u["accounts"]:
+            return False, "Account not found."
+        if len(u["accounts"]) <= 1:
+            return False, "This is your only demo account — reset it instead of deleting it."
+        name = u["accounts"][acc_id].get("name") or "Account"
+        u["accounts"].pop(acc_id)
+        idx = u["order"].index(acc_id) if acc_id in u["order"] else 0
+        u["order"] = [i for i in u["order"] if i != acc_id]
+        if u["active"] == acc_id:
+            u["active"] = u["order"][min(idx, len(u["order"]) - 1)]
+        _demo_save_user(email, u, sync=True)
+        return True, f"“{name}” deleted"
+
+
+def demo_reset(email, start, ccy, keep=True, acc_id=None):
+    """Hesabı yeni başlangıç tutarı / para birimiyle sıfırlar. Adı, kimliği, izleme listesi ve botları
+    (kapalı olarak) kalır; pozisyonlar, emirler ve geçmiş silinir. Diğer hesaplar etkilenmez."""
     def run(acct):
         bots = []
         for b in (acct.get("bots") or []) if keep else []:
             b = dict(b, on=False, last=None, cool={})
             bots.append(b)
-        new = demo_new(start, ccy, acct.get("watch") if keep else None, bots)
+        new = demo_new(start, ccy, acct.get("watch") if keep else None, bots, name=acct.get("name") or "Account",
+                       acc_id=acct.get("id"))
         acct.clear()
         acct.update(new)
         return True
-    return demo_edit(email, run)
+    return demo_edit(email, run, acc_id)
+
+
+def demo_set_orders(email, key, stop=None, tp=None, acc_id=None):
+    """Elle açılmış pozisyonun Stop-Loss / Take-Profit emrini ayarlar (None ya da 0 = yok).
+    Döner: (ok, mesaj). Kontrol: stop < son fiyat < hedef."""
+    def run(acct):
+        p = acct["pos"].get(key)
+        if not p:
+            return False, "Position not found."
+        last = float(p.get("last") or p["entry"])
+        st_ = float(stop) if stop else 0.0
+        tp_ = float(tp) if tp else 0.0
+        if st_ and st_ >= last:
+            return False, f"The stop-loss must be below the last price ({last:.2f})."
+        if tp_ and tp_ <= last:
+            return False, f"The take-profit must be above the last price ({last:.2f})."
+        if st_ or tp_:
+            p.update({"stop": st_, "tp2": tp_, "tp1": 0.0, "atr": 0.0, "manual_orders": True,
+                      "checked": max(float(p.get("checked") or 0), time.time()), "hi": max(float(p.get("hi") or 0), last),
+                      "tp1_done": True})
+        else:
+            for k in ("stop", "tp1", "tp2", "atr", "manual_orders", "checked", "hi", "tp1_done"):
+                p.pop(k, None)
+        return True, "Orders saved" if (st_ or tp_) else "Orders removed"
+    return demo_edit(email, run, acc_id)
 
 
 def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan=None, ts=None, bot=""):
@@ -811,7 +985,10 @@ def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan
             acct["pos"][key] = pos
         if plan:
             pos.update({k: plan[k] for k in ("stop", "tp1", "tp2", "atr", "why", "cfg") if k in plan})
-            pos.update({"hi": price, "tp1_done": False, "checked": plan.get("checked") or ts})
+            pos.update({"hi": max(price, float(pos.get("hi") or 0)), "tp1_done": bool(plan.get("tp1_done", False)),
+                        "checked": plan.get("checked") or ts})
+            if owner == "manual":
+                pos["manual_orders"] = True
         acct["cash"] -= amt
     elif side == "sell":
         if not pos or qty > pos["qty"] + 1e-9:
@@ -927,7 +1104,7 @@ def bots_collect(md, acct):
     """Kilidin DIŞINDA: botların ihtiyacı olan tüm veriyi çeker ve sinyalleri hesaplar."""
     en = _engine()
     bots = [b for b in acct.get("bots") or [] if b.get("on")]
-    held = sorted({p["sym"] for p in acct["pos"].values() if p["owner"] != "manual"})
+    held = sorted({p["sym"] for p in acct["pos"].values() if p["owner"] != "manual" or p.get("manual_orders")})
     watch = [s for s in acct.get("watch") or [] if inst_ccy(s)]
     data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "eurusd": None, "err": {}}
     try:
@@ -1035,7 +1212,8 @@ def bots_apply(acct, data, now=None):
     # 1) çıkışlar
     sells = {}
     for key, p in list(acct["pos"].items()):
-        if p["owner"] == "manual" or "stop" not in p:
+        manual = p["owner"] == "manual"
+        if (manual and not p.get("manual_orders")) or not (p.get("stop") or p.get("tp2")):
             continue
         df = data["i15"].get(p["sym"])
         bars = _bars15(df, float(p.get("checked") or p.get("opened") or 0))
@@ -1045,8 +1223,13 @@ def bots_apply(acct, data, now=None):
         fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd)
         if fxm is None:
             continue
-        evs, upd = en.bot_manage(p, bars, p.get("cfg"), now)
-        bname = names.get(p["owner"]) or p.get("bot") or "Bot"
+        if manual:     # elle verilen emir: yalnızca stop / hedef (kısmi satış, iz süren stop ve süre sınırı yok)
+            evs, upd = en.bot_manage(dict(p, tp1=0.0, atr=0.0, tp1_done=True), bars, {"trail_atr": 6.0}, None)
+            evs = [dict(e, reason=("Stop-loss order" if "stop" in e["reason"].lower() else "Take-profit order"))
+                   for e in evs]
+        else:
+            evs, upd = en.bot_manage(p, bars, p.get("cfg"), now)
+        bname = "Manual" if manual else (names.get(p["owner"]) or p.get("bot") or "Bot")
         for e in evs:
             ok, _, tr = demo_trade(acct, p["sym"], "sell", float(e["qty"]), float(e["price"]), fxm, p["owner"],
                                    e["reason"], ts=e["ts"], bot=bname)
@@ -1055,7 +1238,7 @@ def bots_apply(acct, data, now=None):
                                "bot": bname, "reason": e["reason"], "pnl": tr["pnl"]})
                 log(bname, p["sym"], f'SELL {e["qty"]:g} @ {e["price"]:.2f} — {e["reason"]} ({tr["pnl"]:+.2f})')
                 sells[p["owner"]] = sells.get(p["owner"], 0) + 1
-                if "stop" in e["reason"].lower() and tr["pnl"] < 0:
+                if not manual and "stop" in e["reason"].lower() and tr["pnl"] < 0:
                     for b in acct.get("bots") or []:
                         if b["id"] == p["owner"]:
                             b.setdefault("cool", {})[p["sym"]] = now
@@ -1128,44 +1311,54 @@ def bots_tick(md, only=None, force=False):
     for email in list(_demo_all()["users"].keys()):
         if only and email != str(only).lower():
             continue
-        acct = demo_get(email)
-        active = any(b.get("on") for b in acct.get("bots") or [])
-        owned = any(p["owner"] != "manual" for p in acct["pos"].values())
-        if not (active or owned) or (not force and acct.get("bot_slot") == slot):
-            continue
-        try:
-            data = bots_collect(md, acct)
-        except Exception as ex:
-            _MON["err"] = f"bots_collect: {type(ex).__name__}: {ex}"[:200]
-            continue
+        for acct in list(demo_user(email)["accounts"].values()):
+            n += _bots_tick_acct(md, email, acct, slot, now, force)
+    return n
 
-        def run(a):
-            if not force and a.get("bot_slot") == slot:
-                return []
-            a["bot_slot"] = slot
-            return bots_apply(a, data, now)
+
+def _bots_tick_acct(md, email, acct, slot, now, force):
+    """Tek hesabın 15 dakikalık turu: veriyi kilit dışında topla, hesabı kilit içinde güncelle, haber ver."""
+    active = any(b.get("on") for b in acct.get("bots") or [])
+    owned = any(p["owner"] != "manual" or p.get("manual_orders") for p in acct["pos"].values())
+    if not (active or owned) or (not force and acct.get("bot_slot") == slot):
+        return 0
+    aid = acct["id"]
+    try:
+        data = bots_collect(md, acct)
+    except Exception as ex:
+        _MON["err"] = f"bots_collect: {type(ex).__name__}: {ex}"[:200]
+        return 0
+
+    def run(a):
+        if not force and a.get("bot_slot") == slot:
+            return []
+        a["bot_slot"] = slot
+        return bots_apply(a, data, now)
+    try:
+        if aid not in demo_user(email)["accounts"]:      # bu arada silindiyse dokunma
+            return 0
+        events = demo_edit(email, run, aid)
+    except Exception as ex:
+        _MON["err"] = f"bots_apply: {type(ex).__name__}: {ex}"[:200]
+        return 0
+    _MON["bots_last"] = now
+    n = len(events)
+    if events:
         try:
-            events = demo_edit(email, run)
+            prefs = notify_prefs(profile_get(email))
+            an = acct.get("name") or "Demo account"
+            if prefs.get("on") and prefs.get("bot"):
+                for e in events:
+                    if e["kind"] == "buy":
+                        title = f'{e["bot"]}: bought {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
+                        body = f'{e["reason"]}. Stop {e["stop"]:.2f} · TP1 {e["tp1"]:.2f}. Demo account “{an}”.'
+                    else:
+                        title = f'{e["bot"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
+                        body = f'{e["reason"]}. Result {e["pnl"]:+.2f}. Demo account “{an}”.'
+                    deliver(email, prefs, "bot", title, body, sym=e["sym"],
+                            tags=["robot"], priority=3)
         except Exception as ex:
-            _MON["err"] = f"bots_apply: {type(ex).__name__}: {ex}"[:200]
-            continue
-        _MON["bots_last"] = now
-        n += len(events)
-        if events:
-            try:
-                prefs = notify_prefs(profile_get(email))
-                if prefs.get("on") and prefs.get("bot"):
-                    for e in events:
-                        if e["kind"] == "buy":
-                            title = f'{e["bot"]}: bought {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
-                            body = f'{e["reason"]}. Stop {e["stop"]:.2f} · TP1 {e["tp1"]:.2f}. Demo account.'
-                        else:
-                            title = f'{e["bot"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
-                            body = f'{e["reason"]}. Result {e["pnl"]:+.2f}. Demo account.'
-                        deliver(email, prefs, "bot", title, body, sym=e["sym"],
-                                tags=["robot"], priority=3)
-            except Exception as ex:
-                _MON["err"] = f"bot notify: {type(ex).__name__}: {ex}"[:200]
+            _MON["err"] = f"bot notify: {type(ex).__name__}: {ex}"[:200]
     return n
 
 
