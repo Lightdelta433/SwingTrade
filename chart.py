@@ -27,7 +27,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "4.7"
+CHART_VERSION = "4.8"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -463,7 +463,7 @@ def data_token(sym, tf, lb=None):
 # ----------------------------------------------------------------------
 # Bileşen
 # ----------------------------------------------------------------------
-UI_VERSION = "4.7"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+UI_VERSION = "4.8"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
 
 
 def frontend_version():
@@ -489,6 +489,40 @@ def _component():
 
 def missing_frontend():
     return not os.path.isfile(_INDEX)
+
+
+# ----------------------------------------------------------------------
+# v4.8 — sıralanabilir liste (izleme listeleri): ⋮⋮ ile sürükle-bırak, ↑ / ↓, isteğe bağlı kaldır
+# ----------------------------------------------------------------------
+_LIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_list")
+_LIST_INDEX = os.path.join(_LIST_DIR, "index.html")
+
+
+@st.cache_resource(show_spinner=False)
+def _list_component():
+    if not os.path.isfile(_LIST_INDEX):
+        return None
+    try:
+        return components.declare_component("pulse_list", path=_LIST_DIR)
+    except Exception:
+        return None
+
+
+def list_available():
+    return _list_component() is not None
+
+
+def sortable_list(rows, key, *, cols=None, colw=None, title_col="", removable=False, clickable=False, max_h=420,
+                  av=26, light=False, accent=None, empty=""):
+    """rows: [{'id','title','sub','ini','avbg','avfg','logo','sel', 'cells': [{'v','c','s','sc'}]}].
+    Döner: son olay ({'t': 'order'|'open'|'remove', 'n', ...}) ya da None. Bileşen yoksa None (çağıran yedeği çizer)."""
+    comp = _list_component()
+    if comp is None:
+        return None
+    return comp(key=key, default=None, rows=rows, light=bool(light), accent=accent,
+                opts={"key": key, "cols": cols or [], "colw": colw or [], "title_col": title_col,
+                      "removable": bool(removable), "clickable": bool(clickable), "max_h": int(max_h), "av": int(av),
+                      "empty": empty})
 
 
 def render_chart(payload, draws, alerts, chart_type="candles", height=640, rev=0, key="chart", light=False,
