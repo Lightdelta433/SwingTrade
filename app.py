@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.6"
+APP_VERSION = "4.7"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -1288,6 +1288,26 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .st-key-pg_bots .bp-k{margin:6px 0 8px 0}
 .st-key-pg_bots .blog{padding:7px 0}
 .st-key-pg_bots .alloc{margin-top:12px}
+/* v4.7 — hesaplar: seçim, çark menüsü, yeni hesap formu */
+.acct-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.acct-chip{font-size:11.5px;font-weight:700;color:var(--acc);border-radius:999px;padding:2px 10px;max-width:60%;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);
+ background:color-mix(in srgb,var(--acc) 10%,transparent)}
+.acct-meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:11.5px;color:#8D96A5;line-height:1.5;padding-top:2px}
+.acct-meta span{white-space:nowrap}
+.acct-form-t{font-size:13px;font-weight:700;color:#ECEEF1;padding:6px 0 0 0;border-top:1px solid #1C1F25;margin-top:4px}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button{min-height:40px;padding:0;font-size:17px;line-height:1}
+[class*="st-key-demo_accts"] [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:40px}
+[data-testid="stPopoverBody"]{min-width:320px;max-width:380px;padding:16px 18px !important}
+[data-testid="stPopoverBody"] [data-testid="stVerticalBlock"]{gap:.7rem !important}
+.mng-t{font-size:14px;font-weight:800;color:#ECEEF1;line-height:1.35;overflow-wrap:anywhere}
+.mng-s{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#8D96A5;padding-top:2px}
+.mng-s+.mng-d{margin-top:8px}
+.mng-d{font-size:11.5px;line-height:1.5}
+.mng-hr{height:1px;background:#22262D;margin:4px 0}
+.sltp-note{line-height:1.45;padding-bottom:6px}
+table.pos td.sltp{font-size:12px;line-height:1.35}
+table.pos td.sltp span{display:block}
 .demo-warn{font-size:12px;line-height:1.45;border-radius:12px;padding:9px 11px;margin:6px 0;color:#F5B544;
  background:rgba(245,181,68,.10);border:1px solid rgba(245,181,68,.35)}
 </style>
@@ -1936,7 +1956,8 @@ def render_sidebar():
         eq = float((acct.get("eq") or [[0, acct["start"]]])[-1][1])
         run = sum(1 for b in acct.get("bots") or [] if b.get("on"))
         ch_ = (eq / float(acct["start"]) - 1) * 100
-        body += (f'<a class="side-card" target="_self" href="{link(sec="Demo")}"><span class="sc-k">Demo account</span>'
+        body += (f'<a class="side-card" target="_self" href="{link(sec="Demo")}"><span class="sc-k">Demo · '
+                 f'{esc(acct.get("name") or "Account")}</span>'
                  f'<b class="mono">{money(eq, acct["ccy"], 0)}</b><span style="color:{col(ch_)};font-size:11.5px;'
                  f'font-weight:700">{pct(ch_)}</span><span class="sc-b"><i class="{"on" if run else ""}"></i>'
                  f'{run} bot{"" if run == 1 else "s"} running</span></a>')
@@ -5414,8 +5435,9 @@ def demo_resolve(text):
     return sym, ((md.get_quotes([sym]).get(sym) or {}) if sym else {})
 
 
-def demo_order(sym, side, qty, owner="manual"):
-    """Elle verilen demo emri: yalnızca canlı fiyattan dolar. Döner: (ok, mesaj)."""
+def demo_order(sym, side, qty, owner="manual", stop=None, tp=None):
+    """Elle verilen demo emri: yalnızca canlı fiyattan dolar. Alımda isteğe bağlı Stop-Loss / Take-Profit.
+    Döner: (ok, mesaj)."""
     sym = str(sym or "").upper().strip()
     inst = bk.inst_ccy(sym)
     if inst is None:
@@ -5432,12 +5454,20 @@ def demo_order(sym, side, qty, owner="manual"):
     if fxm is None:
         return False, "The EUR/USD rate is not available right now, so this order cannot be converted."
     px = float(qs["last"])
+    stop, tp = (float(stop or 0), float(tp or 0)) if side == "buy" else (0.0, 0.0)
+    if stop and stop >= px:
+        return False, f"The stop-loss ({tr(stop)}) must be below the current price ({tr(px)})."
+    if tp and tp <= px:
+        return False, f"The take-profit ({tr(tp)}) must be above the current price ({tr(px)})."
+    plan = ({"stop": stop, "tp1": 0.0, "tp2": tp, "atr": 0.0, "tp1_done": True, "checked": time.time()}
+            if (stop or tp) else None)
 
     def run(a):
         if eurusd:
             a["fx"] = eurusd
         ok, msg, _ = bk.demo_trade(a, sym, side, qty, px, fxm, owner,
-                                   "Manual order" if owner == "manual" else "Closed by hand")
+                                   ("Manual order" + (f" · SL {tr(stop)}" if stop else "") + (f" · TP {tr(tp)}" if tp else ""))
+                                   if owner == "manual" else "Closed by hand", plan=plan)
         return ok, msg
     ok, msg = bk.demo_edit(_me(), run)
     return ok, (msg or f"{'Bought' if side == 'buy' else 'Sold'} {float(qty):g} {sym} at {tr(px)}")
@@ -5612,8 +5642,9 @@ def _bots_body():
               f'<span class="bchip" style="--c:{UP if running else MUT}">{running} running</span>'
               f'<span class="bchip" style="--c:{UP if mkt else WARN}">US market {"open" if mkt else "closed"}</span>'
               f'<span class="bchip" style="--c:{ACCENT}">next check ≈ {_bot_when(nxt)}</span></span></div>'
-              f'<div class="muted small">Bots buy and sell on their own in your <a class="lnk" target="_self" '
-              f'href="{link(sec="Demo")}">demo account</a> ({money(val["equity"], cur, 0)}) · checked every 15 minutes'
+              f'<div class="muted small">Bots buy and sell on their own in your demo account <a class="lnk" '
+              f'target="_self" href="{link(sec="Demo")}">“{esc(acct.get("name") or "Account")}”</a> '
+              f'({money(val["equity"], cur, 0)}) · switch accounts in the Demo tab · checked every 15 minutes'
               f'{" · last check " + _bot_when(last) if last else ""}</div>')
             if bots:
                 rows = ""
@@ -5732,6 +5763,173 @@ def render_demo():
         _render_demo_body()
 
 
+def _next_tp(r):
+    if r.get("tp1") and not r.get("tp1_done"):
+        return tr(r["tp1"])
+    return tr(r["tp2"]) if r.get("tp2") else "—"
+
+
+def _manual_orders_editor(rows):
+    """Elle açılmış pozisyonların Stop-Loss / Take-Profit emirleri (eklemek, değiştirmek, kaldırmak)."""
+    man = [r for r in rows if r["owner"] == "manual"]
+    if not man:
+        return
+    with st.expander("Stop-loss / take-profit for your manual positions", expanded=False):
+        keys = [r["key"] for r in man]
+        byk = {r["key"]: r for r in man}
+        if ss.get("mo_pos") not in keys:          # hesap değişince eski seçim geçersiz olur
+            ss["mo_pos"] = keys[0]
+        k = st.selectbox("Position", keys, key="mo_pos",
+                         format_func=lambda x: f'{byk[x]["sym"]} · {byk[x]["qty"]:g} sh · last {tr(byk[x]["last"])}')
+        r = byk[k]
+        c1, c2 = st.columns(2, gap="small")
+        with c1:
+            sl = st.number_input("Stop-loss", min_value=0.0, value=float(r.get("stop") or 0.0), step=0.5,
+                                 format="%.2f", key=f"mo_sl_{k}")
+        with c2:
+            tp = st.number_input("Take-profit", min_value=0.0, value=float(r.get("tp2") or 0.0), step=0.5,
+                                 format="%.2f", key=f"mo_tp_{k}")
+        b1, b2 = st.columns(2, gap="small")
+        with b1:
+            save = button("Save orders", key=f"mo_save_{k}", primary=True)
+        with b2:
+            clear = button("Remove orders", key=f"mo_clear_{k}")
+        if save or clear:
+            ok, msg = bk.demo_set_orders(_me(), k, None if clear else sl, None if clear else tp)
+            if ok:
+                st.toast(f'{r["sym"]}: {msg.lower()}')
+                st.rerun()
+            else:
+                st.warning(msg)
+
+
+def _acct_opt(a):
+    return f'{a["name"]}  ·  {money(a["equity"], a["ccy"], 0)}'
+
+
+def _demo_acc_cb():
+    """Hesap seçimi değişti → etkin hesap değişir (sayfa yeni hesapla çizilir; hiçbir veri silinmez)."""
+    v = ss.get("demo_acc")
+    if v and v != "__new__":
+        bk.demo_switch(_me(), v)
+
+
+def render_demo_accounts(acct):
+    """v4.7: hesap seçimi, yeni hesap ve çark menüsü (yeniden adlandır · sıfırla · sil)."""
+    accts = bk.demo_accounts(_me())
+    ids = [a["id"] for a in accts]
+    by = {a["id"]: a for a in accts}
+    if ss.get("demo_acc") not in ids + ["__new__"] or (ss.get("demo_acc") != "__new__" and ss.get("demo_acc") != acct["id"]):
+        ss["demo_acc"] = acct["id"]
+    with st.container(border=True, key="demo_accts"):
+        H(f'<div class="hd acct-head"><span class="panel-title">Accounts</span><span class="pos-n">{len(accts)} / '
+          f'{bk.DEMO_MAX_ACCTS}</span></div>')
+        H('<div class="hd set-lab">Paper trading account</div>')
+        c_sel, c_gear = st.columns([5, 1.25], gap="small", vertical_alignment="bottom")
+        with c_sel:
+            st.selectbox("Paper trading account", ids + ["__new__"], key="demo_acc", label_visibility="collapsed",
+                         format_func=lambda i: "+  Create account…" if i == "__new__" else _acct_opt(by[i]),
+                         on_change=_demo_acc_cb)
+        with c_gear:
+            with st.popover("⚙", help="Rename, reset or delete this account", use_container_width=True):
+                _demo_manage(acct, len(accts))
+        if ss.get("demo_acc") == "__new__":
+            _demo_create_form()
+        else:
+            a = by[acct["id"]]
+            H(f'<div class="acct-meta"><span>{CUR[a["ccy"]]} {a["ccy"]}</span><span>started with '
+              f'{money(a["start"], a["ccy"], 0)}</span><span>{a["positions"]} open</span>'
+              f'<span>{a["bots"]} bot{"" if a["bots"] == 1 else "s"} running</span></div>')
+
+
+def _demo_create_form():
+    H('<div class="hd acct-form-t">New paper trading account</div>')
+    name = st.text_input("Account name", key="demo_new_name", max_chars=bk.DEMO_NAME_MAX,
+                         placeholder="e.g. FundedAccount, Swing-Depot, CFD EUR")
+    H('<div class="hd set-lab">Account currency</div>')
+    ccy = seg("Account currency", list(bk.DEMO_CCYS), "demo_new_ccy", "USD", fmt=lambda c: f"{CUR[c]}  {c}") or "USD"
+    H('<div class="hd set-lab">Starting balance</div>')
+    if ss.get("demo_new_start") not in bk.DEMO_STARTS:
+        ss["demo_new_start"] = 25000
+    start = st.radio("Starting balance", list(bk.DEMO_STARTS), key="demo_new_start", label_visibility="collapsed",
+                     format_func=lambda v: f"{CUR.get(ccy, '')}{int(v):,}".replace(",", "."))
+    # dar sütun: düğmeler alt alta (yan yana sığmayıp metin kırpılmasın)
+    go_ = button("Create account", key="demo_new_go", primary=True)
+    cancel = button("Cancel", key="demo_new_cancel")
+    if cancel:
+        ss["_demo_set"] = {"demo_acc": bk.demo_user(_me())["active"], "demo_new_name": ""}
+        st.rerun()
+    if go_:
+        ok, msg, aid = bk.demo_create(_me(), name, int(start), ccy)
+        if ok:
+            ss["_demo_set"] = {"demo_acc": aid, "demo_new_name": ""}
+            st.toast(f"{msg} — {money(start, ccy, 0)}")
+            st.rerun()
+        else:
+            st.warning(msg)
+
+
+def _demo_manage(acct, n_accts):
+    """Çark menüsü: etkin hesabı yeniden adlandır, sıfırla ya da kalıcı olarak sil."""
+    aid, nm, cur = acct["id"], acct.get("name") or "Account", acct["ccy"]
+    H(f'<div class="hd mng-t">Manage “{esc(nm)}”</div>')
+    # yeniden adlandır
+    H('<div class="hd mng-s">Rename</div>')
+    if ss.get(f"mng_name_{aid}") is None:
+        ss[f"mng_name_{aid}"] = nm
+    new_nm = st.text_input("Account name", key=f"mng_name_{aid}", max_chars=bk.DEMO_NAME_MAX,
+                           label_visibility="collapsed")
+    if button("Save name", key=f"mng_rename_{aid}"):
+        ok, msg = bk.demo_rename(_me(), aid, new_nm)
+        if ok:
+            st.toast(msg)
+            st.rerun()
+        else:
+            st.warning(msg)
+    H('<div class="mng-hr"></div>')
+    # sıfırla
+    H('<div class="hd mng-s">Reset</div><div class="hd muted mng-d">Starts this account over: positions, orders and '
+      'history are deleted; name, watchlist and bots (paused) stay. Other accounts are not touched.</div>')
+    if ss.get(f"mng_ccy_{aid}") not in bk.DEMO_CCYS:
+        ss[f"mng_ccy_{aid}"] = cur
+    if ss.get(f"mng_start_{aid}") not in bk.DEMO_STARTS:
+        ss[f"mng_start_{aid}"] = int(acct["start"])
+    # menü bir sütunun içinde: Streamlit tek düzey iç içe sütuna izin verir → alanlar alt alta
+    rc = st.selectbox("Currency", list(bk.DEMO_CCYS), key=f"mng_ccy_{aid}", format_func=lambda c: f"{CUR[c]}  {c}")
+    rs = st.selectbox("Starting balance", list(bk.DEMO_STARTS), key=f"mng_start_{aid}",
+                      format_func=lambda v: f"{CUR.get(rc, '')}{int(v):,}".replace(",", "."))
+    sure_r = st.checkbox("Yes, reset this account", key=f"mng_rsure_{aid}")
+    if button("Reset account", key=f"mng_reset_{aid}"):
+        if sure_r:
+            bk.demo_reset(_me(), int(rs), rc, acc_id=aid)
+            ss["_demo_set"] = {f"mng_rsure_{aid}": False}
+            st.toast(f"“{nm}” reset to {money(rs, rc, 0)}")
+            st.rerun()
+        else:
+            st.warning("Tick the box first — a reset cannot be undone.")
+    H('<div class="mng-hr"></div>')
+    # sil
+    H('<div class="hd mng-s" style="color:#F87171">Delete</div>')
+    if n_accts <= 1:
+        H('<div class="hd muted mng-d">This is your only account — it cannot be deleted. Create another one first, or '
+          'reset this one.</div>')
+    else:
+        H(f'<div class="hd muted mng-d">Removes “{esc(nm)}” with all its positions, orders, history, watchlist and bots '
+          f'for good.</div>')
+        sure_d = st.checkbox(f"Yes, delete “{nm}” permanently", key=f"mng_dsure_{aid}")
+        if button("Delete account", key=f"mng_delete_{aid}"):
+            if sure_d:
+                ok, msg = bk.demo_delete(_me(), aid)
+                if ok:
+                    ss["_demo_set"] = {"demo_acc": bk.demo_user(_me())["active"]}
+                    st.toast(msg)
+                    st.rerun()
+                else:
+                    st.warning(msg)
+            else:
+                st.warning("Tick the box first — deleting cannot be undone.")
+
+
 def _render_demo_body():
     """Demo reiter: başlangıç tutarı, kendi izleme listesi, elle emir, pozisyonlar ve geçmiş."""
     acct, val, eurusd = demo_state()
@@ -5739,44 +5937,15 @@ def _render_demo_body():
     for k_, v_ in (ss.pop("_demo_set", None) or {}).items():      # widget değerleri yalnızca çizilmeden önce değişir
         ss[k_] = v_
     H(f'<div class="hd"><div class="page-title">Demo Account</div></div><div class="hd muted" style="padding-bottom:10px">'
-      f'<span class="dot-live"></span>Paper trading with live prices — no real money. Your bots from Short Term '
-      f'trade this account too.</div>')
+      f'<span class="dot-live"></span>Paper trading with live prices — no real money. You are trading in '
+      f'<b style="color:{TXT}">{esc(acct.get("name") or "Account")}</b>; every account keeps its own balance, '
+      f'positions, orders, history, watchlist and bots.</div>')
     left, right = st.columns([1, 3.1], gap="medium")
     with left:
+        render_demo_accounts(acct)
         with st.container(border=True):
-            sync = (int(acct["start"]), cur)
-            if ss.get("_demo_sync") != sync:
-                ss["demo_start"], ss["demo_ccy"], ss["_demo_sync"] = int(acct["start"]), cur, sync
-            # v4.4: başlık, açıklama ve düğmeler ayrı bloklar — aralarında sabit boşluk (üst üste binme yok)
-            H('<div class="hd"><span class="panel-title">Settings</span></div>')
-            H('<div class="hd set-lab">Account currency</div>')
-            ccy = seg("Currency", list(bk.DEMO_CCYS), "demo_ccy", cur, fmt=lambda c: f"{CUR[c]}  {c}")
-            H('<div class="hd set-lab">Starting balance of the demo account</div>')
-            start = st.radio("Starting balance", list(bk.DEMO_STARTS), key="demo_start",
-                             label_visibility="collapsed",
-                             format_func=lambda v: f"{CUR.get(ccy or cur, '')}{int(v):,}".replace(",", "."))
-            changed = (int(start) != int(acct["start"])) or ((ccy or cur) != cur)
-            used = bool(acct["pos"] or acct["trades"])
-            if changed:
-                H(f'<div class="demo-warn">Switching to <b>{money(start, ccy or cur, 0)}</b> starts a fresh account'
-                  + (': open positions and the trade history are deleted. Your watchlist and bots stay, the bots '
-                     'are paused.' if used else '.') + '</div>')
-                if button("Apply and start fresh", key="demo_apply", primary=True):
-                    bk.demo_reset(_me(), int(start), ccy or cur)
-                    st.toast(f"Demo account restarted with {money(start, ccy or cur, 0)}")
-                    st.rerun()
-            elif used:
-                sure = st.checkbox("Delete positions and history", key="demo_sure")
-                if button("Reset account", key="demo_reset"):
-                    if sure:
-                        bk.demo_reset(_me(), int(start), cur)
-                        ss["_demo_set"] = {"demo_sure": False}
-                        st.toast("Demo account reset")
-                        st.rerun()
-                    else:
-                        st.warning("Tick the box first — a reset cannot be undone.")
-        with st.container(border=True):
-            H(f'<span class="panel-title">Account</span>'
+            H(f'<div class="hd acct-head"><span class="panel-title">Balance</span><span class="acct-chip">'
+              f'{esc(acct.get("name") or "Account")}</span></div>'
               f'<div class="demo-eq mono">{money(val["equity"], cur)}</div>'
               f'<div style="color:{col(val["total"])};font-weight:700;font-size:13px">'
               f'{"+" if val["total"] >= 0 else ""}{money(val["total"], cur)} ({pct(val["total_pct"])})</div>'
@@ -5885,6 +6054,19 @@ def _render_demo_body():
                 qty = st.number_input("Shares", min_value=0.0, value=1.0, step=1.0, key="demo_oqty")
             with o4:
                 go_ = button("Place order", key="demo_place", primary=True)
+            sl = tp = 0.0
+            if side == "Buy":       # v4.7: isteğe bağlı koruyucu emirler (her 15 dakikada kontrol edilir)
+                for k_ in ("demo_osl", "demo_otp"):      # değer yalnızca oturum durumundan (emirden sonra sıfırlanır)
+                    if not isinstance(ss.get(k_), (int, float)):
+                        ss[k_] = 0.0
+                s1, s2, s3 = st.columns([1.2, 1.2, 1.7], vertical_alignment="bottom")
+                with s1:
+                    sl = st.number_input("Stop-loss (optional)", min_value=0.0, step=0.5, format="%.2f", key="demo_osl")
+                with s2:
+                    tp = st.number_input("Take-profit (optional)", min_value=0.0, step=0.5, format="%.2f", key="demo_otp")
+                with s3:
+                    H('<div class="muted small sltp-note">Leave at 0 for none. Checked every 15 minutes on the '
+                      'closed 15-minute bars, like the bots\' orders.</div>')
             osym, qs = demo_resolve(otxt)
             picks = list(dict.fromkeys([r["sym"] for r in val["rows"]] + list(acct.get("watch") or [])))[:12]
             if picks:
@@ -5916,8 +6098,9 @@ def _render_demo_body():
                 if not osym:
                     st.warning("Enter a ticker or a company name first.")
                 else:
-                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty)
+                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty, stop=sl, tp=tp)
                     if ok:
+                        ss["_demo_set"] = {"demo_osl": 0.0, "demo_otp": 0.0}
                         st.toast(msg)
                         st.rerun()
                     else:
@@ -5936,6 +6119,8 @@ def _render_demo_body():
                         f'<td class="l"><span class="pos-by{" bot" if r["owner"] != "manual" else ""}">'
                         f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</span></td>'
                         f'<td>{r["qty"]:g}</td><td class="dim">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
+                        f'<td class="sltp"><span style="color:{DOWN}">{tr(r["stop"]) if r.get("stop") else "—"}</span>'
+                        f'<span style="color:{UP}">{_next_tp(r)}</span></td>'
                         f'<td>{money(r["value"], cur)}</td>'
                         f'<td><span class="pos-pl" style="color:{pc}">{"+" if r["pnl"] >= 0 else "−"}'
                         f'{money(abs(r["pnl"]), cur)}</span><span class="pos-pct" style="color:{pc};'
@@ -5944,11 +6129,12 @@ def _render_demo_body():
                         f'href="{link(demo_sell=r["key"], f="demo")}">Sell all</a></td></tr>')
                 tpc = UP if val["upl"] >= 0 else DOWN
                 H(f'<div style="overflow-x:auto"><table class="pos"><thead><tr><th class="l">Symbol</th>'
-                  f'<th class="l">Opened by</th><th>Qty</th><th>Entry</th><th>Last</th><th>Value</th><th>P / L'
-                  f'</th><th class="act"></th></tr></thead><tbody>{rows}</tbody><tfoot><tr><td class="l" colspan="5">'
+                  f'<th class="l">Opened by</th><th>Qty</th><th>Entry</th><th>Last</th><th>SL / TP</th><th>Value</th><th>P / L'
+                  f'</th><th class="act"></th></tr></thead><tbody>{rows}</tbody><tfoot><tr><td class="l" colspan="6">'
                   f'Total</td><td>{money(val["invested"], cur)}</td><td><span class="pos-pl" style="color:{tpc}">'
                   f'{"+" if val["upl"] >= 0 else "−"}{money(abs(val["upl"]), cur)}</span></td><td class="act"></td>'
                   f'</tr></tfoot></table></div>')
+                _manual_orders_editor(val["rows"])
             else:
                 H('<div class="muted" style="padding:8px 0">No open positions.</div>')
             trs = list(reversed(acct.get("trades") or []))[:25]
