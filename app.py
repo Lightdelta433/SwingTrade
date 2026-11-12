@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.7"
+APP_VERSION = "4.8"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -251,10 +251,11 @@ def button(label, key, primary=False, **kw):
     return st.button(label, key=key, type="primary" if primary else "secondary", **_wkw(st.button), **kw)
 
 
-def toggle(label, key, help=None):
+def toggle(label, key, help=None, on_change=None, args=None):
     """st.toggle eski Streamlit sürümlerinde yok — checkbox'a düşer."""
     fn = getattr(st, "toggle", None) or st.checkbox
-    return fn(label, key=key, help=help)
+    kw = {"on_change": on_change, "args": tuple(args or ())} if on_change else {}
+    return fn(label, key=key, help=help, **kw)
 
 
 LIGHT = False
@@ -477,6 +478,32 @@ def anchor(name):
         components.html(_SCROLL_JS % name, height=0)
 
 
+# v4.8: sıralama yardımcıları (link aksiyonlarından önce tanımlı olmalı)
+def reorder_merge(current, new_order):
+    """Bileşenden gelen sıra → geçerli liste. Bu arada eklenen / silinen semboller korunur:
+    bilinmeyenler atılır, sırada olmayan yeni semboller sona eklenir."""
+    cur = list(current)
+    seen, out = set(), []
+    for s_ in new_order or []:
+        if s_ in cur and s_ not in seen:
+            out.append(s_)
+            seen.add(s_)
+    return out + [s_ for s_ in cur if s_ not in seen]
+
+
+def move_item(lst, sym, d):
+    """sym'i d (−1 yukarı, +1 aşağı) kadar kaydırır; yeni liste."""
+    lst = list(lst)
+    if sym not in lst:
+        return lst
+    i = lst.index(sym)
+    j = max(0, min(len(lst) - 1, i + int(d)))
+    if i != j:
+        lst.insert(j, lst.pop(i))
+    return lst
+
+
+
 # ---- tek seferlik link aksiyonları ----
 _a = _consume("add_wl")
 if _a:
@@ -484,6 +511,10 @@ if _a:
     if _a and _a not in ss.watchlist:
         ss.watchlist.append(_a)
         st.toast(f"{_a} added to the watchlist")
+for _k, _d in (("wl_up", -1), ("wl_dn", 1)):          # v4.8: ↑ / ↓ (bileşen yoksa)
+    _a = _consume(_k)
+    if _a and _a in ss.watchlist:
+        ss.watchlist = move_item(ss.watchlist, _a, _d)
 _a = _consume("add_flt")
 if _a in en.INDICATORS:
     ss.flt_rows.append(en.suggested_condition(_a))
@@ -1308,6 +1339,34 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .sltp-note{line-height:1.45;padding-bottom:6px}
 table.pos td.sltp{font-size:12px;line-height:1.35}
 table.pos td.sltp span{display:block}
+/* v4.8 — sıralama yedeği (bileşen yoksa) */
+.fb-list{overflow-y:auto}
+.fb-r{display:flex;align-items:center;gap:9px;padding:6px 6px;border-top:1px solid #1C1F25;border-radius:8px}
+.fb-r.sel{background:#151922}
+.fb-n{flex:1;min-width:0;line-height:1.25}
+.fb-n b{display:block;font-family:ui-monospace,monospace;font-size:12.5px}
+.fb-n i{display:block;font-style:normal;color:#8D96A5;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fb-c{text-align:right;font-family:ui-monospace,monospace;font-size:12px;line-height:1.25;min-width:64px}
+.fb-s{display:block;font-size:11px;font-weight:700}
+.fb-ar{display:flex;gap:2px}
+.fb-a{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;color:#8D96A5;
+ text-decoration:none;border:1px solid transparent}
+.fb-a:hover{color:#ECEEF1;border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.fb-a.off{opacity:.25}
+/* v4.8 — TP / SL anahtarları, sonuç satırı, eylem düğmeleri */
+[class*="st-key-sltp_"]{border-radius:14px;padding:10px 12px 8px 12px;background:var(--panel2);
+ border:1px solid color-mix(in srgb,var(--acc) 20%,var(--border));gap:.55rem !important}
+[class*="st-key-sltp_tp_"]{border-color:rgba(61,220,151,.30)}
+[class*="st-key-sltp_sl_"]{border-color:rgba(248,113,113,.30)}
+.sltp-res{font-size:12.5px;line-height:1.45;padding-top:2px}
+.sltp-res b{font-size:13px}
+.sltp-warn{font-size:11.5px;line-height:1.45;color:#F5B544}
+.sltp-note2{font-size:11.5px;line-height:1.45;color:#8D96A5}
+.sltp-lbl{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8D96A5;padding-top:4px}
+table.pos .acts{display:flex;flex-direction:column;gap:5px;align-items:stretch}
+table.pos .acts a.ghost{text-align:center;padding:4px 10px}
+a.ghost.edit:hover{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 55%,transparent);
+ background:color-mix(in srgb,var(--acc) 10%,transparent)}
 .demo-warn{font-size:12px;line-height:1.45;border-radius:12px;padding:9px 11px;margin:6px 0;color:#F5B544;
  background:rgba(245,181,68,.10);border:1px solid rgba(245,181,68,.35)}
 </style>
@@ -1768,7 +1827,8 @@ def notify_settings():
         st.selectbox("Economic data importance", ["High", "Medium +"], key="ntf_imp")
         st.checkbox("Impulse levels — fresh breakouts found by the AI scan", key="ntf_ai")
         st.checkbox("Viral buzz — a watchlist company's hype indicator turns Viral", key="ntf_hype")
-        st.checkbox("Bot trades — every automatic buy and sell in the demo account", key="ntf_bot")
+        st.checkbox("Demo trades — automatic bot buys / sells and triggered stop-loss / take-profit orders",
+                    key="ntf_bot")
         H('<div style="font-size:12px;font-weight:700;margin:6px 0 2px 0">Where</div>')
         push = st.checkbox("Push to phone / computer (also when Pulse is closed)", key="ntf_push")
         topic = n.get("topic") or ""
@@ -2539,28 +2599,112 @@ def news_rows(items, left=None):
     return out
 
 
+
+# ======================================================================
+# v4.8 — izleme listelerinde özel sıralama (sürükle-bırak + ↑ / ↓), kalıcı
+# ======================================================================
+def av_parts(t, name=None):
+    """avatar() ile aynı renkler / baş harfler — sıralanabilir liste bileşeni için."""
+    tt = str(t or "?")
+    src = tt if not (name and tt[:1].isdigit()) else str(name)
+    ini = re.sub(r"[^A-Z0-9]", "", src.upper().replace("=X", "").replace("-USD", "").replace("^", ""))[:2] or "?"
+    hue = sum(ord(c) for c in tt) % 360
+    logo = md.logo_url(tt)
+    if logo:
+        return {"ini": ini, "logo": logo, "avbg": "#F1F2F4", "avfg": f"hsl({hue},55%,32%)"}
+    return {"ini": ini, "logo": "", "avbg": f"hsl({hue},32%,20%)", "avfg": f"hsl({hue},70%,80%)"}
+
+
+def list_event(ev, key):
+    """Bileşen son olayını her çalıştırmada yeniden döndürür → sayaçla yalnızca yeni olayı işle."""
+    if not isinstance(ev, dict) or ev.get("key") not in (None, "", key):
+        return None
+    n = ev.get("n")
+    if n is None or ss.get(f"_lev_{key}") == n:
+        return None
+    ss[f"_lev_{key}"] = n
+    return ev
+
+
+def _wl_set(new):
+    """Ana izleme listesini kaydet (profil + kalıcı depo)."""
+    if new != list(ss.watchlist):
+        ss.watchlist = list(new)
+        _save_state()
+
+
+def watch_list_ui(syms, key, *, rows_fn, cols, colw, title_col="", removable=False, clickable=False, max_h=320,
+                  av=26, on_order, on_open=None, on_remove=None, fb_up, fb_dn, fb_extra=None, empty=""):
+    """Sıralanabilir liste + olay işleme. Bileşen yoksa yedek: ↑ / ↓ bağlantılı HTML liste."""
+    rows = rows_fn(syms)
+    ev = ch.sortable_list(rows, key, cols=cols, colw=colw, title_col=title_col, removable=removable,
+                          clickable=clickable, max_h=max_h, av=av, light=LIGHT, accent=None, empty=empty)
+    ev = list_event(ev, key)
+    if ev:
+        t = ev.get("t")
+        if t == "order" and isinstance(ev.get("order"), list):
+            on_order(reorder_merge(syms, [str(x) for x in ev["order"]]))
+            return
+        if t == "open" and on_open and ev.get("id") in syms:
+            on_open(ev["id"])
+            return
+        if t == "remove" and on_remove and ev.get("id") in syms:
+            on_remove(ev["id"])
+            return
+    if ch.list_available():
+        return
+    # ---- yedek (pulse_list/index.html yüklenmemiş): ↑ / ↓ bağlantıları, sürükle-bırak yok
+    if not rows:
+        H(f'<div class="muted small" style="padding:8px 2px">{esc(empty)}</div>')
+        return
+    out = ""
+    for i, r in enumerate(rows):
+        cells = "".join(f'<span class="fb-c"><span style="color:{c.get("c") or "inherit"}">{esc(c.get("v") or "")}</span>'
+                        + (f'<span class="fb-s" style="color:{c.get("sc") or MUT}">{esc(c.get("s") or "")}</span>'
+                           if c.get("s") is not None else "") + '</span>' for c in r["cells"])
+        up = (f'<a class="fb-a" target="_self" href="{fb_up(r["id"])}" title="Move up">↑</a>' if i
+              else '<span class="fb-a off">↑</span>')
+        dn = (f'<a class="fb-a" target="_self" href="{fb_dn(r["id"])}" title="Move down">↓</a>' if i < len(rows) - 1
+              else '<span class="fb-a off">↓</span>')
+        out += (f'<div class="fb-r{" sel" if r.get("sel") else ""}">{avatar(r["id"], av)}<span class="fb-n"><b>'
+                f'{esc(r["title"])}</b><i>{esc(r.get("sub") or "")}</i></span>{cells}<span class="fb-ar">{up}{dn}</span>'
+                + (fb_extra(r["id"]) if fb_extra else "") + '</div>')
+    H(f'<div class="fb-list" style="max-height:{max_h}px">{out}</div>'
+      '<div class="muted" style="font-size:10.5px;padding-top:4px">Upload <span class="mono">pulse_list/index.html</span>'
+      ' to drag rows by the ⋮⋮ handle.</div>')
+
+
 def render_watchlist_compact():
     wl = list(ss.watchlist)
     q = md.get_quotes(wl)
     add = "" if ACTIVE in wl else \
         f'<a class="lnk small" target="_self" href="{link(add_wl=ACTIVE)}">＋ add {esc(ACTIVE)}</a>'
-    H(f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="panel-title">'
-      f'Watchlist</span><span class="chip">{len(wl)}</span><span class="muted small">click → chart</span>'
-      f'<span style="margin-left:auto">{add}</span></div>')
-    if not wl:
-        H('<div class="muted small">The list is empty. Find a symbol with the search above and press “Add to watchlist”.</div>')
-        return
-    rows = ""
-    for t in wl:
-        qq = q.get(t)
-        last, chp = (qq["last"], qq["change_pct"]) if qq else (float("nan"), float("nan"))
-        sel = "background:#151922;" if t == ACTIVE else ""
-        rows += (f'<a class="plain" target="_self" href="{link(sym=t)}"><div class="wlr" style="{sel}">'
-                 f'{avatar(t, 24)}<div class="nm"><b class="mono">{esc(t)}</b><div>{esc(md.company_name(t))}</div></div>'
-                 f'<div class="px"><div style="font-size:12.5px">{tr(last, pdec(t, last))}</div>'
-                 f'<div style="font-size:11px;font-weight:700;color:{col(chp) if chp == chp else MUT}">{pct(chp)}'
-                 f'</div></div></div></a>')
-    H(f'<div class="wll">{rows}</div>')
+    H(f'<div class="hd" style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">'
+      f'<span class="panel-title">Watchlist</span><span class="chip">{len(wl)}</span><span class="muted small">click → '
+      f'chart · drag ⋮⋮ or ↑ ↓ to reorder</span><span style="margin-left:auto">{add}</span></div>')
+    q_ = q
+
+    def rows_fn(syms):
+        out = []
+        for t in syms:
+            qq = q_.get(t)
+            last, chp = (qq["last"], qq["change_pct"]) if qq else (float("nan"), float("nan"))
+            out.append(dict(av_parts(t), id=t, title=t, sub=md.company_name(t) or "", sel=(t == ACTIVE),
+                            cells=[{"v": tr(last, pdec(t, last)), "s": pct(chp),
+                                    "sc": (col(chp) if chp == chp else MUT)}]))
+        return out
+
+    def on_open(t):
+        st.query_params["sym"] = t
+        st.rerun()
+
+    def on_order(new):
+        _wl_set(new)
+        st.rerun()
+
+    watch_list_ui(wl, "wl_main", rows_fn=rows_fn, cols=[""], colw=["86px"], clickable=True, max_h=300, av=24,
+                  on_order=on_order, on_open=on_open, fb_up=lambda t: link(wl_up=t), fb_dn=lambda t: link(wl_dn=t),
+                  empty="The list is empty. Find a symbol with the search above and press “Add to watchlist”.")
 
 
 def squarify(values, x, y, w, h):
@@ -5405,11 +5549,73 @@ def _me():
     return str(a.get("user") or "") if isinstance(a, dict) else ""
 
 
+def toast_later(msg):
+    """Bir sonraki çizimde gösterilecek bildirim (geri çağırmalar ve yeniden çalıştırmalar için)."""
+    ss.setdefault("_pend_toast", []).append(str(msg))
+
+
+def flush_toasts():
+    for m_ in ss.pop("_pend_toast", None) or []:
+        st.toast(m_)
+
+
+def orders_check(gap=None):
+    """v4.8: bekleyen SL / TP emirlerini canlı fiyatla kontrol et; tetiklenenleri bildir. Döner: olay sayısı."""
+    if not _me():
+        return 0
+    try:
+        evs = bk.orders_tick(md, only=_me(), **({"gap": gap} if gap is not None else {}))
+    except Exception:
+        return 0
+    accts = {a["id"]: a for a in bk.demo_accounts(_me())}
+    for e in evs:
+        ccy = (accts.get(e["acc_id"]) or {}).get("ccy", "USD")
+        toast_later(f'{"🎯" if e["pnl"] >= 0 else "🛑"} {e["reason"]}: {e["sym"]} {e["qty"]:g} @ {tr(e["price"])} '
+                    f'({"+" if e["pnl"] >= 0 else "−"}{money(abs(e["pnl"]), ccy)}) · {e["account"]}')
+    return len(evs)
+
+
+def _demo_sig():
+    """Etkin demo hesabının değişim imzası (işlem sayacı + pozisyon sayısı)."""
+    try:
+        a = bk.demo_get(_me())
+        return [a.get("id"), int(a.get("seq") or 0), len(a.get("pos") or {})]
+    except Exception:
+        return None
+
+
+def _orders_live_impl():
+    """Demo sayfası açıkken 30 sn'de bir canlı kontrol; bir emir dolarsa tüm sayfa yenilenir (nakit, K/Z, geçmiş).
+    Emir arka plandaki izleyici (ya da bot) tarafından kapatıldıysa da sayfa yenilenir ve bildirim gösterilir."""
+    if orders_check(gap=25.0):
+        st.rerun()
+    old, now_ = ss.get("_demo_sig"), _demo_sig()
+    if old and now_ and old != now_:
+        if old[0] == now_[0]:
+            a = bk.demo_get(_me())
+            for t in a.get("trades") or []:
+                if int(t.get("id") or 0) > old[1] and t.get("side") == "sell" and t.get("reason") in bk.EXIT_WHY.values():
+                    toast_later(f'{"🎯" if (t.get("pnl") or 0) >= 0 else "🛑"} {t["reason"]}: {t["sym"]} {t["qty"]:g} @ '
+                                f'{tr(t["px"])} ({"+" if (t.get("pnl") or 0) >= 0 else "−"}'
+                                f'{money(abs(t.get("pnl") or 0), a.get("ccy", "USD"))})')
+        ss["_demo_sig"] = now_
+        st.rerun()
+
+
+if _frag0 is not None:
+    try:
+        orders_live = _frag0(run_every=30)(_orders_live_impl)
+    except TypeError:
+        orders_live = _orders_live_impl
+else:
+    orders_live = _orders_live_impl
+
+
 def demo_state():
     """Demo hesabı + canlı fiyatlarla değeri. Döner: (hesap, değerleme, EURUSD)."""
     acct = bk.demo_get(_me())
     syms = sorted({p["sym"] for p in acct["pos"].values()})
-    q = md.get_quotes(syms + ["EURUSD=X"]) if (syms or acct["ccy"] == "EUR") else {}
+    q = md.get_live_quotes(syms + ["EURUSD=X"]) if (syms or acct["ccy"] == "EUR") else {}
     e = q.get("EURUSD=X") or {}
     eurusd = float(e["last"]) if (e.get("src") == "real" and e.get("last")) else acct.get("fx")
     return acct, bk.demo_value(acct, q, eurusd), eurusd
@@ -5432,10 +5638,10 @@ def demo_resolve(text):
             res = md.search_symbols(raw[:40])
             sym = res[0]["ticker"] if res else (cand if cand in md.KNOWN else None)
         ss["_demo_res"] = (raw.upper(), sym)
-    return sym, ((md.get_quotes([sym]).get(sym) or {}) if sym else {})
+    return sym, ((md.get_live_quotes([sym]).get(sym) or {}) if sym else {})
 
 
-def demo_order(sym, side, qty, owner="manual", stop=None, tp=None):
+def demo_order(sym, side, qty, owner="manual", stop=None, tp=None, mode="regular"):
     """Elle verilen demo emri: yalnızca canlı fiyattan dolar. Alımda isteğe bağlı Stop-Loss / Take-Profit.
     Döner: (ok, mesaj)."""
     sym = str(sym or "").upper().strip()
@@ -5443,7 +5649,7 @@ def demo_order(sym, side, qty, owner="manual", stop=None, tp=None):
     if inst is None:
         return False, (f"{sym} cannot be traded in the demo account — only stocks, ETFs and crypto quoted in "
                        f"USD or EUR.")
-    q = md.get_quotes([sym, "EURUSD=X"])
+    q = md.get_live_quotes([sym, "EURUSD=X"])         # v4.8: son 1 dakikalık bar
     qs = q.get(sym) or {}
     if qs.get("src") != "real" or not qs.get("last"):
         return False, f"No live price for {sym} right now — demo orders are only filled at real prices."
@@ -5459,14 +5665,16 @@ def demo_order(sym, side, qty, owner="manual", stop=None, tp=None):
         return False, f"The stop-loss ({tr(stop)}) must be below the current price ({tr(px)})."
     if tp and tp <= px:
         return False, f"The take-profit ({tr(tp)}) must be above the current price ({tr(px)})."
-    plan = ({"stop": stop, "tp1": 0.0, "tp2": tp, "atr": 0.0, "tp1_done": True, "checked": time.time()}
+    trail = round(px - stop, 6) if (stop and str(mode).lower().startswith("trail")) else 0.0
+    plan = ({"stop": stop, "tp1": 0.0, "tp2": tp, "atr": 0.0, "tp1_done": True, "checked": time.time(), "trail": trail}
             if (stop or tp) else None)
 
     def run(a):
         if eurusd:
             a["fx"] = eurusd
         ok, msg, _ = bk.demo_trade(a, sym, side, qty, px, fxm, owner,
-                                   ("Manual order" + (f" · SL {tr(stop)}" if stop else "") + (f" · TP {tr(tp)}" if tp else ""))
+                                   ("Manual order" + ((f" · trailing SL {tr(stop)}" if trail else f" · SL {tr(stop)}") if stop else "")
+                                    + (f" · TP {tr(tp)}" if tp else ""))
                                    if owner == "manual" else "Closed by hand", plan=plan)
         return ok, msg
     ok, msg = bk.demo_edit(_me(), run)
@@ -5478,7 +5686,15 @@ def _demo_actions():
     if not _me():
         return
     rm, sell, tg, dl = _consume("demo_rm"), _consume("demo_sell"), _consume("bot_tg"), _consume("bot_del")
+    ed = _consume("demo_edit")
+    if ed:
+        ss["_demo_set"] = dict(ss.get("_demo_set") or {}, mo_pos=ed)
+        ss["_mo_open"] = True
     pick = _consume("demo_pick")
+    for k_, d_ in (("demo_up", -1), ("demo_dn", 1)):    # v4.8: ↑ / ↓ (bileşen yoksa)
+        v_ = _consume(k_)
+        if v_:
+            bk.demo_edit(_me(), lambda a, v_=v_, d_=d_: a.__setitem__("watch", move_item(a.get("watch") or [], v_, d_)))
     if pick:
         ss["_demo_set"] = dict(ss.get("_demo_set") or {}, demo_osym=str(pick)[:24])
     if rm:
@@ -5626,6 +5842,8 @@ def _bots_body():
         bk.bots_tick(md, only=_me())          # sayfa açıkken de 15 dakikalık kontrol kaçmasın
     except Exception:
         pass
+    orders_check()
+    flush_toasts()
     acct, val, _eu = demo_state()
     cur = acct["ccy"]
     bots = acct.get("bots") or []
@@ -5759,8 +5977,97 @@ def render_bots_section(hist=None):
 
 def render_demo():
     """Demo reiter — v4.6: tüm içerik tek bir anahtarlı kapta (daha ferah aralıklar yalnızca burada)."""
+    orders_check()               # v4.8: sayfa açılırken bekleyen SL / TP emirleri canlı fiyatla kontrol edilir
+    flush_toasts()
+    ss["_demo_sig"] = _demo_sig()
+    orders_live()
     with st.container(key="pg_demo"):
         _render_demo_body()
+
+
+def px_step(px):
+    """Fiyata göre +/− adımı ve gösterim biçimi."""
+    px = float(px or 0)
+    if px < 2:
+        return 0.001, "%.4f"
+    if px < 20:
+        return 0.01, "%.2f"
+    if px < 200:
+        return 0.05, "%.2f"
+    if px < 2000:
+        return 0.5, "%.2f"
+    return 5.0, "%.2f"
+
+
+def result_line(qty, ref, target, fxm, cur, label="Result"):
+    """'Result: +$X.XX (+y %)' — hedef / stop fiyatı tetiklenirse beklenen kâr / zarar (komisyonsuz)."""
+    if not (qty and ref and target):
+        return f'<div class="sltp-res muted">{label}: —</div>'
+    v = float(qty) * (float(target) - float(ref)) * float(fxm or 1.0)
+    c_ = UP if v >= 0 else DOWN
+    return (f'<div class="sltp-res"><span class="muted">{label}:</span> <b class="mono" style="color:{c_}">'
+            f'{"+" if v >= 0 else "−"}{money(abs(v), cur)}</b> <span class="muted">({pct((float(target) / float(ref) - 1) * 100)})'
+            f'</span></div>')
+
+
+def sltp_inputs(prefix, sym, ref, qty, last, fxm, cur, cur_orders=None, on_off=None, tkey=None):
+    """İki ayrı anahtar (Take profit · Stop loss); açılınca +/− düğmeli fiyat alanı ve altında beklenen sonuç.
+    Stop loss'ta Regular (sabit) / Trailing (iz süren). ref = sonuç için baz fiyat (yeni emirde fiyat, pozisyonda
+    giriş), last = doğrulama ve varsayılanlar için son fiyat. Döner: (tp, sl, mode) — kapalı taraf 0."""
+    k = f"{prefix}_{re.sub(r'[^A-Za-z0-9]', '_', sym)}"
+    tk = tkey or k                           # anahtarlar / mod (emir biletinde sembol değişince açık kalır)
+    co = cur_orders or {}
+    base = float(last or ref or 0)
+    step, fmt = px_step(base)
+    dec = 4 if fmt == "%.4f" else 2
+    if cur_orders is not None:               # pozisyonun emirleri başka yerde değiştiyse (iz süren stop, tetik) eşitle
+        sig = (round(float(co.get("stop") or 0), 6), round(float(co.get("tp") or 0), 6), co.get("mode"))
+        if ss.get(f"{k}_sig") != sig:
+            ss[f"{k}_sig"] = sig
+            ss[f"{tk}_tp_on"], ss[f"{tk}_sl_on"] = bool(co.get("tp")), bool(co.get("stop"))
+            ss[f"{tk}_slm"] = "Trailing" if co.get("mode") == "trailing" else "Regular"
+            if base > 0:
+                ss[f"{k}_tp"] = round(float(co.get("tp") or base * 1.05), dec)
+                ss[f"{k}_sl"] = round(float(co.get("stop") or base * 0.97), dec)
+    # varsayılanlar yalnızca bir kez (oturum durumu) — widget'a ayrıca value verilmez
+    ss.setdefault(f"{tk}_tp_on", bool(co.get("tp")))
+    ss.setdefault(f"{tk}_sl_on", bool(co.get("stop")))
+    ss.setdefault(f"{tk}_slm", "Trailing" if co.get("mode") == "trailing" else "Regular")
+    if base > 0:
+        ss.setdefault(f"{k}_tp", round(float(co.get("tp") or base * 1.05), dec))
+        ss.setdefault(f"{k}_sl", round(float(co.get("stop") or base * 0.97), dec))
+    c1, c2 = st.columns(2, gap="medium")
+    tp = sl = 0.0
+    with c1:
+        with st.container(key=f"sltp_tp_{k}"):
+            on = toggle("Take profit", f"{tk}_tp_on", on_change=on_off, args=("tp",) if on_off else ())
+            if on and base > 0:
+                tp = st.number_input("Take-profit price", min_value=0.0, step=step, format=fmt, key=f"{k}_tp",
+                                     label_visibility="collapsed")
+                H(result_line(qty, ref, tp, fxm, cur))
+                if tp and tp <= base:
+                    H(f'<div class="sltp-warn">Must be above the current price {tr(base)}.</div>')
+            elif on:
+                H('<div class="sltp-res muted">Needs a live price.</div>')
+    with c2:
+        with st.container(key=f"sltp_sl_{k}"):
+            on = toggle("Stop loss", f"{tk}_sl_on", on_change=on_off, args=("sl",) if on_off else ())
+            mode = "Regular"
+            if on and base > 0:
+                sl = st.number_input("Stop-loss price", min_value=0.0, step=step, format=fmt, key=f"{k}_sl",
+                                     label_visibility="collapsed")
+                H(result_line(qty, ref, sl, fxm, cur))
+                # fiyat alanları iki sütunda aynı hizada kalsın → stop türü sonucun altında
+                H('<div class="sltp-lbl">Stop type</div>')
+                mode = seg("Stop type", ["Regular", "Trailing"], f"{tk}_slm", "Regular") or "Regular"
+                if mode == "Trailing" and sl and sl < base:
+                    H(f'<div class="sltp-note2">Trails {tr(base - sl, dec)} below the highest price since the order — '
+                      f'it only moves up.</div>')
+                if sl and sl >= base:
+                    H(f'<div class="sltp-warn">Must be below the current price {tr(base)}.</div>')
+            elif on:
+                H('<div class="sltp-res muted">Needs a live price.</div>')
+    return float(tp or 0), float(sl or 0), mode
 
 
 def _next_tp(r):
@@ -5769,35 +6076,47 @@ def _next_tp(r):
     return tr(r["tp2"]) if r.get("tp2") else "—"
 
 
-def _manual_orders_editor(rows):
-    """Elle açılmış pozisyonların Stop-Loss / Take-Profit emirleri (eklemek, değiştirmek, kaldırmak)."""
-    man = [r for r in rows if r["owner"] == "manual"]
-    if not man:
+def orders_editor(rows, cur):
+    """v4.8: her açık pozisyon için SL / TP — anahtarla anında kapat, fiyatı +/− ile ayarla, Regular / Trailing."""
+    if not rows:
         return
-    with st.expander("Stop-loss / take-profit for your manual positions", expanded=False):
-        keys = [r["key"] for r in man]
-        byk = {r["key"]: r for r in man}
-        if ss.get("mo_pos") not in keys:          # hesap değişince eski seçim geçersiz olur
-            ss["mo_pos"] = keys[0]
+    keys = [r["key"] for r in rows]
+    byk = {r["key"]: r for r in rows}
+    if ss.get("mo_pos") not in keys:
+        ss["mo_pos"] = keys[0]
+    anchor("demo_orders")
+    with st.expander("Stop loss / take profit for open positions", expanded=bool(ss.pop("_mo_open", False))):
         k = st.selectbox("Position", keys, key="mo_pos",
-                         format_func=lambda x: f'{byk[x]["sym"]} · {byk[x]["qty"]:g} sh · last {tr(byk[x]["last"])}')
+                         format_func=lambda x: f'{byk[x]["sym"]} · {byk[x]["qty"]:g} sh · '
+                                               f'{"manual" if byk[x]["owner"] == "manual" else byk[x]["bot"]} · '
+                                               f'last {tr(byk[x]["last"])}')
         r = byk[k]
-        c1, c2 = st.columns(2, gap="small")
-        with c1:
-            sl = st.number_input("Stop-loss", min_value=0.0, value=float(r.get("stop") or 0.0), step=0.5,
-                                 format="%.2f", key=f"mo_sl_{k}")
-        with c2:
-            tp = st.number_input("Take-profit", min_value=0.0, value=float(r.get("tp2") or 0.0), step=0.5,
-                                 format="%.2f", key=f"mo_tp_{k}")
-        b1, b2 = st.columns(2, gap="small")
-        with b1:
-            save = button("Save orders", key=f"mo_save_{k}", primary=True)
-        with b2:
-            clear = button("Remove orders", key=f"mo_clear_{k}")
-        if save or clear:
-            ok, msg = bk.demo_set_orders(_me(), k, None if clear else sl, None if clear else tp)
+        acct = bk.demo_get(_me())
+        p = acct["pos"].get(k) or {}
+        co = bk.pos_orders(p) if p else {}
+        if r["owner"] != "manual" and not r.get("manual_orders"):
+            H('<div class="muted small" style="padding-bottom:2px">This position belongs to a bot. Saving your own orders '
+              'replaces the bot\'s exit plan (partial sale at TP1, ATR trailing, time limit) for it.</div>')
+
+        def off(side, k=k):          # anahtar kapatılınca o emir hemen iptal edilir
+            pre = f"pe_{re.sub(r'[^A-Za-z0-9]', '_', k)}"
+            if ss.get(f"{pre}_{side}_on"):
+                return
+            ok, msg = (bk.demo_set_orders(_me(), k, tp=0) if side == "tp" else bk.demo_set_orders(_me(), k, stop=0))
+            ss["_mo_open"] = True
+            toast_later((("Take profit" if side == "tp" else "Stop loss") + f' cancelled for {byk[k]["sym"]}') if ok else msg)
+
+        tp, sl, mode = sltp_inputs("pe", k, r["entry"], r["qty"], r["last"], r.get("fxm") or 1.0, cur, co, on_off=off)
+        H('<div class="muted" style="font-size:11px">Result = profit / loss of the whole position against your entry '
+          f'{tr(r["entry"])} if the order fills. Switching a toggle off cancels that order at once.</div>')
+        if button("Save orders", key=f"mo_save_{k}", primary=True):
+            pre = f"pe_{re.sub(r'[^A-Za-z0-9]', '_', k)}"
+            ok, msg = bk.demo_set_orders(_me(), k, stop=sl if ss.get(f"{pre}_sl_on") else 0,
+                                         tp=tp if ss.get(f"{pre}_tp_on") else 0, mode=mode.lower(),
+                                         last=r["last"] if r.get("live") else None)
             if ok:
-                st.toast(f'{r["sym"]}: {msg.lower()}')
+                ss["_mo_open"] = True
+                st.toast(f'{r["sym"]}: {msg}')
                 st.rerun()
             else:
                 st.warning(msg)
@@ -5987,7 +6306,7 @@ def _render_demo_body():
         with st.container(border=True):
             watch = list(acct.get("watch") or [])
             H(f'<div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:10px;'
-              f'flex-wrap:wrap"><span class="panel-title">My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · '
+              f'flex-wrap:wrap"><span class="panel-title">My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · drag ⋮⋮ or ↑ ↓ to reorder · '
               f'bots set to “Demo watchlist” trade only these</span></div>')
             a1, a2 = st.columns([3.4, 1], vertical_alignment="bottom")
             with a1:
@@ -6021,22 +6340,36 @@ def _render_demo_body():
                 held = {}
                 for r in val["rows"]:
                     held[r["sym"]] = held.get(r["sym"], 0.0) + r["qty"]
-                rows = ""
-                for s_ in watch:
-                    qs = q.get(s_) or {}
-                    live = qs.get("src") == "real"
-                    rows += (
-                        f'<tr><td><a class="plain" target="_self" href="{link(sec="Markets", sym=s_)}"><span '
-                        f'style="display:flex;align-items:center;gap:10px">{avatar(s_, 28)}<span><b>{esc(s_)}</b>'
-                        f'<span class="bsub">{esc(md.company_name(s_) or "")[:34]}</span></span></span></a></td>'
-                        f'<td>{tr(qs.get("last")) if qs.get("last") else "—"}{"" if live else " <span class=bsub style=display:inline>sample</span>"}</td>'
-                        f'<td style="color:{col(qs.get("change_pct") or 0)}">{pct(qs.get("change_pct") or 0)}</td>'
-                        f'<td>{(str(round(held[s_], 4)).rstrip("0").rstrip(".") + " sh") if s_ in held else "—"}</td>'
-                        f'<td><a class="lnk small" style="color:{MUT}" target="_self" '
-                        f'href="{link(demo_rm=s_, f="demo")}">Remove</a></td></tr>')
-                H(f'<div style="overflow-x:auto;max-height:330px"><table class="jt bt"><thead><tr><th>Company</th>'
-                  f'<th>Last</th><th>Today</th><th>In account</th><th></th></tr></thead><tbody>{rows}</tbody>'
-                  f'</table></div>')
+
+                def rows_fn(syms):
+                    out = []
+                    for s_ in syms:
+                        qs = q.get(s_) or {}
+                        live = qs.get("src") == "real"
+                        chp = qs.get("change_pct") or 0
+                        hq = held.get(s_)
+                        out.append(dict(av_parts(s_), id=s_, title=s_, sub=(md.company_name(s_) or "")[:40],
+                                        cells=[{"v": (tr(qs.get("last")) if qs.get("last") else "—")
+                                                + ("" if live else " ·"), "c": None if live else MUT},
+                                               {"v": pct(chp), "c": col(chp)},
+                                               {"v": (f"{hq:g} sh" if hq else "—"), "c": None if hq else MUT}]))
+                    return out
+
+                def on_order(new):
+                    bk.demo_edit(_me(), lambda a: a.__setitem__("watch", reorder_merge(a.get("watch") or [], new)))
+                    st.rerun()
+
+                def on_remove(sym_):
+                    bk.demo_edit(_me(), lambda a: a.__setitem__("watch", [x for x in a.get("watch") or [] if x != sym_]))
+                    st.toast(f"{sym_} removed from the demo watchlist")
+                    st.rerun()
+
+                watch_list_ui(watch, f"wl_demo_{acct['id']}", rows_fn=rows_fn, cols=["Last", "Today", "In account"],
+                              colw=["92px", "74px", "82px"], title_col="Company", removable=True, max_h=360, av=28,
+                              on_order=on_order, on_remove=on_remove,
+                              fb_up=lambda t: link(demo_up=t, f="demo"), fb_dn=lambda t: link(demo_dn=t, f="demo"),
+                              fb_extra=lambda t: (f'<a class="lnk small" style="color:{MUT};margin-left:6px" '
+                                                  f'target="_self" href="{link(demo_rm=t, f="demo")}">Remove</a>'))
             else:
                 H('<div class="muted" style="padding:10px 0">The list is empty — add the companies you want to trade '
                   'or let your bots watch.</div>')
@@ -6054,19 +6387,6 @@ def _render_demo_body():
                 qty = st.number_input("Shares", min_value=0.0, value=1.0, step=1.0, key="demo_oqty")
             with o4:
                 go_ = button("Place order", key="demo_place", primary=True)
-            sl = tp = 0.0
-            if side == "Buy":       # v4.7: isteğe bağlı koruyucu emirler (her 15 dakikada kontrol edilir)
-                for k_ in ("demo_osl", "demo_otp"):      # değer yalnızca oturum durumundan (emirden sonra sıfırlanır)
-                    if not isinstance(ss.get(k_), (int, float)):
-                        ss[k_] = 0.0
-                s1, s2, s3 = st.columns([1.2, 1.2, 1.7], vertical_alignment="bottom")
-                with s1:
-                    sl = st.number_input("Stop-loss (optional)", min_value=0.0, step=0.5, format="%.2f", key="demo_osl")
-                with s2:
-                    tp = st.number_input("Take-profit (optional)", min_value=0.0, step=0.5, format="%.2f", key="demo_otp")
-                with s3:
-                    H('<div class="muted small sltp-note">Leave at 0 for none. Checked every 15 minutes on the '
-                      'closed 15-minute bars, like the bots\' orders.</div>')
             osym, qs = demo_resolve(otxt)
             picks = list(dict.fromkeys([r["sym"] for r in val["rows"]] + list(acct.get("watch") or [])))[:12]
             if picks:
@@ -6094,13 +6414,22 @@ def _render_demo_body():
             else:
                 H(f'<div class="muted small">No live price for {esc(osym)} right now — orders are only filled at '
                   f'real prices.</div>')
+            sl = tp = 0.0
+            mode = "Regular"
+            live_px = float(qs["last"]) if (osym and qs.get("src") == "real" and qs.get("last") and fxm) else None
+            if side == "Buy":       # v4.8: Take Profit / Stop Loss — anahtar, +/− fiyat alanı, sonuç önizlemesi
+                tp, sl, mode = sltp_inputs("demo", osym or "", live_px, float(qty or 0), live_px, fxm or 1.0, cur,
+                                           tkey="demo_new")
+                if not ss.get("demo_new_tp_on"):
+                    tp = 0.0
+                if not ss.get("demo_new_sl_on"):
+                    sl = 0.0
             if go_:
                 if not osym:
                     st.warning("Enter a ticker or a company name first.")
                 else:
-                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty, stop=sl, tp=tp)
+                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty, stop=sl, tp=tp, mode=mode)
                     if ok:
-                        ss["_demo_set"] = {"demo_osl": 0.0, "demo_otp": 0.0}
                         st.toast(msg)
                         st.rerun()
                     else:
@@ -6119,14 +6448,16 @@ def _render_demo_body():
                         f'<td class="l"><span class="pos-by{" bot" if r["owner"] != "manual" else ""}">'
                         f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</span></td>'
                         f'<td>{r["qty"]:g}</td><td class="dim">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
-                        f'<td class="sltp"><span style="color:{DOWN}">{tr(r["stop"]) if r.get("stop") else "—"}</span>'
-                        f'<span style="color:{UP}">{_next_tp(r)}</span></td>'
+                        f'<td class="sltp"><span style="color:{DOWN}">'
+                        f'{(tr(r["stop"]) + (" ↗" if r.get("trail") else "")) if (r.get("orders") and r.get("stop")) else "—"}'
+                        f'</span><span style="color:{UP}">{_next_tp(r) if r.get("orders") else "—"}</span></td>'
                         f'<td>{money(r["value"], cur)}</td>'
                         f'<td><span class="pos-pl" style="color:{pc}">{"+" if r["pnl"] >= 0 else "−"}'
                         f'{money(abs(r["pnl"]), cur)}</span><span class="pos-pct" style="color:{pc};'
                         f'background:{rgba(pc, 0.13)}">{pct(r["pnl_pct"], 1)}</span></td>'
-                        f'<td class="act"><a class="ghost" target="_self" '
-                        f'href="{link(demo_sell=r["key"], f="demo")}">Sell all</a></td></tr>')
+                        f'<td class="act"><span class="acts"><a class="ghost edit" target="_self" '
+                        f'href="{link(demo_edit=r["key"], f="demo_orders")}">SL / TP</a><a class="ghost" target="_self" '
+                        f'href="{link(demo_sell=r["key"], f="demo")}">Sell all</a></span></td></tr>')
                 tpc = UP if val["upl"] >= 0 else DOWN
                 H(f'<div style="overflow-x:auto"><table class="pos"><thead><tr><th class="l">Symbol</th>'
                   f'<th class="l">Opened by</th><th>Qty</th><th>Entry</th><th>Last</th><th>SL / TP</th><th>Value</th><th>P / L'
@@ -6134,7 +6465,7 @@ def _render_demo_body():
                   f'Total</td><td>{money(val["invested"], cur)}</td><td><span class="pos-pl" style="color:{tpc}">'
                   f'{"+" if val["upl"] >= 0 else "−"}{money(abs(val["upl"]), cur)}</span></td><td class="act"></td>'
                   f'</tr></tfoot></table></div>')
-                _manual_orders_editor(val["rows"])
+                orders_editor(val["rows"], cur)
             else:
                 H('<div class="muted" style="padding:8px 0">No open positions.</div>')
             trs = list(reversed(acct.get("trades") or []))[:25]
