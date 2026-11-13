@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.9"
+ENGINE_VERSION = "5.0"
 NAN = float("nan")
 
 
@@ -1934,11 +1934,23 @@ def ai_evaluate(ticker, df, df15=None, zones=None, cfg=None, meta=None):
         score += 8.0
     m = meta or {}
     return {"ticker": ticker, "name": m.get("name") or ticker, "price": px,
-            "chg": float(m.get("change_pct") or 0.0), "volume": float(m.get("volume") or 0.0),
+            "chg": _day_chg(df, m), "volume": float(m.get("volume") or 0.0),
             "market_cap": m.get("market_cap"), "sector": m.get("sector") or "",
             "ema_ok": ema_ok, "ema_fast": float(ef), "ema_slow": float(es),
             "patterns": pats, "best": best, "plan": plan, "c15": c15,
             "zones": (zones or [])[:6], "score": round(min(100.0, max(0.0, score)), 1)}
+
+
+def _day_chg(df, m):
+    """v5.0: günün yüzdesi fiyatla AYNI kaynaktan (günlük kapanış / önceki kapanış) — tarayıcıdaki eski
+    yüzdeyle fiyatın karışmasını önler; veri yoksa taramadaki değere düşer."""
+    try:
+        c = df["Close"].astype(float)
+        if len(c) >= 2 and float(c.iloc[-2]):
+            return (float(c.iloc[-1]) / float(c.iloc[-2]) - 1) * 100
+    except Exception:
+        pass
+    return float((m or {}).get("change_pct") or 0.0)
 
 
 def ai_fresh_breakout(r, max_bars=1):
@@ -5854,7 +5866,7 @@ def strat_evaluate(key, ticker, df, meta=None, bench=None, regime_ok=None, param
     cs = checks_score(checks)
     m = meta or {}
     return {"ticker": ticker, "name": m.get("name") or ticker, "price": px,
-            "chg": float(m.get("change_pct") or 0.0), "volume": float(m.get("volume") or 0.0),
+            "chg": _day_chg(df, m), "volume": float(m.get("volume") or 0.0),
             "market_cap": m.get("market_cap"), "sector": m.get("sector") or "",
             "ema_ok": bool(_ok(ef) and _ok(es) and px > ef and px > es),
             "ema_fast": float(ef) if _ok(ef) else None, "ema_slow": float(es) if _ok(es) else None,
