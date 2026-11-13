@@ -1,3 +1,74 @@
+# Pulse — Market Dashboard (Streamlit) · v4.9
+
+## Neu in v4.9 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py`, `pulse_chart/index.html` hochladen,
+dann *Reboot app*. `pulse_list/index.html` ist unverändert. Keine neuen Secrets.
+
+### Wählbare Strategien
+In **Short Term**, bei den **Bots** und im **Backtest** kann jetzt gewählt werden, welche Strategie läuft:
+*Pattern breakout* (die bisherige AI-Suche), **Double Donchian** und **Flag after a strong advance**.
+
+**Doppelter Donchian (120 / 20)**
+1. *Richtung:* Ein Schlusskurs über dem 120-Tage-Hoch gibt die Long-Seite frei. Sie bleibt frei, bis der
+   Kurs unter dem 120-Tage-Tief schließt.
+2. *Einstieg:* Solange die Richtung frei ist, wird jeder Schlusskurs über dem 20-Tage-Hoch gekauft.
+3. *Stop:* am 20-Tage-Tief. Er wird täglich auf das neue 20-Tage-Tief angehoben und fällt nie.
+4. *Ausstieg:* kein Kursziel – die Position endet, wenn der Kurs auf das nachgezogene 20-Tage-Tief fällt.
+
+**Flagge nach starkem Anstieg**
+1. *Anstieg:* mindestens 30 % in höchstens 40 Handelstagen (der „Mast“).
+2. *Flagge:* 5 bis 15 enge Kerzen. Von mir ergänzt, weil die Definition das offen ließ: Rücksetzer höchstens
+   25 % vom Hoch, höchstens die Hälfte des Anstiegs wird abgegeben, die Kerzen sind kleiner als im Anstieg.
+3. *Einstieg:* Schlusskurs über dem Basis-Hoch mit mindestens 1,5-fachem Volumen (20-Tage-Schnitt).
+4. *Stop:* knapp unter dem Tief der Flagge.
+5. *Ausstieg (von mir ergänzt):* 40 % bei 2R, der Stop geht dann auf den Einstieg; der Rest läuft bis zum
+   „Measured Move“ (Höhe des Anstiegs, ab dem Ausbruch gerechnet).
+
+Alle Kanäle und Niveaus werden nur aus *früheren* Kerzen berechnet (kein Blick in die Zukunft).
+
+### Short Term
+* Unter „AI Opportunities“ gibt es den Umschalter **Strategy**. Jede Strategie zeigt ihre Regeln als
+  nummerierte, farbige Schritte – in denselben Farben wie die Linien im Chart.
+* Die Liste zeigt frische Ausbrüche zuerst (BREAKOUT / RETEST), danach Titel, die auf den Auslöser warten
+  (ARMED = Richtung frei, 20-Tage-Hoch noch nicht gebrochen; FORMING = Flagge läuft noch) und laufende
+  Trend-Trades (IN TREND).
+* **Im Chart eingezeichnet:** beim Donchian das 120-Tage-Hoch (violett), das 20-Tage-Hoch (gelb, Kauf-
+  Auslöser), das 20-Tage-Tief (rot gestrichelt, Stop), die grün hinterlegte Phase „Richtung frei“ sowie
+  Kauf- und Verkaufspunkte der Regel; bei der Flagge der Mast, die Flaggen-Box, die Auslöse-Linie und der
+  Stop. Jedes Teil trägt eine Beschriftung.
+* **Confirmation checks:** jede Chance bekommt eine Prüfliste mit Punktzahl (0–100). Geprüft werden
+  mehrere Zeitebenen (Wochentrend, Lage in der 52-Wochen-Spanne, Tagestrend, 15-Minuten-Chart), Indikatoren
+  (ADX, RSI, MACD, Ausbruchs-Volumen, relative Stärke zum S&P 500, Stop-Abstand), Formationen und
+  Niveaus (weitere Chartmuster, Platz bis zum nächsten Widerstand, Qualität der Flagge bzw. Alter des
+  Trendsignals) und das Marktumfeld. Der Score der Liste = 40 % Setup-Qualität + 60 % Bestätigung.
+  Die Prüfliste gibt es auch bei der bisherigen AI-Suche (eingeklappt; deren Score bleibt unverändert).
+
+### Bots
+* Im Formular „New bot“ stehen die beiden Strategien zur Auswahl; die Regeln werden direkt angezeigt.
+* Neu: **Min. confirmation score** – der Bot kauft nur, wenn die Prüfliste diese Punktzahl erreicht.
+* Der Donchian-Bot kauft ohne Kursziel, hebt den Stop täglich auf das neue 20-Tage-Tief an und verkauft
+  nur dort (in der History „Trailing Stop triggered“). Mindest-R/R, ATR-Trailing und maximale Haltedauer
+  gelten für ihn nicht. Der Flaggen-Bot kauft nur Ausbrüche mit Volumenschub.
+
+### Backtest
+* Neuer Schritt **Strategy**: „Custom rules“ (wie bisher), „Double Donchian“ oder „Flag after a strong
+  advance“. Alle Parameter sind einstellbar (Kanal-Längen, Mindest-Anstieg, Flaggen-Länge, Volumen, erstes
+  Ziel), beim Donchian auch Long / Short / beides.
+* **Confirmations** zum Zuschalten: Wochen-Aufwärtstrend, ADX ≥ 20, S&P 500 über dem 50-Tage-EMA – so
+  lässt sich prüfen, ob eine Bestätigung das Ergebnis wirklich verbessert.
+* Im Preis-Chart werden die Kanäle bzw. Mast und Flagge mitgezeichnet; die Trade-Liste nennt den
+  Ausstiegsgrund (Channel stop, Target 1 · 40 %, Target 2, Break-even stop). Gespeicherte Strategien
+  merken sich Strategie und Parameter.
+
+**Getestet:** 61 Szenarien in 4 Modi (online/offline × neue/alte Streamlit-Version), darunter Regeln,
+Zustände, Stop-Nachziehen, Bot-Kauf und -Verkauf sowie Backtests beider Strategien; die Zeichnungen wurden
+im echten Chart im Browser gerendert (keine überlappenden Beschriftungen); Abstands-Test der neuen Blöcke bei
+1100 / 420 / 330 px. Nicht im Browser prüfbar war hier das Plotly-Preisdiagramm des Backtests (Plotly ist in
+meiner Testumgebung nicht installiert) – es ist nur über die Test-Attrappe abgedeckt.
+
+---
+
 # Pulse — Market Dashboard (Streamlit) · v4.8
 
 ## Neu in v4.8 (Deutsch)
