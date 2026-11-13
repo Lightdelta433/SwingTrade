@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.9"
+APP_VERSION = "5.0"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -604,6 +604,38 @@ def chg(x, dec=2):
     return ("+" if x >= 0 else "−") + tr(abs(x), dec)
 
 
+EXT_META = {"pre": ("\u2600\ufe0f", "Pre-market", "#F5B544"), "post": ("\U0001F319", "After-hours", "#8B9CF8")}
+
+
+def ext_html(q, label=False, size=12):
+    """v5.0 — seans dışı kotasyon satırı: güneş (seans öncesi) / ay (seans sonrası) + fiyat + renkli değişim.
+    Tek satır (white-space:nowrap), referans son normal kapanıştır. ext yoksa boş döner."""
+    e = (q or {}).get("ext") or {}
+    if not e or e.get("px") is None:
+        return ""
+    ic, lab, icol = EXT_META.get(e["phase"], EXT_META["post"])
+    dec = pdec((q or {}).get("ticker") or "", e["px"])
+    c = col(e["chg_abs"])
+    at = f' \u00b7 last trade {e["at"]} ET' if e.get("at") else ""
+    return (f'<span class="extq mono" style="font-size:{size}px" title="{lab}: trading outside the regular '
+            f'session{at} \u2014 change vs the regular close">'
+            f'<span class="exti" style="color:{icol}">{ic}</span>'
+            + (f'<span class="extl">{lab}</span>' if label else "")
+            + f'<b>{tr(e["px"], dec)}</b><span style="color:{c}">{chg(e["chg_abs"], dec)} '
+              f'({pct(e["chg_pct"])})</span></span>')
+
+
+def ext_row(q):
+    """Sıralanabilir liste bileşeni için ext alanı (satır içinde sağa yaslı küçük satır)."""
+    e = (q or {}).get("ext") or {}
+    if not e or e.get("px") is None:
+        return None
+    ic, lab, icol = EXT_META.get(e["phase"], EXT_META["post"])
+    dec = pdec((q or {}).get("ticker") or "", e["px"])
+    return {"i": ic, "ic": icol, "px": tr(e["px"], dec), "t": f'{chg(e["chg_abs"], dec)} ({pct(e["chg_pct"])})',
+            "c": col(e["chg_abs"]), "lab": lab}
+
+
 def pdec(sym, v):
     try:
         v = abs(float(v))
@@ -950,6 +982,12 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 a.opp-row,a.opp-row:hover,a.opp-row:visited,a.opp-row:active{text-decoration:none!important;color:#ECEEF1!important}
 a.opp-row *{text-decoration:none!important}
 .aist{font-size:10.5px;font-weight:800;border-radius:5px;padding:2px 7px;white-space:nowrap}
+/* v5.0 \u2014 seans öncesi / sonrası kotasyonlar */
+.extq{display:inline-flex;align-items:baseline;gap:6px;white-space:nowrap;font-weight:600;line-height:1.35}
+.extq .exti{font-size:.92em;font-family:"Segoe UI Emoji","Noto Color Emoji",sans-serif}
+.extq .extl{color:#8D96A5;font-weight:600;font-size:.92em}
+.extq b{font-weight:700}
+.extrow{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
 /* v4.9 — hazır stratejiler: kural adımları + teyit listesi */
 .strat-pick-l{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8D96A5}
 .strat-box{background:var(--panel2);border:1px solid var(--border);border-radius:16px;padding:14px 16px;
@@ -1375,8 +1413,15 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .acct-meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:11.5px;color:#8D96A5;line-height:1.5;padding-top:2px}
 .acct-meta span{white-space:nowrap}
 .acct-form-t{font-size:13px;font-weight:700;color:#ECEEF1;padding:6px 0 0 0;border-top:1px solid #1C1F25;margin-top:4px}
-[class*="st-key-demo_accts"] [data-testid="stPopover"] button{min-height:40px;padding:0;font-size:17px;line-height:1}
-[class*="st-key-demo_accts"] [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:40px}
+/* v5.0 — çark düğmesi: 44×44 kare, simge tam ortada, açılır menüyle aynı yükseklik */
+[class*="st-key-demo_accts"] [data-testid="stPopover"]{display:flex;justify-content:flex-end}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button{width:44px;min-width:44px;max-width:44px;height:44px;
+ min-height:44px;padding:0;margin:0;display:inline-flex;align-items:center;justify-content:center;font-size:19px;
+ line-height:1;border-radius:12px;flex:none}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button p{margin:0;padding:0;font-size:19px;line-height:1}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button [data-testid="stMarkdownContainer"]{margin:0}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button svg{display:none}
+[class*="st-key-demo_accts"] [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:44px}
 [data-testid="stPopoverBody"]{min-width:320px;max-width:380px;padding:16px 18px !important}
 [data-testid="stPopoverBody"] [data-testid="stVerticalBlock"]{gap:.7rem !important}
 .mng-t{font-size:14px;font-weight:800;color:#ECEEF1;line-height:1.35;overflow-wrap:anywhere}
@@ -2413,7 +2458,9 @@ def render_chart_panel(sym):
           f'<span class="mono" style="font-size:32px;font-weight:600;letter-spacing:-.03em">{tr(d["last"], dec)}</span>'
           f'<span class="mono" style="color:{col(d["change_abs"])};font-weight:600;font-size:14px">'
           f'{chg(d["change_abs"], dec)} ({pct(d["change_pct"])})</span>'
-          f'<span class="muted">Today · {esc(cur)}</span></div>')
+          f'<span class="muted">{"At close" if (d.get("ext") or {}).get("phase") else "Today"} · {esc(cur)}</span>'
+          + (f'</div><div class="extrow" style="margin-top:3px">{ext_html(d, label=True, size=13)}'
+             if d.get("ext") else "") + '</div>')
     with h2:
         in_wl = sym in ss.watchlist
         if button("★ Watching — remove from list" if in_wl else "☆ Add to watchlist", key="wl_toggle"):
@@ -2682,8 +2729,9 @@ def _wl_set(new):
 
 
 def watch_list_ui(syms, key, *, rows_fn, cols, colw, title_col="", removable=False, clickable=False, max_h=320,
-                  av=26, on_order, on_open=None, on_remove=None, fb_up, fb_dn, fb_extra=None, empty=""):
-    """Sıralanabilir liste + olay işleme. Bileşen yoksa yedek: ↑ / ↓ bağlantılı HTML liste."""
+                  av=26, on_order, on_open=None, on_remove=None, empty=""):
+    """Sıralanabilir liste + olay işleme. v5.0: bileşen uygulamaya gömülü (pulse_list klasörü yüklenmemişse
+    çalışma anında yazılır) — sürükle-bırak satırın her yerinden, ↑ / ↓ sayfayı YENİDEN YÜKLEMEDEN kaydeder."""
     rows = rows_fn(syms)
     ev = ch.sortable_list(rows, key, cols=cols, colw=colw, title_col=title_col, removable=removable,
                           clickable=clickable, max_h=max_h, av=av, light=LIGHT, accent=None, empty=empty)
@@ -2691,7 +2739,7 @@ def watch_list_ui(syms, key, *, rows_fn, cols, colw, title_col="", removable=Fal
     if ev:
         t = ev.get("t")
         if t == "order" and isinstance(ev.get("order"), list):
-            on_order(reorder_merge(syms, [str(x) for x in ev["order"]]))
+            on_order(reorder_merge(syms, [str(x) for x in ev["order"]]))   # sessiz kayıt — rerun yok
             return
         if t == "open" and on_open and ev.get("id") in syms:
             on_open(ev["id"])
@@ -2701,35 +2749,28 @@ def watch_list_ui(syms, key, *, rows_fn, cols, colw, title_col="", removable=Fal
             return
     if ch.list_available():
         return
-    # ---- yedek (pulse_list/index.html yüklenmemiş): ↑ / ↓ bağlantıları, sürükle-bırak yok
+    # ---- çok eski Streamlit (bileşen API'si yok): sade liste, sıralama butonsuz
     if not rows:
         H(f'<div class="muted small" style="padding:8px 2px">{esc(empty)}</div>')
         return
     out = ""
-    for i, r in enumerate(rows):
+    for r in rows:
         cells = "".join(f'<span class="fb-c"><span style="color:{c.get("c") or "inherit"}">{esc(c.get("v") or "")}</span>'
                         + (f'<span class="fb-s" style="color:{c.get("sc") or MUT}">{esc(c.get("s") or "")}</span>'
                            if c.get("s") is not None else "") + '</span>' for c in r["cells"])
-        up = (f'<a class="fb-a" target="_self" href="{fb_up(r["id"])}" title="Move up">↑</a>' if i
-              else '<span class="fb-a off">↑</span>')
-        dn = (f'<a class="fb-a" target="_self" href="{fb_dn(r["id"])}" title="Move down">↓</a>' if i < len(rows) - 1
-              else '<span class="fb-a off">↓</span>')
         out += (f'<div class="fb-r{" sel" if r.get("sel") else ""}">{avatar(r["id"], av)}<span class="fb-n"><b>'
-                f'{esc(r["title"])}</b><i>{esc(r.get("sub") or "")}</i></span>{cells}<span class="fb-ar">{up}{dn}</span>'
-                + (fb_extra(r["id"]) if fb_extra else "") + '</div>')
-    H(f'<div class="fb-list" style="max-height:{max_h}px">{out}</div>'
-      '<div class="muted" style="font-size:10.5px;padding-top:4px">Upload <span class="mono">pulse_list/index.html</span>'
-      ' to drag rows by the ⋮⋮ handle.</div>')
+                f'{esc(r["title"])}</b><i>{esc(r.get("sub") or "")}</i></span>{cells}</div>')
+    H(f'<div class="fb-list" style="max-height:{max_h}px">{out}</div>')
 
 
 def render_watchlist_compact():
     wl = list(ss.watchlist)
-    q = md.get_quotes(wl)
+    q = md.get_ext_quotes(wl)
     add = "" if ACTIVE in wl else \
         f'<a class="lnk small" target="_self" href="{link(add_wl=ACTIVE)}">＋ add {esc(ACTIVE)}</a>'
     H(f'<div class="hd" style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">'
       f'<span class="panel-title">Watchlist</span><span class="chip">{len(wl)}</span><span class="muted small">click → '
-      f'chart · drag ⋮⋮ or ↑ ↓ to reorder</span><span style="margin-left:auto">{add}</span></div>')
+      f'chart · hold &amp; drag a row (or use ↑ ↓) to reorder</span><span style="margin-left:auto">{add}</span></div>')
     q_ = q
 
     def rows_fn(syms):
@@ -2738,6 +2779,7 @@ def render_watchlist_compact():
             qq = q_.get(t)
             last, chp = (qq["last"], qq["change_pct"]) if qq else (float("nan"), float("nan"))
             out.append(dict(av_parts(t), id=t, title=t, sub=md.company_name(t) or "", sel=(t == ACTIVE),
+                            ext=ext_row(qq),
                             cells=[{"v": tr(last, pdec(t, last)), "s": pct(chp),
                                     "sc": (col(chp) if chp == chp else MUT)}]))
         return out
@@ -2746,12 +2788,8 @@ def render_watchlist_compact():
         st.query_params["sym"] = t
         st.rerun()
 
-    def on_order(new):
-        _wl_set(new)
-        st.rerun()
-
     watch_list_ui(wl, "wl_main", rows_fn=rows_fn, cols=[""], colw=["86px"], clickable=True, max_h=300, av=24,
-                  on_order=on_order, on_open=on_open, fb_up=lambda t: link(wl_up=t), fb_dn=lambda t: link(wl_dn=t),
+                  on_order=_wl_set, on_open=on_open,
                   empty="The list is empty. Find a symbol with the search above and press “Add to watchlist”.")
 
 
@@ -2879,8 +2917,10 @@ def render_movers():
     with h2:
         tab = seg("List", ["Gainers", "Losers"], "w_mov", "Gainers")
     items = md.get_top_movers() if tab == "Gainers" else md.get_top_losers()
+    extq = md.get_ext_quotes([q["ticker"] for q in items]) if items else {}
     rows = ""
     for q in items:
+        e_ = ext_html(extq.get(q["ticker"]), size=11)
         c = col(q["change_pct"])
         bg = UP_BG if q["change_pct"] >= 0 else DOWN_BG
         rows += (f'<a class="plain" target="_self" href="{link(sym=q["ticker"])}"><div class="row">'
@@ -2889,7 +2929,7 @@ def render_movers():
                  f'text-overflow:ellipsis">{esc(q["name"])}</div></div><div style="text-align:right">'
                  f'<div class="mono" style="font-size:13px">{tr(q["last"])}</div>'
                  f'<span class="badge mono" style="color:{c};background:{bg}">{pct(q["change_pct"])}</span>'
-                 f'</div></div></a>')
+                 + (f'<div style="margin-top:3px">{e_}</div>' if e_ else "") + '</div></div></a>')
     H(rows + (f'<div style="margin-top:8px">{src_chip(items[0]["src"])}</div>' if items else ""))
 
 
@@ -2899,8 +2939,11 @@ def render_piyasalar():
       f'</span>{md.tr_date_label(now)} {now.year} · click a card, row or sector</div>')
     health_panel()
     cols = st.columns(4)
-    for c_, idx in zip(cols, md.get_index_summary()):
+    idxs = md.get_index_summary()
+    extq = md.get_ext_quotes([i["ticker"] for i in idxs if i.get("src") == "real"])
+    for c_, idx in zip(cols, idxs):
         cc = col(idx["change_pct"])
+        e_ = ext_html(extq.get(idx["ticker"]), size=11)
         act = f"border-color:{ACCENT};background:#151922;" if ACTIVE == idx["ticker"] else ""
         with c_:
             H(f'<a class="plain" target="_self" href="{link(sym=idx["ticker"])}"><div class="idx" style="{act}">'
@@ -2909,7 +2952,8 @@ def render_piyasalar():
               f'<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:10px"><div>'
               f'<div class="mono" style="font-size:18px;font-weight:600">{tr(idx["last"])}</div>'
               f'<div class="mono" style="font-size:12px;font-weight:600;color:{cc}">{pct(idx["change_pct"])}</div>'
-              f'</div>{svg_spark(idx["series"], cc, w=150, h=46)}</div></div></a>')
+              f'</div>{svg_spark(idx["series"], cc, w=150, h=46)}</div>'
+              + (f'<div class="extrow" style="margin-top:7px">{e_}</div>' if e_ else "") + '</div></a>')
     H("<div style='height:6px'></div>")
     with st.container(border=True):                     # grafik tam genişlikte
         daily, tf_sel, tf_df = render_chart_panel(ACTIVE)
@@ -3784,7 +3828,9 @@ def render_value_head(b, sym):
               f'<span class="mono" style="font-size:28px;font-weight:600">{tr(d["last"], dec)}</span>'
               f'<span class="mono" style="color:{col(d["change_abs"])};font-weight:600;font-size:13px">'
               f'{pct(d["change_pct"])}</span><span class="muted">{esc(cur)}</span></div>'
-              f'<div class="muted small" style="margin-top:4px">'
+              + (f'<div class="extrow" style="margin-top:2px;margin-bottom:2px">{ext_html(d, label=True)}</div>'
+                 if d.get("ext") else "")
+              + f'<div class="muted small" style="margin-top:4px">'
               f'{esc(" · ".join(x for x in [d.get("sector"), d.get("industry")] if x))}</div>')
             if g:
                 c = grade_color(g["score"])
@@ -4665,6 +4711,20 @@ def render_longterm():
         H(f'<div class="sec-head"><h3>Cheap Companies (PEG / Forward PE)</h3><span class="muted">Yahoo '
           f'“undervalued large caps” screen · sorted by forward PE, cheapest first</span>'
           f'<span style="margin-left:auto">{src_chip(vs.attrs.get("src"))}</span></div>')
+        if len(vs) and "Ticker" in vs.columns:      # v5.0: seans dışı sütunu (varsa)
+            eq_ = md.get_ext_quotes(list(vs["Ticker"]))
+
+            def _vx(t_):
+                e_ = (eq_.get(t_) or {}).get("ext") or {}
+                if not e_:
+                    return ""
+                return (f'{EXT_META[e_["phase"]][0]} {tr(e_["px"], pdec(t_, e_["px"]))}  '
+                        f'{chg(e_["chg_abs"], pdec(t_, e_["px"]))} ({pct(e_["chg_pct"])})')
+            extcol = vs["Ticker"].map(_vx)
+            if extcol.str.len().sum() > 0:
+                vs = vs.copy()
+                j = int(vs.columns.get_loc("Company")) + 1 if "Company" in vs.columns else 1
+                vs.insert(min(j + 1, len(vs.columns)), "Pre / post market", extcol)
         table(vs, column_config={"PEG": st.column_config.NumberColumn("PEG", format="%.2f"),
                                  "Forward PE": st.column_config.NumberColumn("Forward PE", format="%.1f"),
                                  "Profit Margin %": st.column_config.NumberColumn("Profit margin %", format="%.1f%%"),
@@ -5552,6 +5612,9 @@ def render_ai_opps(strat="ai"):
     else:
         res = run_ai_scan(ai_token(), json.dumps(cfg, sort_keys=True))
     rows, reg, steps = res["rows"], res["regime"], res["steps"]
+    extq_all = md.get_ext_quotes([r["ticker"] for r in rows]) if rows else {}   # v5.0: seans dışı kurlar (taze)
+    for r in rows:
+        r["extq"] = extq_all.get(r["ticker"])
     new_n = push_notes(rows)
     if new_n:
         st.toast(f"🔔 {new_n} new breakout alerts")
@@ -5646,7 +5709,8 @@ def render_ai_opps(strat="ai"):
                      f'{slab}</span><span class="sub" title="{esc((b or {}).get("name", "no pattern"))}">'
                      f'{esc((b or {}).get("name", "no pattern"))}</span></span>'
                      f'<span class="r"><div style="font-weight:600">{tr(r["price"])}</div>'
-                     f'<div style="font-size:11px;font-weight:600;color:{col(r["chg"])}">{pct(r["chg"])}</div></span>'
+                     f'<div style="font-size:11px;font-weight:600;color:{col(r["chg"])}">{pct(r["chg"])}</div>'
+                     f'{_ext_cell(r)}</span>'
                      f'<span class="r" style="color:{SOFT}">{big(r["volume"], "")}</span>'
                      f'<span><span class="aist" style="color:{cfg_};background:{cbg}">'
                      f'{esc(c.get("state", "—"))}</span></span>'
@@ -5689,6 +5753,16 @@ _AUTO_JS = """<script>
 </script>"""
 
 
+def _ext_sub(q):
+    e_ = ext_html(q, size=10.5)
+    return f'<div style="margin-top:2px">{e_}</div>' if e_ else ""
+
+
+def _ext_cell(r):
+    e_ = ext_html(r.get("extq"), size=10.5)
+    return f'<div style="margin-top:1px">{e_}</div>' if e_ else ""
+
+
 def render_ai_detail(r):
     """Seçili fırsatın grafiği, planı ve kural tabanlı açıklaması."""
     b, p, c = r["best"], r["plan"], r.get("c15") or {}
@@ -5699,6 +5773,12 @@ def render_ai_detail(r):
           f'href="{link(sec="Markets", sym=r["ticker"])}"><b style="font-size:17px">{esc(r["ticker"])}</b></a>'
           f'<div class="muted small">{esc(r["name"])}{" · " + esc(r["sector"]) if r["sector"] else ""}</div></div>'
           f'<span class="aist" style="color:{sfg};background:{sbg}">{slab}</span></div>')
+        # v5.0: fiyat + günün yüzdesi (aynı günlük veriden) + varsa seans dışı satırı
+        e_ = ext_html(r.get("extq"), label=True)
+        H(f'<div class="extrow" style="margin-top:9px"><span class="mono" style="font-size:19px;font-weight:700">'
+          f'{tr(r["price"], pdec(r["ticker"], r["price"]))}</span>'
+          f'<span class="mono" style="font-size:12.5px;font-weight:600;color:{col(r["chg"])}">{pct(r["chg"])} today'
+          f'</span>{e_}</div>')
         # v4.4: ayrıntı satırları yok — yalnızca formasyon adı ve 15 dk durumu (rozet olarak)
         cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
         H('<div class="ai-tags">'
@@ -6140,10 +6220,12 @@ def _bots_body():
             render_bot_form(acct)
             brow = [r for r in val["rows"] if r["owner"] != "manual"]
             if brow:
+                extb = md.get_ext_quotes(sorted({r["sym"] for r in brow}))
                 rows = "".join(
                     f'<tr><td><span style="display:flex;align-items:center;gap:9px">{avatar(r["sym"], 26)}<b>'
                     f'{esc(r["sym"])}</b></span></td><td style="text-align:left;font-family:inherit">{esc(r["bot"])}'
-                    f'</td><td>{r["qty"]:g}</td><td style="color:{SOFT}">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
+                    f'</td><td>{r["qty"]:g}</td><td style="color:{SOFT}">{tr(r["entry"])}</td>'
+                    f'<td>{tr(r["last"])}{_ext_sub(extb.get(r["sym"]))}</td>'
                     f'<td style="color:{DOWN}">{tr(r["stop"]) if r.get("stop") else "—"}</td><td style="color:{UP}">'
                     f'{("✓ " if r.get("tp1_done") else "") + tr(r["tp1"]) if r.get("tp1") else ("trail" if r.get("trail_n") else "—")}</td>'
                     f'<td style="color:{col(r["pnl"])};font-weight:700">{"+" if r["pnl"] >= 0 else ""}'
@@ -6392,7 +6474,7 @@ def render_demo_accounts(acct):
                          format_func=lambda i: "+  Create account…" if i == "__new__" else _acct_opt(by[i]),
                          on_change=_demo_acc_cb)
         with c_gear:
-            with st.popover("⚙", help="Rename, reset or delete this account", use_container_width=True):
+            with st.popover("⚙", help="Rename, reset or delete this account"):
                 _demo_manage(acct, len(accts))
         if ss.get("demo_acc") == "__new__":
             _demo_create_form()
@@ -6548,7 +6630,7 @@ def _render_demo_body():
         with st.container(border=True):
             watch = list(acct.get("watch") or [])
             H(f'<div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:10px;'
-              f'flex-wrap:wrap"><span class="panel-title">My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · drag ⋮⋮ or ↑ ↓ to reorder · '
+              f'flex-wrap:wrap"><span class="panel-title">My demo watchlist</span><span class="muted small">{len(watch)} / {bk.DEMO_WATCH_MAX} companies · hold &amp; drag a row (or use ↑ ↓) to reorder · '
               f'bots set to “Demo watchlist” trade only these</span></div>')
             a1, a2 = st.columns([3.4, 1], vertical_alignment="bottom")
             with a1:
@@ -6578,7 +6660,7 @@ def _render_demo_body():
                     st.toast(f"{sym} added to the demo watchlist")
                     st.rerun()
             if watch:
-                q = md.get_quotes(watch)
+                q = md.get_ext_quotes(watch)
                 held = {}
                 for r in val["rows"]:
                     held[r["sym"]] = held.get(r["sym"], 0.0) + r["qty"]
@@ -6591,6 +6673,7 @@ def _render_demo_body():
                         chp = qs.get("change_pct") or 0
                         hq = held.get(s_)
                         out.append(dict(av_parts(s_), id=s_, title=s_, sub=(md.company_name(s_) or "")[:40],
+                                        ext=ext_row(qs),
                                         cells=[{"v": (tr(qs.get("last")) if qs.get("last") else "—")
                                                 + ("" if live else " ·"), "c": None if live else MUT},
                                                {"v": pct(chp), "c": col(chp)},
@@ -6599,7 +6682,6 @@ def _render_demo_body():
 
                 def on_order(new):
                     bk.demo_edit(_me(), lambda a: a.__setitem__("watch", reorder_merge(a.get("watch") or [], new)))
-                    st.rerun()
 
                 def on_remove(sym_):
                     bk.demo_edit(_me(), lambda a: a.__setitem__("watch", [x for x in a.get("watch") or [] if x != sym_]))
@@ -6608,10 +6690,7 @@ def _render_demo_body():
 
                 watch_list_ui(watch, f"wl_demo_{acct['id']}", rows_fn=rows_fn, cols=["Last", "Today", "In account"],
                               colw=["92px", "74px", "82px"], title_col="Company", removable=True, max_h=360, av=28,
-                              on_order=on_order, on_remove=on_remove,
-                              fb_up=lambda t: link(demo_up=t, f="demo"), fb_dn=lambda t: link(demo_dn=t, f="demo"),
-                              fb_extra=lambda t: (f'<a class="lnk small" style="color:{MUT};margin-left:6px" '
-                                                  f'target="_self" href="{link(demo_rm=t, f="demo")}">Remove</a>'))
+                              on_order=on_order, on_remove=on_remove)
             else:
                 H('<div class="muted" style="padding:10px 0">The list is empty — add the companies you want to trade '
                   'or let your bots watch.</div>')
@@ -6644,12 +6723,14 @@ def _render_demo_body():
                 H(f'<div class="muted small">{esc(osym)} cannot be traded in the demo — only stocks, ETFs and crypto '
                   f'quoted in USD or EUR.</div>')
             elif qs.get("src") == "real" and fxm:
+                oq_ = ext_html(md.get_ext_quotes([osym]).get(osym), label=True)
                 amt = float(qty or 0) * float(qs["last"]) * fxm
                 have = sum(r["qty"] for r in val["rows"] if r["sym"] == osym and r["owner"] == "manual")
                 H(f'<div class="oquote"><span style="display:flex;align-items:center;gap:9px">{avatar(osym, 26)}<b>'
                   f'{esc(osym)}</b><span class="muted">{esc(md.company_name(osym) or "")[:40]}</span></span>'
                   f'<span>Price <b class="mono">{tr(qs["last"])}</b></span>'
-                  f'<span>Order value <b class="mono">{money(amt, cur)}</b></span>'
+                  + (f'<span>{oq_}</span>' if oq_ else "")
+                  + f'<span>Order value <b class="mono">{money(amt, cur)}</b></span>'
                   f'<span>Cash after <b class="mono">'
                   f'{money(val["cash"] - amt if side == "Buy" else val["cash"] + amt, cur)}</b></span>'
                   f'<span>You hold <b class="mono">{have:g}</b></span></div>')
@@ -6681,15 +6762,18 @@ def _render_demo_body():
             H(f'<div class="hd" style="display:flex;align-items:center;gap:10px"><span class="panel-title">Open '
               f'positions</span><span class="pos-n">{len(val["rows"])}</span></div>')
             if val["rows"]:
+                extp = md.get_ext_quotes(sorted({r["sym"] for r in val["rows"]}))
                 rows = ""
                 for r in val["rows"]:
                     pc = UP if r["pnl"] >= 0 else DOWN
+                    pe_ = ext_html(extp.get(r["sym"]), size=10.5)
                     rows += (
                         f'<tr><td class="l"><span class="pos-sym">{avatar(r["sym"], 30)}<span><b>{esc(r["sym"])}</b>'
                         f'<i>{esc(md.company_name(r["sym"]) or "")[:20]}</i></span></span></td>'
                         f'<td class="l"><span class="pos-by{" bot" if r["owner"] != "manual" else ""}">'
                         f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</span></td>'
-                        f'<td>{r["qty"]:g}</td><td class="dim">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
+                        f'<td>{r["qty"]:g}</td><td class="dim">{tr(r["entry"])}</td>'
+                        f'<td>{tr(r["last"])}{f"<div style='margin-top:2px'>{pe_}</div>" if pe_ else ""}</td>'
                         f'<td class="sltp"><span style="color:{DOWN}">'
                         f'{(tr(r["stop"]) + (" ↗" if r.get("trail") else "")) if (r.get("orders") and r.get("stop")) else "—"}'
                         f'</span><span style="color:{UP}">{_next_tp(r) if r.get("orders") else "—"}</span></td>'
