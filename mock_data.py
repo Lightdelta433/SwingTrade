@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "4.9"
+DATA_VERSION = "5.0"
 
 try:
     import yfinance as yf
@@ -427,14 +427,14 @@ def _split_batch(raw, tickers):
     return out
 
 
-def _download(tickers, period="5d", interval="1d"):
+def _download(tickers, period="5d", interval="1d", prepost=False):
     """TEK istekte çok sembol (Yahoo rate-limit'ine karşı en etkili yöntem)."""
     tickers = list(tickers)
     if not (_HAS_YF and tickers):
         return {}
     try:
         raw = yf.download(tickers, period=period, interval=interval, group_by="ticker",
-                          auto_adjust=False, progress=False, threads=True)
+                          auto_adjust=False, progress=False, threads=True, prepost=bool(prepost))
     except Exception:
         return {}
     return _split_batch(raw, tickers)
@@ -557,6 +557,80 @@ def add_emas(df, periods=(20, 50, 100, 200)):
 # ======================================================================
 # Fiyat özetleri (toplu)
 # ======================================================================
+ET = "America/New_York"          # ABD seansı: ☀️ 04:00–09:30 · normal 09:30–16:00 · 🌙 16:00–20:00 (ET)
+
+
+def market_phase(now=None):
+    """ABD hisse seansının anlık evresi: 'pre' | 'regular' | 'post' | 'closed' (yalnızca gösterim için)."""
+    try:
+        t = pd.Timestamp.now(tz=ET) if now is None else pd.Timestamp(now).tz_convert(ET)
+    except Exception:
+        return "closed"
+    if t.weekday() >= 5:
+        return "closed"
+    hm = t.hour * 60 + t.minute
+    if 4 * 60 <= hm < 9 * 60 + 30:
+        return "pre"
+    if 9 * 60 + 30 <= hm < 16 * 60:
+        return "regular"
+    if 16 * 60 <= hm < 20 * 60:
+        return "post"
+    return "closed"
+
+
+def _ext_phase_of(ts):
+    """1 dakikalık barın zaman damgası hangi seans dilimine düşüyor? 'pre' | 'post' | None (normal seans)."""
+    try:
+        t = ts.tz_convert(ET)
+    except Exception:
+        return None
+    if t.weekday() >= 5:
+        return None
+    hm = t.hour * 60 + t.minute
+    if 4 * 60 <= hm < 9 * 60 + 30:
+        return "pre"
+    if hm >= 16 * 60:
+        return "post"
+    return None
+
+
+@_ttl_cache(60, fail_ttl=45)
+def _batch_ext(tickers):
+    """Seans öncesi / sonrası dahil 1 dakikalık barlar (≤ 60 sn önbellek)."""
+    return _download(tickers, "1d", "1m", prepost=True)
+
+
+def get_ext_quotes(tickers):
+    """v5.0 — TradingView tarzı: normal kotasyon + varsa q['ext'] = seans dışı son işlem.
+    ext = {'phase': 'pre'|'post', 'px', 'chg_abs', 'chg_pct', 'at'}; referans her zaman son NORMAL kapanış
+    (q['last']), yani ☀️/🌙 yüzdesi kapanışa göredir ve günün normal yüzdesine karışmaz."""
+    base = get_quotes(tickers)
+    for q in base.values():
+        q.setdefault("ext", None)
+    syms = tuple(sorted(t for t, q in base.items() if q.get("src") == "real"))
+    if not syms:
+        return base
+    try:
+        data = _batch_ext(syms)
+    except Exception:
+        data = {}
+    for t in syms:
+        df = data.get(t)
+        try:
+            c = df["Close"].dropna()
+            ts, px = c.index[-1], float(c.iloc[-1])
+        except Exception:
+            continue
+        ref = float(base[t].get("last") or 0)
+        ph = _ext_phase_of(ts)
+        if not ph or not (ref > 0 and px > 0 and np.isfinite(px)) or abs(px / ref - 1) > 0.60:
+            continue
+        base[t] = dict(base[t], ext={"phase": ph, "px": px, "chg_abs": px - ref,
+                                     "chg_pct": (px / ref - 1) * 100,
+                                     "at": ts.tz_convert(ET).strftime("%H:%M")})
+    return base
+
+
 def get_quotes(tickers):
     """{ticker: {last, prev, change_pct, src, ...}} — tek toplu istekle."""
     ticks = tuple(dict.fromkeys(t for t in tickers if t))
@@ -692,18 +766,38 @@ def _type_desc(qt, name):
 def _real_detail(t):
     tk = yf.Ticker(t)
     fi = tk.fast_info
-    last = _fi_get(fi, "last_price")
-    prev = _fi_get(fi, "previous_close", "regular_market_previous_close")
     try:
         info = tk.get_info() or {}
     except Exception:
         info = {}
+    # v5.0: ana fiyat her zaman NORMAL seans fiyatı / kapanışıdır; yüzde aynı çiftten hesaplanır.
+    # (Eskiden fast_info.last_price seans dışı fiyatı da içeriyordu → fiyat doğru ama günün yüzdesi yanlış görünüyordu.)
+    last = _num(_g(info, "regularMarketPrice", "currentPrice"))
+    prev = _num(_g(info, "regularMarketPreviousClose", "previousClose"))
+    ext_last = _fi_get(fi, "last_price")
     if last is None:
-        last = _num(_g(info, "currentPrice", "regularMarketPrice"))
+        last = ext_last
     if prev is None:
-        prev = _num(_g(info, "previousClose", "regularMarketPreviousClose"))
+        prev = _fi_get(fi, "regular_market_previous_close", "previous_close")
     if last is None or prev is None:
         return None
+    ms = str(_g(info, "marketState", default="") or "").upper()
+    ext = None
+    for ph, states, px_k, ab_k, pc_k in (("pre", ("PRE",), "preMarketPrice", "preMarketChange", "preMarketChangePercent"),
+                                         ("post", ("POST", "POSTPOST", "CLOSED", "PREPRE"), "postMarketPrice",
+                                          "postMarketChange", "postMarketChangePercent")):
+        px = _num(_g(info, px_k))
+        if ms in states and px:
+            ab = _num(_g(info, ab_k))
+            pc = _num(_g(info, pc_k))
+            ext = {"phase": ph, "px": float(px),
+                   "chg_abs": float(ab) if ab is not None else float(px) - float(last),
+                   "chg_pct": float(pc) if pc is not None else (float(px) / float(last) - 1) * 100, "at": ""}
+            break
+    if ext is None and ext_last and last and abs(float(ext_last) / float(last) - 1) > 0.0005             and market_phase() in ("pre", "post", "closed"):
+        ext = {"phase": "pre" if market_phase() == "pre" else "post", "px": float(ext_last),
+               "chg_abs": float(ext_last) - float(last), "chg_pct": (float(ext_last) / float(last) - 1) * 100,
+               "at": ""}
     base = COMPANIES.get(t, {})
     name = base.get("name") or _g(info, "shortName", "longName") or company_name(t)
     qt = _fi_get(fi, "quote_type") or _g(info, "quoteType", default="")
@@ -720,7 +814,7 @@ def _real_detail(t):
         "quote_type": qt, "currency": _fi_get(fi, "currency") or _g(info, "currency", default="USD"),
         "exchange": _fi_get(fi, "exchange") or _g(info, "exchange", default=""),
         "last": float(last), "prev_close": float(prev), "change_abs": float(last) - float(prev),
-        "change_pct": (float(last) / float(prev) - 1) * 100 if prev else 0.0,
+        "change_pct": (float(last) / float(prev) - 1) * 100 if prev else 0.0, "ext": ext,
         "market_cap": _fi_get(fi, "market_cap") or _num(_g(info, "marketCap")) or nan,
         "revenue": _num(_g(info, "totalRevenue")) or nan,
         "net_income": _num(_g(info, "netIncomeToCommon")) or nan,
@@ -761,7 +855,7 @@ def _mock_detail(t):
         "ticker": t, "name": base.get("name", name), "sector": base.get("sector", sector), "industry": "",
         "country": "", "website": "", "employees": None, "desc": base.get("desc", "") or _type_desc(qt, name),
         "summary_en": "", "quote_type": qt, "currency": "TRY" if t.endswith(".IS") else "USD", "exchange": "",
-        "last": last, "prev_close": prev, "change_abs": last - prev, "change_pct": (last / prev - 1) * 100,
+        "last": last, "prev_close": prev, "change_abs": last - prev, "change_pct": (last / prev - 1) * 100, "ext": None,
         "market_cap": mc, "revenue": mc * rng.uniform(0.08, 0.6), "net_income": mc * rng.uniform(0.01, 0.1),
         "eps": last / pe, "shares_out": shares, "pe": pe, "fwd_pe": pe * rng.uniform(0.82, 0.98),
         "dividend": div, "div_yield": div / last * 100 if div else 0.0,
