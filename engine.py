@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.8"
+ENGINE_VERSION = "4.9"
 NAN = float("nan")
 
 
@@ -589,6 +589,8 @@ def _extra_need(cfg, n):
 
 def describe(cfg):
     cfg = {**BT_DEFAULTS, **(cfg or {})}
+    if cfg.get("strat") in STRAT_PARAMS:
+        return describe_strategy(cfg)
     parts = []
     if cfg["ind1"] in IND1:
         parts.append(f'{cfg["ind1"]}({int(cfg["p1"])}) {OPS1_SHORT.get(cfg["op1"], "<")} {fmt_num(cfg["v1"])}')
@@ -612,6 +614,55 @@ def describe(cfg):
     if int(cfg["maxBars"]) > 0:
         s += f' · max. {int(cfg["maxBars"])}d'
     return s
+
+
+def _bt_finish(trades, eq, c, dates, start, cap, cfg, ma=None, more=None):
+    """Backtest sonuçları (KPI, eğriler) — özel kurallar ve hazır stratejiler ortak kullanır."""
+    total = len(c)
+    # ---- sonuçlar ----
+    idx = dates[start:]
+    eq_s = pd.Series(eq[start:], index=idx)
+    bh_s = pd.Series(cap * c[start:] / c[start], index=idx)
+    dd_s = eq_s / eq_s.cummax() - 1
+    for t in trades:
+        t["ed"], t["xd"] = dates[t["ei"]], dates[t["xi"]]
+    n = len(trades)
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+    gw = sum(t["pnl"] for t in wins)
+    gl = sum(t["pnl"] for t in losses)
+    final = float(eq_s.iloc[-1])
+    rets = eq_s.pct_change().dropna()
+    sharpe = float(rets.mean() / rets.std() * np.sqrt(252)) if len(rets) > 2 and rets.std() > 0 else 0.0
+    avg = lambda arr, f: (sum(f(t) for t in arr) / len(arr)) if arr else 0.0
+    pf = (gw / -gl) if gl < 0 else (float("inf") if gw > 0 else 0.0)
+    avg_win, avg_loss = avg(wins, lambda t: t["pnl"]), avg(losses, lambda t: t["pnl"])
+    payoff = (avg_win / -avg_loss) if avg_loss < 0 else 0.0
+    exp_r = avg(trades, lambda t: t["R"])
+    streak = max_streak = 0
+    for t in trades:
+        streak = streak + 1 if t["pnl"] <= 0 else 0
+        max_streak = max(max_streak, streak)
+    good = n >= 10 and pf >= 1.3 and exp_r > 0
+    okish = n >= 5 and pf >= 1
+    verdict = "Too few samples" if n < 5 else "Promising" if good else "Borderline" if okish else "Weak"
+    tone = "warn" if n < 5 else "good" if good else "warn" if okish else "bad"
+    kpi = {
+        "cap": cap, "final": final, "net": final - cap, "net_pct": (final / cap - 1) * 100,
+        "n": n, "wins": len(wins), "losses": len(losses),
+        "win_rate": len(wins) / n * 100 if n else 0.0, "pf": pf,
+        "mdd": float(dd_s.min()) if len(dd_s) else 0.0, "payoff": payoff, "exp_r": exp_r,
+        "avg_bars": avg(trades, lambda t: t["bars"]), "sharpe": sharpe,
+        "bh_pct": (c[-1] / c[start] - 1) * 100,
+        "avg_win_pct": avg(wins, lambda t: t["ret"]), "avg_loss_pct": avg(losses, lambda t: t["ret"]),
+        "best": max((t["ret"] for t in trades), default=0.0),
+        "worst": min((t["ret"] for t in trades), default=0.0),
+        "max_streak": max_streak, "verdict": verdict, "tone": tone,
+    }
+    return {"ok": True, "trades": trades, "eq": eq_s, "bh": bh_s, "dd": dd_s,
+            "price": pd.Series(c[start:], index=idx),
+            "ma": ma, **(more or {}),
+            "kpi": kpi, "range": (idx[0], idx[-1]), "desc": describe(cfg), "cfg": cfg}
 
 
 def backtest(df, cfg, extra=None, bench=None):
@@ -737,50 +788,8 @@ def backtest(df, cfg, extra=None, bench=None):
         close_pos(total - 1, c[total - 1], "Open")
     eq[total - 1] = cash
 
-    # ---- sonuçlar ----
-    idx = dates[start:]
-    eq_s = pd.Series(eq[start:], index=idx)
-    bh_s = pd.Series(cap * c[start:] / c[start], index=idx)
-    dd_s = eq_s / eq_s.cummax() - 1
-    for t in trades:
-        t["ed"], t["xd"] = dates[t["ei"]], dates[t["xi"]]
-    n = len(trades)
-    wins = [t for t in trades if t["pnl"] > 0]
-    losses = [t for t in trades if t["pnl"] <= 0]
-    gw = sum(t["pnl"] for t in wins)
-    gl = sum(t["pnl"] for t in losses)
-    final = float(eq_s.iloc[-1])
-    rets = eq_s.pct_change().dropna()
-    sharpe = float(rets.mean() / rets.std() * np.sqrt(252)) if len(rets) > 2 and rets.std() > 0 else 0.0
-    avg = lambda arr, f: (sum(f(t) for t in arr) / len(arr)) if arr else 0.0
-    pf = (gw / -gl) if gl < 0 else (float("inf") if gw > 0 else 0.0)
-    avg_win, avg_loss = avg(wins, lambda t: t["pnl"]), avg(losses, lambda t: t["pnl"])
-    payoff = (avg_win / -avg_loss) if avg_loss < 0 else 0.0
-    exp_r = avg(trades, lambda t: t["R"])
-    streak = max_streak = 0
-    for t in trades:
-        streak = streak + 1 if t["pnl"] <= 0 else 0
-        max_streak = max(max_streak, streak)
-    good = n >= 10 and pf >= 1.3 and exp_r > 0
-    okish = n >= 5 and pf >= 1
-    verdict = "Too few samples" if n < 5 else "Promising" if good else "Borderline" if okish else "Weak"
-    tone = "warn" if n < 5 else "good" if good else "warn" if okish else "bad"
-    kpi = {
-        "cap": cap, "final": final, "net": final - cap, "net_pct": (final / cap - 1) * 100,
-        "n": n, "wins": len(wins), "losses": len(losses),
-        "win_rate": len(wins) / n * 100 if n else 0.0, "pf": pf,
-        "mdd": float(dd_s.min()) if len(dd_s) else 0.0, "payoff": payoff, "exp_r": exp_r,
-        "avg_bars": avg(trades, lambda t: t["bars"]), "sharpe": sharpe,
-        "bh_pct": (c[-1] / c[start] - 1) * 100,
-        "avg_win_pct": avg(wins, lambda t: t["ret"]), "avg_loss_pct": avg(losses, lambda t: t["ret"]),
-        "best": max((t["ret"] for t in trades), default=0.0),
-        "worst": min((t["ret"] for t in trades), default=0.0),
-        "max_streak": max_streak, "verdict": verdict, "tone": tone,
-    }
-    return {"ok": True, "trades": trades, "eq": eq_s, "bh": bh_s, "dd": dd_s,
-            "price": pd.Series(c[start:], index=idx),
-            "ma": pd.Series(ma[start:], index=idx) if cfg["c2on"] else None,
-            "kpi": kpi, "range": (idx[0], idx[-1]), "desc": describe(cfg), "cfg": cfg}
+    return _bt_finish(trades, eq, c, dates, start, cap, cfg,
+                      ma=pd.Series(ma[start:], index=dates[start:]) if cfg["c2on"] else None)
 
 
 # ======================================================================
@@ -5161,10 +5170,11 @@ BOT_DEFAULT = {
     "tp1_part": 0.40,      # TP1'de satılan pay
     "max_chase": 1.0,      # fiyat girişin en fazla N × risk üstündeyse hâlâ alınır
     "cooldown_days": 1,    # stop olduktan sonra aynı hisseye bekleme
+    "min_conf": 0.0,       # v4.9: hazır stratejilerde en az teyit skoru (0 = kapalı)
 }
 BOT_LIMITS = {"risk_pct": (0.1, 5.0), "max_pos": (1, 20), "max_alloc": (2.0, 100.0), "min_rr": (0.5, 6.0),
               "trail_atr": (0.5, 6.0), "max_days": (1, 120), "tp1_part": (0.1, 0.9), "max_chase": (0.0, 5.0),
-              "cooldown_days": (0, 30)}
+              "cooldown_days": (0, 30), "min_conf": (0.0, 100.0)}
 
 
 def bot_cfg(over=None):
@@ -5294,10 +5304,952 @@ def bot_manage(pos, bars, cfg=None, now=None):
             stop = max(stop, hi - c["trail_atr"] * a)
         if trail > 0:                                   # v4.8: elle "Trailing" stop — en yüksek fiyatın sabit altı
             stop = max(stop, hi - trail)
-    if qty > 0 and now is not None and bars:
+    if qty > 0 and now is not None and bars and not pos.get("no_time"):   # trend takibinde süre sınırı yok
         held = (float(now) - float(pos.get("opened") or now)) / 86400.0
         if held >= c["max_days"]:
             ev.append({"qty": qty, "price": float(bars[-1][4]), "ts": bars[-1][0],
                        "reason": "Time exit after %d days" % int(c["max_days"])})
             qty = 0
     return ev, {"qty": qty, "stop": float(stop), "hi": float(hi), "tp1_done": done1, "checked": last_ts}
+
+
+# ======================================================================
+# v4.9 — Hazır stratejiler: "Doppelter Donchian" ve "Flagge nach starkem Anstieg"
+#   Her strateji aynı sözlük biçimini üretir (ai_evaluate ile uyumlu): best (kurulum), plan (giriş / stop /
+#   hedef), checks (çoklu zaman dilimi + gösterge + formasyon teyitleri), skor. Böylece Short Term listesi,
+#   botlar, grafik çizimi ve backtest aynı tanımdan beslenir.
+# ======================================================================
+STRAT_KEYS = ["ai", "donchian2", "flag"]
+STRAT_PARAMS = {
+    "donchian2": {"n_trend": 120, "n_entry": 20, "n_exit": 20},
+    "flag": {"min_adv": 30.0, "pole_max": 40, "flag_min": 5, "flag_max": 15, "max_depth": 25.0,
+             "max_retr": 50.0, "vol_x": 1.5, "tp1_r": 2.0},
+}
+STRAT_LIMITS = {"n_trend": (40, 300), "n_entry": (5, 100), "n_exit": (5, 100), "min_adv": (10.0, 200.0),
+                "pole_max": (5, 80), "flag_min": (3, 15), "flag_max": (5, 40), "max_depth": (5.0, 45.0),
+                "max_retr": (20.0, 80.0), "vol_x": (1.0, 5.0), "tp1_r": (0.5, 6.0)}
+ST_FRESH = 3          # kırılım kaç gün "taze" sayılır (liste rozeti)
+ST_BOT_FRESH = 1      # bot en geç kaç gün sonra hâlâ alır
+C_TREND, C_ENTRY, C_STOP, C_ON, C_POLE, C_FLAG = "#A78BFA", "#F5B544", "#F87171", "#3DDC97", "#3DDC97", "#22D3EE"
+
+
+def strat_params(key, over=None):
+    """Strateji ayarları: varsayılan + kullanıcı değerleri (sınırlar içinde)."""
+    base = dict(STRAT_PARAMS.get(key) or {})
+    for k, v in (over or {}).items():
+        if k not in base:
+            continue
+        try:
+            v = type(base[k])(v)
+        except (TypeError, ValueError):
+            continue
+        lo, hi = STRAT_LIMITS.get(k, (v, v))
+        base[k] = type(base[k])(min(max(v, lo), hi))
+    if key == "flag" and base["flag_max"] < base["flag_min"]:
+        base["flag_max"] = base["flag_min"]
+    if key == "donchian2" and base["n_trend"] <= base["n_entry"]:
+        base["n_trend"] = base["n_entry"] + 1
+    return base
+
+
+def strat_info(key, params=None):
+    """Stratejinin adı ve herkesin anlayacağı kural adımları (arayüz ve README bunu kullanır)."""
+    if key == "donchian2":
+        P = strat_params(key, params)
+        return {"key": key, "name": "Double Donchian", "icon": "📈", "targets": False,
+                "long": "Double Donchian (%d / %d)" % (P["n_trend"], P["n_entry"]),
+                "tagline": "Trend following with two price channels: the long one gives the direction, "
+                           "the short one gives the entries and the trailing stop.",
+                "steps": [("Direction", "A close above the %d-day high switches the long side on. It stays on until "
+                                        "price closes below the %d-day low." % (P["n_trend"], P["n_trend"]), C_TREND),
+                          ("Entry", "While the direction is on, every close above the %d-day high is bought."
+                           % P["n_entry"], C_ENTRY),
+                          ("Stop", "The stop sits at the %d-day low and moves up with it day by day — it never "
+                                   "moves down." % P["n_exit"], C_STOP),
+                          ("Exit", "No price target: the trade ends when price falls to the trailing %d-day low. "
+                                   "Winners are allowed to run." % P["n_exit"], C_ON)]}
+    if key == "flag":
+        P = strat_params(key, params)
+        return {"key": key, "name": "Flag after a strong advance", "icon": "🚩", "targets": True,
+                "long": "Flag after a strong advance (≥ %s%%)" % fmt_num(P["min_adv"], 0),
+                "tagline": "A fast advance, a short and tight pause, then the breakout to a new high on a "
+                           "volume surge.",
+                "steps": [("Advance", "Price rises %s%% or more within at most %d trading days (the flagpole)."
+                           % (fmt_num(P["min_adv"], 0), P["pole_max"]), C_POLE),
+                          ("Flag", "Then %d to %d tight candles: the pullback stays within %s%% of the high, gives "
+                                   "back at most %s%% of the advance, and the candles are smaller than during the "
+                                   "advance." % (P["flag_min"], P["flag_max"], fmt_num(P["max_depth"], 0),
+                                                 fmt_num(P["max_retr"], 0)), C_FLAG),
+                          ("Entry", "Buy the close above the base high with volume of at least %s× the 20-day "
+                                    "average." % fmt_num(P["vol_x"], 1), C_ENTRY),
+                          ("Stop", "Just below the low of the flag.", C_STOP),
+                          ("Exit", "Sell 40%% at %sR (the stop then moves to the entry); the rest runs to the "
+                                   "measured move — the height of the advance added to the breakout."
+                           % fmt_num(P["tp1_r"], 1), C_ON)]}
+    return {"key": "ai", "name": "Pattern breakout", "icon": "🤖", "targets": True,
+            "long": "Pattern breakout (AI Opportunities)",
+            "tagline": "Triangles, rectangles, staircases and 20/55-day breakouts above the 21 and 50 EMA, "
+                       "confirmed on the 15-minute chart.",
+            "steps": [("Trend", "Price is above the 21 and the 50-day EMA.", C_TREND),
+                      ("Pattern", "A triangle, rectangle, staircase or N-day breakout gives the level.", C_FLAG),
+                      ("Entry", "Breakout or retest of that level, confirmed on the 15-minute chart.", C_ENTRY),
+                      ("Stop", "Below the last daily candle, the support band or the breakout level.", C_STOP),
+                      ("Exit", "Sell 40% at TP1 (next resistance), the rest at TP2 or by the trailing stop.",
+                       C_ON)]}
+
+
+# ---------------------------------------------------------------- Doppelter Donchian
+def donchian_series(df, n_trend=120, n_entry=20, n_exit=20):
+    """İki kanal. Tüm seviyeler bir ÖNCEKİ barlardan hesaplanır (bugünkü bar dahil değil) → geleceğe bakmaz.
+    dir: +1 = son kırılım 120 günlük zirvenin üstüne, −1 = dibin altına, 0 = henüz yok."""
+    H, L = df["High"].astype(float), df["Low"].astype(float)
+    c = df["Close"].to_numpy(float)
+    nt, ne, nx = int(n_trend), int(n_entry), int(n_exit)
+    hi_t = H.rolling(nt, min_periods=nt).max().shift(1).to_numpy(float)
+    lo_t = L.rolling(nt, min_periods=nt).min().shift(1).to_numpy(float)
+    hi_e = H.rolling(ne, min_periods=ne).max().shift(1).to_numpy(float)
+    lo_e = L.rolling(ne, min_periods=ne).min().shift(1).to_numpy(float)
+    lo_x = L.rolling(nx, min_periods=nx).min().shift(1).to_numpy(float)
+    hi_x = H.rolling(nx, min_periods=nx).max().shift(1).to_numpy(float)
+    dirn = np.zeros(len(c), dtype=int)
+    d = 0
+    for i in range(len(c)):
+        if hi_t[i] == hi_t[i]:
+            if c[i] > hi_t[i]:
+                d = 1
+            elif c[i] < lo_t[i]:
+                d = -1
+        dirn[i] = d
+    return {"hi_t": hi_t, "lo_t": lo_t, "hi_e": hi_e, "lo_e": lo_e, "lo_x": lo_x, "hi_x": hi_x, "dir": dirn,
+            "c": c, "h": H.to_numpy(float), "l": L.to_numpy(float), "o": df["Open"].to_numpy(float),
+            "n_exit": nx}
+
+
+def donchian_sim(s, start=1):
+    """Yalnızca kural mantığı (long): [{'ei' sinyal barı,'level','entry','stop','xi','exit'}]; açık işlem xi=None."""
+    C, L, O, nx = s["c"], s["l"], s["o"], s["n_exit"]
+    out, pos = [], None
+    for i in range(max(1, int(start)), len(C)):
+        if pos is not None:
+            lx = s["lo_x"][i]
+            if lx == lx:
+                pos["stop"] = max(pos["stop"], float(lx))
+            if L[i] <= pos["stop"]:
+                pos["xi"], pos["exit"] = i, float(min(O[i], pos["stop"]))
+                out.append(pos)
+                pos = None
+                continue
+        he = s["hi_e"][i]
+        if pos is None and s["dir"][i] == 1 and he == he and C[i] > he:
+            pos = {"ei": i, "level": float(he), "entry": float(C[i]), "xi": None, "exit": None,
+                   "stop": float(np.nanmin(L[max(0, i - nx + 1):i + 1]))}
+    if pos is not None:
+        out.append(pos)
+    return out
+
+
+def _vx_at(df, i, n=20):
+    """i. barın hacmi / önceki n barın ortalaması; son (yarım) bar için günün ilerleyişine göre büyütülür."""
+    v = pd.to_numeric(df["Volume"], errors="coerce").to_numpy(float)
+    if i == len(v) - 1:
+        r = vol_ratio(df, n)[0]
+        if r == r:
+            return float(r)
+    base = v[max(0, i - n):i]
+    m = float(np.nanmean(base)) if len(base) else 0.0
+    return float(v[i] / m) if m > 0 and v[i] == v[i] else 1.0
+
+
+def strat_donchian(df, n_trend=120, n_entry=20, n_exit=20, **_):
+    """Son barın durumu. Yön kapalıysa None. state: breakout (taze kırılım) · retest · running (işlem sürüyor)
+    · armed (yön açık, 20 günlük zirvenin kırılması bekleniyor)."""
+    nt, ne, nx = int(n_trend), int(n_entry), int(n_exit)
+    if df is None or len(df) < nt + ne + 2:
+        return None
+    s = donchian_series(df, nt, ne, nx)
+    last = len(df) - 1
+    C, L = s["c"], s["l"]
+    px = float(C[last])
+    if s["dir"][last] != 1 or not _ok(s["hi_e"][last]):
+        return None
+    a = _last(atr(df, 14)) or px * 0.02
+    k = last
+    while k > 0 and s["dir"][k - 1] == 1:
+        k -= 1
+    stop_now = float(np.nanmin(L[max(0, last - nx + 1):last + 1]))
+    trades = donchian_sim(s, start=max(1, k))
+    t = trades[-1] if trades and trades[-1]["xi"] is None else None
+    cpos = _close_pos(df)
+    age = last - k
+    if t is not None:
+        since = last - t["ei"]
+        level = t["level"]
+        vx = _vx_at(df, t["ei"])
+        if since <= ST_FRESH and px >= level - 0.35 * a:
+            state = "breakout" if px >= level else "retest"
+            conf = 0.60 + (0.15 if vx >= 1.5 else 0.06 if vx >= 1.1 else -0.05) + (0.10 if cpos >= 0.65 else 0.0) \
+                + (0.05 if age <= 60 else 0.0)
+            name = "Break of the %d-day high" % ne
+            note = ("close above the %d-day high %s · direction on for %d days (%d-day high cleared) · volume %sx"
+                    % (ne, fmt_num(level, 2), age, nt, fmt_num(vx, 1)))
+        else:
+            state, conf = "running", 0.50
+            name = "Trend trade running"
+            note = ("in the trade for %d days since the break of %s · trailing stop now %s"
+                    % (since, fmt_num(level, 2), fmt_num(max(t["stop"], stop_now), 2)))
+        stop = max(float(t["stop"]), stop_now) if state == "running" else stop_now
+    else:
+        since, level, vx = 0, float(s["hi_e"][last]), _vx_at(df, last)
+        dist = (level / px - 1) * 100 if px else 0.0
+        state = "armed"
+        conf = 0.45 + (0.15 if dist <= 2 else 0.08 if dist <= 5 else 0.0)
+        name = "Armed below %d-day high" % ne
+        note = ("direction on for %d days — waiting for a close above the %d-day high %s (%s%% away)"
+                % (age, ne, fmt_num(level, 2), fmt_num(max(0.0, dist), 1)))
+        stop = stop_now
+    return {"key": "donchian2", "name": name, "kind": "bull", "level": float(level), "lower": float(stop),
+            "state": state, "bars_since": int(since), "conf": round(min(1.0, max(0.15, conf)), 2),
+            "vol_x": round(float(vx), 2), "vol_ok": True, "note": note, "start": int(k), "stop": float(stop),
+            "dir_i": int(k), "dir_bars": int(age), "hi_t": float(s["hi_t"][last]) if _ok(s["hi_t"][last]) else None,
+            "n_trend": nt, "n_entry": ne, "n_exit": nx}
+
+
+# ---------------------------------------------------------------- Flagge nach starkem Anstieg
+def _flag_at(h, l, c, v, e, P):
+    """e = bazın (bayrağın) son barı. Direk + bayrak geometrisi ya da None.
+    p = direğin tepesi (bazın en yüksek noktası), q = direğin dibi; bayrak barları p+1 … e."""
+    fmin, fmax = int(P["flag_min"]), int(P["flag_max"])
+    lo = e - fmax
+    if lo < 3 or e >= len(h):
+        return None
+    p = lo + int(np.nanargmax(h[lo:e + 1]))
+    f = e - p
+    if f < fmin or f > fmax:
+        return None
+    if p == lo and h[p] < np.nanmax(h[max(0, p - 3):p]):        # asıl tepe daha geride → baz çok uzun
+        return None
+    q0 = max(0, p - int(P["pole_max"]))
+    q = q0 + int(np.nanargmin(l[q0:p + 1]))
+    if p - q < 2 or l[q] <= 0:
+        return None
+    adv = h[p] / l[q] - 1
+    if adv * 100 < float(P["min_adv"]):
+        return None
+    base_hi, base_lo = float(h[p]), float(np.nanmin(l[p + 1:e + 1]))
+    depth = (base_hi - base_lo) / base_hi
+    retr = (base_hi - base_lo) / max(base_hi - l[q], 1e-9)
+    if depth * 100 > float(P["max_depth"]) or retr * 100 > float(P["max_retr"]):
+        return None
+    rng = (h - l) / np.where(c > 0, c, np.nan)
+    r_pole = float(np.nanmean(rng[q:p + 1]))
+    r_flag = float(np.nanmean(rng[p + 1:e + 1]))
+    tight = r_flag / r_pole if r_pole > 0 else 1.0
+    if tight > 1.0:                                             # "enge Kerzen": bayrak mumları direkten küçük
+        return None
+    v_pole = float(np.nanmean(v[q:p + 1])) if len(v) else 0.0
+    volr = float(np.nanmean(v[p + 1:e + 1])) / v_pole if v_pole > 0 else 1.0
+    return {"q": int(q), "p": int(p), "e": int(e), "f": int(f), "adv": float(adv * 100), "pole_bars": int(p - q),
+            "base_hi": base_hi, "base_lo": base_lo, "pole_lo": float(l[q]), "pole_h": float(base_hi - l[q]),
+            "depth": float(depth * 100), "retr": float(retr * 100), "tight": float(tight), "volr": float(volr)}
+
+
+def strat_flag(df, **params):
+    """Son barın durumu: breakout (baz zirvesi kırıldı) · retest · forming (bayrak sürüyor). Yoksa None."""
+    P = strat_params("flag", params)
+    if df is None or len(df) < P["flag_max"] + 12:
+        return None
+    h, l, c = (df[k].to_numpy(float) for k in ("High", "Low", "Close"))
+    v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0).to_numpy(float)
+    last = len(df) - 1
+    px = float(c[last])
+    a = _last(atr(df, 14)) or px * 0.02
+
+    def pack(g, state, b, since, vx):
+        vol_ok = bool(vx >= float(P["vol_x"]))
+        level = g["base_hi"]
+        if state == "forming":
+            dist = (level / px - 1) * 100 if px else 0.0
+            name = "Flag forming (day %d)" % g["f"]
+            note = ("+%s%% in %d days, then %d tight candles (pullback %s%%) — buy trigger: close above %s on "
+                    "≥ %s× volume (%s%% away)" % (fmt_num(g["adv"], 0), g["pole_bars"], g["f"],
+                                                 fmt_num(g["depth"], 1), fmt_num(level, 2),
+                                                 fmt_num(P["vol_x"], 1), fmt_num(max(0.0, dist), 1)))
+            conf = 0.45 + (0.10 if g["tight"] <= 0.7 else 0.04) + (0.08 if g["volr"] <= 0.8 else 0.0) \
+                + (0.07 if dist <= 3 else 0.0)
+        else:
+            name = "Flag breakout" if state == "breakout" else "Flag retest"
+            note = ("+%s%% in %d days, %d-candle flag (pullback %s%%), base high %s cleared · volume %sx%s"
+                    % (fmt_num(g["adv"], 0), g["pole_bars"], g["f"], fmt_num(g["depth"], 1), fmt_num(level, 2),
+                       fmt_num(vx, 1), "" if vol_ok else " — below the %s× surge" % fmt_num(P["vol_x"], 1)))
+            conf = 0.55 + (0.18 if vol_ok else -0.10) + (0.08 if g["tight"] <= 0.7 else 0.03) \
+                + (0.06 if g["volr"] <= 0.8 else 0.0) + (0.06 if g["adv"] >= 50 else 0.0) \
+                + (0.05 if state == "breakout" else 0.0)
+        return {"key": "flag", "name": name, "kind": "bull", "level": float(level),
+                "lower": float(g["base_lo"]), "stop": float(g["base_lo"] - 0.1 * a), "state": state,
+                "bars_since": int(since), "conf": round(min(1.0, max(0.15, conf)), 2), "vol_x": round(float(vx), 2),
+                "vol_ok": vol_ok, "note": note, "start": g["q"], "b": b, **g}
+
+    for k in range(0, ST_FRESH + 1):                    # kırılım bugün ya da en fazla ST_FRESH gün önce
+        b = last - k
+        g = _flag_at(h, l, c, v, b - 1, P)
+        if not g or not (c[b] > g["base_hi"]):
+            continue
+        if k > 0 and float(np.nanmin(l[b + 1:last + 1])) <= g["base_lo"]:   # sonradan bayrağın dibine düştüyse geçersiz
+            continue
+        d = (px - g["base_hi"]) / a
+        if d < -1.0:
+            continue
+        return pack(g, "breakout" if d >= 0 else "retest", int(b), k, _vx_at(df, b))
+    g = _flag_at(h, l, c, v, last, P)
+    if g and c[last] <= g["base_hi"]:
+        return pack(g, "forming", None, 0, _vx_at(df, last))
+    return None
+
+
+# ---------------------------------------------------------------- plan, teyitler, skor
+def strat_plan(key, df, sig, params=None, tp1_part=0.40):
+    """İşlem planı (swing_plan ile aynı anahtarlar). Donchian'da hedef yok: tp1 / tp2 = None."""
+    if df is None or not sig:
+        return None
+    P = strat_params(key, params)
+    px = float(df["Close"].iloc[-1])
+    a = _last(atr(df, 14)) or px * 0.02
+    live = sig["state"] in ("breakout", "retest", "running")
+    entry = px if live else float(sig["level"])
+    stop = float(sig["stop"])
+    risk = max(entry - stop, 0.15 * a)
+    out = {"entry": round(entry, 4), "stop": round(stop, 4), "risk": round(risk, 4),
+           "risk_pct": round(risk / entry * 100, 2) if entry else 0.0, "atr": round(float(a), 4),
+           "pending": not live}
+    if key == "donchian2":
+        out.update({"tp1": None, "tp2": None, "rr1": None, "rr2": None, "part1": 0.0, "part2": 1.0,
+                    "trail_n": int(P["n_exit"]), "stop_src": "%d-day low (trails up daily)" % P["n_exit"],
+                    "tp1_src": "no target", "tp2_src": "no target",
+                    "rule": ("No price target. The stop sits at the %d-day low (%s) and is raised every day to the "
+                             "new %d-day low; the whole position is sold when price falls to it."
+                             % (P["n_exit"], fmt_num(stop, 2), P["n_exit"]))})
+        return out
+    part = float(min(0.9, max(0.1, tp1_part)))
+    tp1 = entry + float(P["tp1_r"]) * risk
+    mm = float(sig["level"]) + float(sig.get("pole_h") or 0.0)
+    alt = entry + (float(P["tp1_r"]) + 1.5) * risk
+    tp2, t2 = (mm, "measured move (height of the advance)") if mm >= alt else \
+        (alt, "%sR target" % fmt_num(P["tp1_r"] + 1.5, 1))
+    out.update({"tp1": round(tp1, 4), "tp2": round(tp2, 4), "rr1": round((tp1 - entry) / risk, 2),
+                "rr2": round((tp2 - entry) / risk, 2), "part1": part, "part2": round(1 - part, 2),
+                "stop_src": "below the flag low", "tp1_src": "%sR target" % fmt_num(P["tp1_r"], 1), "tp2_src": t2,
+                "rule": ("Sell %d%% at TP1 (%s) and move the stop on the rest to the entry; the remaining %d%% "
+                         "runs to TP2 (%s) or is closed by the trailing stop."
+                         % (round(part * 100), fmt_num(tp1, 2), round((1 - part) * 100), fmt_num(tp2, 2)))})
+    return out
+
+
+def _weekly(df):
+    """Günlük → haftalık (cuma kapanışı). Tarih indeksi yoksa None."""
+    try:
+        if not isinstance(df.index, pd.DatetimeIndex) or len(df) < 30:
+            return None
+        d = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+        if d.index.tz is not None:
+            d.index = d.index.tz_localize(None)
+        return d.resample("W-FRI").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last",
+                                        "Volume": "sum"}).dropna(subset=["Close"])
+    except Exception:
+        return None
+
+
+CHECK_GROUPS = ["Multi-timeframe", "Indicators", "Formation & levels", "Market"]
+CHECK_15M = "15-minute chart"
+
+
+def _ck(grp, name, value, state, mx, note, frac=None):
+    """state: ok | warn | bad | na. Puan: ok = tam, warn = yarım (ya da frac), bad = 0, na = hesaba katılmaz."""
+    f = {"ok": 1.0, "warn": 0.5, "bad": 0.0}.get(state)
+    if frac is not None and f is not None:
+        f = float(min(1.0, max(0.0, frac)))
+    return {"grp": grp, "name": name, "value": value, "state": state, "max": float(mx),
+            "pts": (round(f * mx, 1) if f is not None else None), "note": note}
+
+
+def check_15m(c15, live=True):
+    """15 dakikalık teyit satırı (tarama sonrasında işlenir)."""
+    g = CHECK_GROUPS[0]
+    if not live:
+        return _ck(g, CHECK_15M, "after the breakout", "na", 10, "Checked once price breaks the level.")
+    if not c15 or c15.get("state") in (None, "no data"):
+        return _ck(g, CHECK_15M, "no data", "na", 10, "15-minute candles could not be loaded.")
+    stt = c15["state"]
+    return _ck(g, CHECK_15M, stt, {"confirmed": "ok", "pending": "warn"}.get(stt, "bad"), 10, c15.get("note") or "")
+
+
+def checks_score(checks):
+    """Teyit skoru 0–100 (yalnızca hesaplanabilen satırlar) ve etiketi."""
+    mx = sum(c["max"] for c in checks if c["pts"] is not None)
+    pts = sum(c["pts"] for c in checks if c["pts"] is not None)
+    sc = round(pts / mx * 100, 1) if mx > 0 else 0.0
+    lab = "Strong" if sc >= 75 else "Solid" if sc >= 60 else "Mixed" if sc >= 45 else "Weak"
+    n_ok = sum(1 for c in checks if c["state"] == "ok")
+    n_all = sum(1 for c in checks if c["state"] != "na")
+    return {"score": sc, "label": lab, "ok": n_ok, "n": n_all}
+
+
+def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None, c15=None):
+    """Sinyali destekleyen / zayıflatan bağımsız teyitler: haftalık ve günlük trend, 15 dk, göstergeler,
+    formasyonlar, yukarıdaki direnç, piyasa rejimi. Her satır puanlanır; toplam = teyit skoru."""
+    G = CHECK_GROUPS
+    out = []
+    close = df["Close"].astype(float)
+    px = float(close.iloc[-1])
+    live = sig["state"] in ("breakout", "retest", "running")
+    # ---- 1) çoklu zaman dilimi
+    w = _weekly(df)
+    if w is not None and len(w) >= 14:
+        wc = w["Close"]
+        nl = 30 if len(w) >= 33 else 20 if len(w) >= 23 else 10
+        ml, ms = _last(sma(wc, nl)), sma(wc, 10)
+        ms_now, ms_prev = _last(ms), (float(ms.iloc[-4]) if len(ms) >= 4 and _ok(ms.iloc[-4]) else NAN)
+        above = bool(_ok(ml) and px > ml)
+        rising = bool(_ok(ms_now) and _ok(ms_prev) and ms_now > ms_prev)
+        out.append(_ck(G[0], "Weekly trend", "%s the %d-week average · 10-week %s"
+                       % ("above" if above else "below", nl, "rising" if rising else "falling"),
+                       "ok" if above and rising else "warn" if above or rising else "bad", 12,
+                       "The bigger picture should point the same way as the trade."))
+        hi52, lo52 = float(df["High"].tail(252).max()), float(df["Low"].tail(252).min())
+        pos = (px - lo52) / (hi52 - lo52) * 100 if hi52 > lo52 else 50.0
+        out.append(_ck(G[0], "Position in the 52-week range", "%s%% of the range" % fmt_num(pos, 0),
+                       "ok" if pos >= 75 else "warn" if pos >= 50 else "bad", 8,
+                       "Breakouts work best near the yearly high — little overhead supply."))
+    else:
+        out.append(_ck(G[0], "Weekly trend", "not enough history", "na", 12, ""))
+    e21, e50, s200 = _last(ema(close, 21)), _last(ema(close, 50)), _last(sma(close, 200))
+    parts = [_ok(e21) and px > e21, _ok(e21) and _ok(e50) and e21 > e50]
+    if _ok(s200):
+        parts.append(px > s200)
+    n_ok = sum(bool(x) for x in parts)
+    out.append(_ck(G[0], "Daily trend", "%d of %d: price > EMA21 · EMA21 > EMA50%s"
+                   % (n_ok, len(parts), " · price > SMA200" if _ok(s200) else ""),
+                   "ok" if n_ok == len(parts) else "warn" if n_ok >= len(parts) - 1 else "bad", 12,
+                   "Moving averages stacked in the right order."))
+    out.append(check_15m(c15, live=sig["state"] in ("breakout", "retest")))
+    # ---- 2) göstergeler
+    ax = _last(adx(df, 14)[0])
+    if _ok(ax):
+        out.append(_ck(G[1], "ADX (14) trend strength", fmt_num(ax, 0),
+                       "ok" if ax >= 25 else "warn" if ax >= 18 else "bad", 10,
+                       "Above 25 = a real trend, below 18 = sideways market."))
+    r = _last(rsi(close, 14))
+    if _ok(r):
+        stt = "ok" if 55 <= r <= 78 else "warn" if (50 <= r < 55 or r > 78) else "bad"
+        out.append(_ck(G[1], "RSI (14) momentum", fmt_num(r, 0), stt, 8,
+                       "55–78 is healthy momentum" + (" — above 78 a pause is likely" if r > 78 else "") + "."))
+    line, sg, _h = macd(close)
+    ml_, ms_ = _last(line), _last(sg)
+    if _ok(ml_) and _ok(ms_):
+        out.append(_ck(G[1], "MACD", "above signal" if ml_ > ms_ else "below signal",
+                       "ok" if ml_ > ms_ and ml_ > 0 else "warn" if ml_ > ms_ or ml_ > 0 else "bad", 6,
+                       "MACD above its signal line and above zero."))
+    vx = float(sig.get("vol_x") or 1.0)
+    if key == "flag" and sig["state"] == "forming":
+        vr = float(sig.get("volr") or 1.0)
+        out.append(_ck(G[1], "Volume in the flag", "%s%% of the advance's volume" % fmt_num(vr * 100, 0),
+                       "ok" if vr <= 0.8 else "warn" if vr <= 1.05 else "bad", 10,
+                       "Volume should dry up while the flag forms."))
+    elif sig["state"] in ("breakout", "retest"):
+        out.append(_ck(G[1], "Breakout volume", "%s× the 20-day average" % fmt_num(vx, 1),
+                       "ok" if vx >= 1.5 else "warn" if vx >= 1.0 else "bad", 10,
+                       "A breakout on high volume shows real buying."))
+    else:
+        out.append(_ck(G[1], "Breakout volume", "on the breakout day", "na", 10, ""))
+    if bench is not None and len(bench) > 70:
+        rs = _last(_bench_rs(df, {"bench": bench}, 63))
+        if _ok(rs):
+            out.append(_ck(G[1], "Relative strength vs S&P 500 (3M)", "%s%s pts" % ("+" if rs >= 0 else "−",
+                                                                                   fmt_num(abs(rs), 1)),
+                           "ok" if rs >= 5 else "warn" if rs >= 0 else "bad", 8,
+                           "Leaders outperform the index before and after the breakout."))
+    if plan:
+        rp = float(plan.get("risk_pct") or 0.0)
+        out.append(_ck(G[1], "Stop distance", "%s%% below the entry" % fmt_num(rp, 1),
+                       "ok" if rp <= 8 else "warn" if rp <= 15 else "bad", 6,
+                       "A wide stop means a small position for the same risk."))
+    # ---- 3) formasyon ve seviyeler
+    try:
+        pats = [p for p in setup_patterns(df) if p["key"] not in ("breakout", "breakdown")]
+    except Exception:
+        pats = []
+    bull = [p for p in pats if p["kind"] == "bull" and p["state"] in ("breakout", "retest")]
+    bear = [p for p in pats if p["kind"] == "bear"]
+    try:
+        cp = chart_patterns(df)
+    except Exception:
+        cp = []
+    cbear = [p for p in cp if p["kind"] == "bear"]
+    cbull = [p for p in cp if p["kind"] == "bull"]
+    if bull or (cbull and not cbear and not bear):
+        nm = bull[0]["name"] if bull else cbull[0]["name"]
+        out.append(_ck(G[2], "Chart patterns", nm, "ok", 8, "An independent pattern points the same way."))
+    elif bear or cbear:
+        nm = (bear or cbear)[0]["name"]
+        out.append(_ck(G[2], "Chart patterns", nm, "bad", 8, "A bearish pattern argues against the trade."))
+    else:
+        out.append(_ck(G[2], "Chart patterns", "none nearby", "warn", 8, "No second pattern confirms or contradicts."))
+    zones = ranked_sr_zones(df) if zones is None else zones
+    ref = float((plan or {}).get("entry") or px)
+    risk = float((plan or {}).get("risk") or 0.0)
+    res = sorted([z for z in zones or [] if not z.get("weak") and float(z["lo"]) > ref * 1.003],
+                 key=lambda z: z["lo"])
+    if risk > 0:
+        if not res:
+            out.append(_ck(G[2], "Room to the next resistance", "open air above", "ok", 10,
+                           "No strong resistance band above the entry."))
+        else:
+            room = (float(res[0]["lo"]) - ref) / risk
+            out.append(_ck(G[2], "Room to the next resistance", "%sR up to %s" % (fmt_num(room, 1),
+                                                                                  fmt_num(res[0]["lo"], 2)),
+                           "ok" if room >= 2 else "warn" if room >= 1 else "bad", 10,
+                           "The next resistance should be at least twice the risk away."))
+    if key == "donchian2":
+        age = int(sig.get("dir_bars") or 0)
+        out.append(_ck(G[2], "Age of the trend signal", "%d days since the %d-day breakout" % (age, sig["n_trend"]),
+                       "ok" if age <= 90 else "warn" if age <= 180 else "bad", 6,
+                       "Early entries of a new trend carry further than late ones."))
+    elif key == "flag":
+        out.append(_ck(G[2], "Tightness of the flag", "candles %s%% of the advance's size"
+                       % fmt_num(float(sig.get("tight") or 1) * 100, 0),
+                       "ok" if sig.get("tight", 1) <= 0.7 else "warn", 8,
+                       "The tighter the candles, the cleaner the breakout."))
+        out.append(_ck(G[2], "Depth of the flag", "%s%% pullback · %s%% of the advance given back"
+                       % (fmt_num(sig.get("depth", 0), 1), fmt_num(sig.get("retr", 0), 0)),
+                       "ok" if sig.get("retr", 100) <= 33 else "warn", 6,
+                       "Strong flags hold the upper third of the advance."))
+    # ---- 4) piyasa
+    if regime_ok is not None:
+        out.append(_ck(G[3], "Market regime", "S&P 500 and Nasdaq %s their 50-day EMA"
+                       % ("above" if regime_ok else "not both above"), "ok" if regime_ok else "bad", 8,
+                       "Most breakouts fail when the indices are in a downtrend."))
+    return out
+
+
+def _strat_score(sig, cs):
+    return round(min(100.0, max(0.0, 0.40 * float(sig["conf"]) * 100 + 0.60 * float(cs["score"]))), 1)
+
+
+def strat_evaluate(key, ticker, df, meta=None, bench=None, regime_ok=None, params=None, tp1_part=0.40):
+    """Tek sembol, tek strateji → ai_evaluate ile aynı biçimde satır (+ 'strat', 'checks', 'conf')."""
+    if key not in STRAT_PARAMS or df is None or len(df) < 45:
+        return None
+    P = strat_params(key, params)
+    try:
+        sig = strat_donchian(df, **P) if key == "donchian2" else strat_flag(df, **P)
+    except Exception:
+        sig = None
+    if not sig:
+        return None
+    close = df["Close"].astype(float)
+    px = float(close.iloc[-1])
+    ef, es = _last(ema(close, 21)), _last(ema(close, 50))
+    zones = ranked_sr_zones(df)
+    plan = strat_plan(key, df, sig, P, tp1_part)
+    checks = strat_checks(key, df, sig, plan, bench, zones, regime_ok, None)
+    cs = checks_score(checks)
+    m = meta or {}
+    return {"ticker": ticker, "name": m.get("name") or ticker, "price": px,
+            "chg": float(m.get("change_pct") or 0.0), "volume": float(m.get("volume") or 0.0),
+            "market_cap": m.get("market_cap"), "sector": m.get("sector") or "",
+            "ema_ok": bool(_ok(ef) and _ok(es) and px > ef and px > es),
+            "ema_fast": float(ef) if _ok(ef) else None, "ema_slow": float(es) if _ok(es) else None,
+            "patterns": [sig], "best": sig, "plan": plan, "c15": None, "zones": (zones or [])[:6],
+            "strat": key, "params": P, "checks": checks, "conf": cs, "score": _strat_score(sig, cs)}
+
+
+def strat_apply_15m(r, c15):
+    """15 dakikalık teyidi satıra işler: teyit satırı, teyit skoru ve toplam skor yeniden hesaplanır."""
+    if not r or not r.get("best"):
+        return r
+    r["c15"] = c15
+    row = check_15m(c15, live=r["best"]["state"] in ("breakout", "retest"))
+    r["checks"] = [row if c["name"] == CHECK_15M else c for c in r.get("checks") or []]
+    r["conf"] = checks_score(r["checks"])
+    r["score"] = _strat_score(r["best"], r["conf"])
+    return r
+
+
+def strat_summary(r):
+    """Kural tabanlı tek paragraf açıklama."""
+    if not r or not r.get("best"):
+        return ""
+    b, p, cs = r["best"], r.get("plan"), r.get("conf") or {}
+    info = strat_info(r.get("strat"), r.get("params"))
+    bits = ["%s: %s — %s." % (info["name"], b["name"], b["note"])]
+    if p:
+        if p.get("tp1") is None:
+            bits.append("%s %s · stop %s (%s, −%s%%)."
+                        % ("Buy-stop at" if p.get("pending") else "Entry", fmt_num(p["entry"], 2),
+                           fmt_num(p["stop"], 2), p["stop_src"], fmt_num(p["risk_pct"], 1)))
+        else:
+            bits.append("%s %s · stop %s (%s, −%s%%) · TP1 %s (R/R 1:%s) · TP2 %s (%s)."
+                        % ("Buy-stop at" if p.get("pending") else "Entry", fmt_num(p["entry"], 2),
+                           fmt_num(p["stop"], 2), p["stop_src"], fmt_num(p["risk_pct"], 1), fmt_num(p["tp1"], 2),
+                           fmt_num(p["rr1"], 1), fmt_num(p["tp2"], 2), p["tp2_src"]))
+        bits.append(p["rule"])
+    if cs:
+        weak = [c["name"] for c in r.get("checks") or [] if c["state"] == "bad"]
+        bits.append("Confirmation %s/100 (%s): %d of %d checks agree%s."
+                    % (fmt_num(cs["score"], 0), cs["label"].lower(), cs["ok"], cs["n"],
+                       (" — against it: " + ", ".join(weak[:3])) if weak else ""))
+    return " ".join(bits)
+
+
+def strat_fresh(r, max_bars=ST_BOT_FRESH):
+    """Bildirim / bot için yeterince taze kırılım mı?"""
+    b = (r or {}).get("best")
+    return bool(b and b["state"] == "breakout" and int(b.get("bars_since") or 0) <= max_bars
+                and b.get("vol_ok", True))
+
+
+def bot_signal_strat(r, cfg=None, regime_ok=True):
+    """strat_evaluate satırı (15 dk teyidi işlenmiş) → (sinyal | None, neden)."""
+    c = bot_cfg(cfg)
+    if not r:
+        return None, "no setup"
+    if c["regime"] and not regime_ok:
+        return None, "market filter off (SPY / QQQ below the 50-day EMA)"
+    b, p, c15, key = r.get("best"), r.get("plan"), r.get("c15"), r.get("strat")
+    if not b:
+        return None, "no setup"
+    if b["state"] == "armed":
+        return None, "armed — waiting for the close above %s" % fmt_num(b["level"], 2)
+    if b["state"] == "forming":
+        return None, "flag still forming — trigger %s" % fmt_num(b["level"], 2)
+    if b["state"] != "breakout":
+        return None, ("trend trade already running" if b["state"] == "running" else "price back below the level")
+    if int(b.get("bars_since") or 0) > ST_BOT_FRESH:
+        return None, "breakout is %d days old" % int(b["bars_since"])
+    if not b.get("vol_ok", True):
+        return None, "breakout volume %sx is below the required surge" % fmt_num(b.get("vol_x") or 0, 1)
+    if c["need_c15"] and not (c15 and c15.get("state") == "confirmed"):
+        return None, "15-minute confirmation: %s" % ((c15 or {}).get("state") or "missing")
+    cs = float((r.get("conf") or {}).get("score") or 0.0)
+    if cs < c["min_conf"]:
+        return None, "confirmation score %s is below %s" % (fmt_num(cs, 0), fmt_num(c["min_conf"], 0))
+    if not p:
+        return None, "no trade plan"
+    px, stop = float(r["price"]), float(p["stop"])
+    risk = px - stop
+    if risk <= 0:
+        return None, "price is at / below the stop"
+    if px > float(b["level"]) + c["max_chase"] * max(risk, float(p["risk"])):
+        return None, "price already ran away from the breakout level"
+    has_tp = p.get("tp1") is not None
+    if has_tp and p["rr1"] < c["min_rr"]:
+        return None, "reward / risk 1:%s is below 1:%s" % (fmt_num(p["rr1"], 1), fmt_num(c["min_rr"], 1))
+    why = "%s — %s, 15-min %s, confirmation %s/100" % (strat_info(key)["name"], b["name"],
+                                                       (c15 or {}).get("state") or "n/a", fmt_num(cs, 0))
+    sig = {"entry": px, "stop": stop, "tp1": float(p["tp1"]) if has_tp else 0.0,
+           "tp2": float(p["tp2"]) if has_tp else 0.0, "atr": float(p.get("atr") or 0.0), "why": why, "strat": key}
+    if key == "donchian2":
+        sig.update({"trail_n": int(p.get("trail_n") or 20), "no_time": True})
+    return sig, "signal"
+
+
+def channel_stop(df, n=20, now=None):
+    """Bot pozisyonu için güncel kanal stopu: tamamlanmış son n günlük mumun en düşüğü (bugünkü yarım mum hariç)."""
+    if df is None or len(df) < n + 1:
+        return None
+    d = df
+    try:
+        if bar_progress(df, now) < 1.0:
+            d = df.iloc[:-1]
+    except Exception:
+        pass
+    v = float(d["Low"].astype(float).tail(int(n)).min())
+    return v if v == v and v > 0 else None
+
+
+# ---------------------------------------------------------------- grafikte çizim
+def _steps(arr, i0, i1):
+    """Basamaklı çizgi: her bar için (i−0.5, v) → (i+0.5, v). NaN'lar atlanır."""
+    pts = []
+    for i in range(int(i0), int(i1) + 1):
+        v = arr[i]
+        if v == v:
+            pts += [(i - 0.5, float(v)), (i + 0.5, float(v))]
+    return pts
+
+
+def strategy_geometry(df, key, params=None, span=260):
+    """Stratejinin grafikteki çizimi: [{'label','color','lines':[{'pts','dash','w','c'}],'dots','fill','at'}…].
+    Her parça kendi etiketini taşır; konumlar df'nin satır numaralarıdır (kesirli olabilir)."""
+    if df is None or len(df) < 30:
+        return []
+    P = strat_params(key, params)
+    last = len(df) - 1
+    out = []
+    if key == "donchian2":
+        nt, ne, nx = P["n_trend"], P["n_entry"], P["n_exit"]
+        if len(df) < nt + ne + 2:
+            return []
+        s = donchian_series(df, nt, ne, nx)
+        i0 = max(nt, last - int(span))
+        C = s["c"]
+        # yön açıkken 20 günlük kanalın içi hafifçe boyanır
+        i = i0
+        while i <= last:
+            if s["dir"][i] == 1 and _ok(s["hi_e"][i]) and _ok(s["lo_x"][i]):
+                j = i
+                while j + 1 <= last and s["dir"][j + 1] == 1:
+                    j += 1
+                up = _steps(s["hi_e"], i, j)
+                dn = _steps(s["lo_x"], i, j)
+                if up and dn:
+                    out.append({"label": None, "color": C_ON, "lines": [], "dots": [], "fill": up + dn[::-1],
+                                "at": None})
+                i = j + 1
+            else:
+                i += 1
+        mid = max(i0, last - 55)
+        out.append({"label": "%d-day high · gives the direction" % nt, "color": C_TREND,
+                    "lines": [{"pts": _steps(s["hi_t"], i0, last), "w": 5}], "dots": [], "fill": None,
+                    "at": (mid, float(s["hi_t"][mid])) if _ok(s["hi_t"][mid]) else None})
+        out.append({"label": "%d-day high · buy on a close above" % ne, "color": C_ENTRY,
+                    "lines": [{"pts": _steps(s["hi_e"], i0, last), "w": 2}], "dots": [], "fill": None,
+                    "at": (last - 6, float(s["hi_e"][last - 6])) if _ok(s["hi_e"][last - 6]) else None})
+        out.append({"label": "%d-day low · trailing stop" % nx, "color": C_STOP,
+                    "lines": [{"pts": _steps(s["lo_x"], i0, last), "w": 2, "dash": True}], "dots": [],
+                    "fill": None,
+                    "at": (last - 6, float(s["lo_x"][last - 6])) if _ok(s["lo_x"][last - 6]) else None})
+        flips = [i for i in range(max(i0, 1), last + 1) if s["dir"][i] == 1 and s["dir"][i - 1] != 1]
+        if flips:
+            f = flips[-1]
+            out.append({"label": "Direction ON · close above the %d-day high" % nt, "color": C_TREND, "lines": [],
+                        "dots": [(f, float(C[f]))], "fill": None, "at": (f, float(C[f]))})
+        tr_ = [t for t in donchian_sim(s, start=max(1, nt)) if t["ei"] >= i0][-6:]
+        if tr_:
+            t = tr_[-1]
+            out.append({"label": "Buy · close above the %d-day high" % ne, "color": C_ON, "lines": [],
+                        "dots": [(x["ei"], x["entry"]) for x in tr_], "fill": None, "at": (t["ei"], t["entry"])})
+            xs = [x for x in tr_ if x["xi"] is not None]
+            if xs:
+                x = xs[-1]
+                out.append({"label": "Sell · %d-day low hit" % nx, "color": C_STOP, "lines": [],
+                            "dots": [(y["xi"], y["exit"]) for y in xs], "fill": None, "at": (x["xi"], x["exit"])})
+        return out
+    if key == "flag":
+        sig = strat_flag(df, **P)
+        if not sig:
+            return []
+        q, p, e, b = sig["q"], sig["p"], sig["e"], sig.get("b")
+        hi, lo = sig["base_hi"], sig["base_lo"]
+        h = df["High"].to_numpy(float)
+        c = df["Close"].to_numpy(float)
+        out.append({"label": "Advance +%s%% in %d days" % (fmt_num(sig["adv"], 0), sig["pole_bars"]),
+                    "color": C_POLE, "lines": [{"pts": [(q, sig["pole_lo"]), (p, hi)], "w": 3}],
+                    "dots": [(q, sig["pole_lo"]), (p, hi)], "fill": None,
+                    "at": ((q + p) / 2.0, (sig["pole_lo"] + hi) / 2.0)})
+        out.append({"label": "Flag · %d tight candles · pullback %s%%" % (sig["f"], fmt_num(sig["depth"], 1)),
+                    "color": C_FLAG,
+                    "lines": [{"pts": [(p, hi), (e + 0.5, hi)], "w": 2}, {"pts": [(p + 0.5, lo), (e + 0.5, lo)], "w": 2}],
+                    "dots": [], "fill": [(p + 0.5, hi), (e + 0.5, hi), (e + 0.5, lo), (p + 0.5, lo)],
+                    "at": ((p + e) / 2.0 + 0.5, lo)})
+        if b is not None:
+            out.append({"label": "Breakout above the base high · volume %s×" % fmt_num(sig["vol_x"], 1),
+                        "color": C_ENTRY, "lines": [{"pts": [(e + 0.5, hi), (last + 0.5, hi)], "w": 2, "dash": True}],
+                        "dots": [(b, float(c[b]))], "fill": None, "at": (b, float(h[b]))})
+        else:
+            out.append({"label": "Buy trigger · close above %s on ≥ %s× volume" % (fmt_num(hi, 2),
+                                                                                    fmt_num(P["vol_x"], 1)),
+                        "color": C_ENTRY, "lines": [{"pts": [(e + 0.5, hi), (last + 0.5, hi)], "w": 2, "dash": True}],
+                        "dots": [], "fill": None, "at": (last, hi)})
+        out.append({"label": "Stop · below the flag low", "color": C_STOP,
+                    "lines": [{"pts": [(p + 0.5, sig["stop"]), (last + 0.5, sig["stop"])], "w": 1.5, "dash": True}],
+                    "dots": [], "fill": None, "at": (last, sig["stop"])})
+        return out
+    return []
+
+
+# ---------------------------------------------------------------- backtest
+BT_STRAT_REASONS = {"TP1": "Target 1 (partial)", "TP2": "Target 2", "Trail": "Channel stop", "BE": "Break-even stop"}
+
+
+def describe_strategy(cfg):
+    key = cfg.get("strat")
+    P = strat_params(key, cfg.get("sp"))
+    if key == "donchian2":
+        s = ("Double Donchian · direction: close beyond the %d-day channel · entry: close beyond the %d-day "
+             "channel · stop: trailing %d-day %s" % (P["n_trend"], P["n_entry"], P["n_exit"],
+                                                    "low" if cfg.get("dir", "long") == "long" else "low / high"))
+        s += " · " + {"long": "Long", "short": "Short", "both": "Long + Short"}.get(cfg.get("dir"), "Long")
+    else:
+        s = ("Flag after a strong advance · advance ≥ %s%% in ≤ %d days · %d–%d tight candles (pullback ≤ %s%%) · "
+             "entry: close above the base high on ≥ %s× volume · stop below the flag low · 40%% at %sR, rest at the "
+             "measured move · Long" % (fmt_num(P["min_adv"], 0), P["pole_max"], P["flag_min"], P["flag_max"],
+                                      fmt_num(P["max_depth"], 0), fmt_num(P["vol_x"], 1), fmt_num(P["tp1_r"], 1)))
+    cf = [n for k, n in (("cf_weekly", "weekly uptrend"), ("cf_adx", "ADX ≥ 20"), ("cf_regime", "S&P 500 above "
+                                                                                              "its 50-day EMA"))
+          if cfg.get(k)]
+    if cf:
+        s += " · confirmations: " + ", ".join(cf)
+    if int(cfg.get("maxBars") or 0) > 0:
+        s += " · max. %dd" % int(cfg["maxBars"])
+    return s
+
+
+def backtest_strategy(df, cfg, bench=None):
+    """Hazır stratejinin geçmiş testi. Sinyal mum kapanışında oluşur, işlem bir sonraki açılışta açılır;
+    aynı mumda stop ve hedef görülürse stop varsayılır. Sonuç biçimi backtest() ile aynıdır (+ çizim verileri)."""
+    cfg = {**BT_DEFAULTS, **(cfg or {})}
+    key = cfg.get("strat")
+    if key not in STRAT_PARAMS:
+        return {"ok": False, "msg": "Unknown strategy."}
+    P = strat_params(key, cfg.get("sp"))
+    cfg["sp"] = P
+    if df is None or len(df) == 0:
+        return {"ok": False, "msg": "No price data."}
+    df = df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+    total = len(df)
+    need = (P["n_trend"] + P["n_entry"] + 5) if key == "donchian2" else 60
+    if total < need:
+        return {"ok": False, "msg": "Not enough price data (at least %d candles needed)." % need}
+    N = max(30, min(int(round(float(cfg["yrs"]) * 252)), total - 1))
+    start = total - N
+    o, h, l, c = (df[k].to_numpy(dtype=float) for k in ("Open", "High", "Low", "Close"))
+    v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0).to_numpy(float)
+    dates = df.index
+    av = atr(df, 14).to_numpy(dtype=float)
+    # ---- teyit filtreleri (hepsi yalnızca geçmiş bilgiyle)
+    fmask = np.ones(total, dtype=bool)
+    if cfg.get("cf_weekly"):
+        w = _weekly(df)
+        if w is not None and len(w) >= 12:
+            nl = 30 if len(w) >= 40 else 10
+            okw = (w["Close"] > sma(w["Close"], nl)).shift(1)        # yalnızca TAMAMLANMIŞ haftalar
+            idx = df.index.tz_localize(None) if getattr(df.index, "tz", None) is not None else df.index
+            m = okw.reindex(okw.index.union(idx)).ffill().reindex(idx)
+            fmask &= m.fillna(False).to_numpy(dtype=bool)
+    if cfg.get("cf_adx"):
+        ax = adx(df, 14)[0].to_numpy(float)
+        fmask &= np.nan_to_num(ax, nan=0.0) >= 20.0
+    if cfg.get("cf_regime") and bench is not None and len(bench) > 60:
+        b = bench.astype(float)
+        okb = b > ema(b, 50)
+        try:
+            bi = okb.index.tz_localize(None) if okb.index.tz is not None else okb.index
+            di = df.index.tz_localize(None) if getattr(df.index, "tz", None) is not None else df.index
+            okb = pd.Series(okb.to_numpy(), index=bi)
+            m = okb.reindex(okb.index.union(di)).ffill().reindex(di)
+            fmask &= m.fillna(False).to_numpy(dtype=bool)
+        except Exception:
+            pass
+    cap = max(100.0, float(cfg["cap"]))
+    risk_pct = max(0.01, float(cfg["risk"])) / 100
+    comm = max(0.0, float(cfg["comm"])) / 100
+    max_bars = int(cfg["maxBars"])
+    part1 = 0.40
+    cash, pos, trades, marks = cap, None, [], []
+    eq = np.full(total, cap, dtype=float)
+    s = donchian_series(df, P["n_trend"], P["n_entry"], P["n_exit"]) if key == "donchian2" else None
+    side_long = cfg.get("dir", "long") != "short" or key == "flag"
+    side_short = key == "donchian2" and cfg.get("dir", "long") != "long"
+
+    def close_part(i, px, reason, qty):
+        nonlocal cash, pos
+        sg = 1 if pos["long"] else -1
+        gross = sg * (px - pos["entry"]) * qty
+        fees = comm * (pos["entry"] + px) * qty
+        pnl = gross - fees
+        cash += pnl
+        trades.append({"long": pos["long"], "ei": pos["ei"], "xi": i, "entry": pos["entry"], "exit": px,
+                       "reason": reason, "pnl": pnl,
+                       "ret": (sg * (px - pos["entry"]) / pos["entry"] - comm * (pos["entry"] + px) / pos["entry"]) * 100,
+                       "R": pnl / (qty * pos["sd"]) if pos["sd"] > 0 else 0.0, "bars": i - pos["ei"] + 1})
+        pos["qty"] -= qty
+        if pos["qty"] <= 1e-12:
+            pos = None
+
+    def signal(i):
+        """i. barın kapanışındaki sinyal → {'long','stop','tp1','tp2','mark'} ya da None."""
+        if not fmask[i]:
+            return None
+        if key == "donchian2":
+            nx = P["n_exit"]
+            if side_long and s["dir"][i] == 1 and s["hi_e"][i] == s["hi_e"][i] and c[i] > s["hi_e"][i]:
+                return {"long": True, "stop": float(np.nanmin(l[max(0, i - nx + 1):i + 1])), "tp1": None, "tp2": None}
+            if side_short and s["dir"][i] == -1 and s["lo_e"][i] == s["lo_e"][i] and c[i] < s["lo_e"][i]:
+                return {"long": False, "stop": float(np.nanmax(h[max(0, i - nx + 1):i + 1])), "tp1": None, "tp2": None}
+            return None
+        g = _flag_at(h, l, c, v, i - 1, P)
+        if not g or not (c[i] > g["base_hi"]):
+            return None
+        base = v[max(0, i - 20):i]
+        m = float(base.mean()) if len(base) else 0.0
+        if not (m > 0 and v[i] / m >= float(P["vol_x"])):
+            return None
+        a = av[i] if av[i] == av[i] else c[i] * 0.02
+        return {"long": True, "stop": float(g["base_lo"] - 0.1 * a), "tp1": "r", "tp2": float(g["base_hi"] + g["pole_h"]),
+                "mark": dict(g, b=i)}
+
+    for i in range(max(start, 1), total):
+        if pos is not None and i >= pos["ei"]:
+            lng = pos["long"]
+            if pos["chan"]:                                         # kanal stopu her gün yeniden hesaplanır
+                ch_ = s["lo_x"][i] if lng else s["hi_x"][i]
+                if ch_ == ch_:
+                    pos["sl"] = max(pos["sl"], float(ch_)) if lng else min(pos["sl"], float(ch_))
+            hit_sl = (l[i] <= pos["sl"]) if lng else (h[i] >= pos["sl"])
+            if hit_sl:
+                px = min(o[i], pos["sl"]) if lng else max(o[i], pos["sl"])
+                close_part(i, px, "Trail" if pos["chan"] else ("BE" if pos["done1"] else "SL"), pos["qty"])
+            else:
+                if pos["tp1"] is not None and not pos["done1"] and h[i] >= pos["tp1"]:
+                    q1 = pos["qty"] * part1
+                    pos["done1"] = True
+                    pos["sl"] = max(pos["sl"], pos["entry"])
+                    close_part(i, max(o[i], pos["tp1"]), "TP1", q1)
+                if pos is not None and pos["tp2"] is not None and h[i] >= pos["tp2"]:
+                    close_part(i, max(o[i], pos["tp2"]), "TP2", pos["qty"])
+            if pos is not None and max_bars > 0 and i - pos["ei"] + 1 >= max_bars:
+                close_part(i, c[i], "Time", pos["qty"])
+        eq[i] = cash + ((1 if pos["long"] else -1) * (c[i] - pos["entry"]) * pos["qty"] if pos else 0.0)
+        if pos is None and i < total - 1:
+            sg_ = signal(i)
+            if sg_:
+                px = o[i + 1]
+                sd = (px - sg_["stop"]) if sg_["long"] else (sg_["stop"] - px)
+                if sd > 0 and px > 0:
+                    qty = min(cash * risk_pct / sd, cash / px)
+                    if qty > 0:
+                        tp1 = (px + float(P["tp1_r"]) * sd) if sg_["tp1"] == "r" else None
+                        tp2 = sg_["tp2"]
+                        if tp1 is not None and tp2 is not None:
+                            tp2 = max(tp2, px + (float(P["tp1_r"]) + 1.5) * sd)
+                        pos = {"long": sg_["long"], "ei": i + 1, "entry": px, "qty": qty, "sd": sd,
+                               "sl": sg_["stop"], "tp1": tp1, "tp2": tp2, "done1": False, "chan": key == "donchian2"}
+                        if sg_.get("mark"):
+                            marks.append(sg_["mark"])
+    if pos is not None:
+        close_part(total - 1, c[total - 1], "Open", pos["qty"])
+    eq[total - 1] = cash
+    idx = dates[start:]
+    more = {"strat": key, "lines": [], "boxes": []}
+    if key == "donchian2":
+        dirs = pd.Series(s["dir"][start:], index=idx)
+        more["lines"] = [
+            {"name": "%d-day high (direction)" % P["n_trend"], "color": C_TREND, "dash": None,
+             "s": pd.Series(s["hi_t"][start:], index=idx)},
+            {"name": "%d-day high (entry)" % P["n_entry"], "color": C_ENTRY, "dash": None,
+             "s": pd.Series(s["hi_e"][start:], index=idx)},
+            {"name": "%d-day low (trailing stop)" % P["n_exit"], "color": C_STOP, "dash": "dot",
+             "s": pd.Series(s["lo_x"][start:], index=idx)}]
+        if side_short:
+            more["lines"].append({"name": "%d-day low (direction, short)" % P["n_trend"], "color": C_TREND,
+                                  "dash": "dash", "s": pd.Series(s["lo_t"][start:], index=idx)})
+        more["dir"] = dirs
+    else:
+        for g in marks:
+            if g["q"] >= start:
+                more["boxes"].append({"q": dates[g["q"]], "p": dates[g["p"]], "e": dates[g["e"]], "b": dates[g["b"]],
+                                      "hi": g["base_hi"], "lo": g["base_lo"], "pole_lo": g["pole_lo"],
+                                      "adv": g["adv"], "f": g["f"]})
+    res = _bt_finish(trades, eq, c, dates, start, cap, cfg, ma=None, more=more)
+    res["desc"] = describe_strategy(cfg)
+    return res
