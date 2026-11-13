@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "4.8"
+APP_VERSION = "4.9"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -306,11 +306,13 @@ STORE = _store()
 # Widget anahtarları (kullanıcı ayarları) — sayfa değişse de korunur
 WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_fxtf", "w_lb", "w_fxlb", "w_fxc",
                "w_calday",
-               "w_aimode", "w_aiauto", "w_savedflt", "w_theme", "flt_import_txt",
+               "w_aimode", "w_strat", "w_aiauto", "w_savedflt", "w_theme", "flt_import_txt",
                "w_calimp", "w_nc", "w_mov", "w_setup", "w_sort", "w_bttf", "bt_inst", "bt_custom", "bt_pick",
                "bt_yrs", "bt_ind1", "bt_p1", "bt_op1", "bt_v1", "bt_logic", "bt_c2on", "bt_src2", "bt_p2",
                "bt_op2", "bt_dir", "bt_slMode", "bt_slV", "bt_tpMode", "bt_tpV", "bt_maxBars", "bt_cap",
-               "bt_risk", "bt_comm", "bt_xmin"]
+               "bt_risk", "bt_comm", "bt_xmin", "bt_strat", "bt_d_trend", "bt_d_entry", "bt_d_exit", "bt_f_adv",
+               "bt_f_pole", "bt_f_min", "bt_f_max", "bt_f_depth", "bt_f_vol", "bt_f_tp1", "bt_cf_weekly",
+               "bt_cf_adx", "bt_cf_regime"]
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
@@ -400,7 +402,16 @@ def _save_state():
 BT_WIDGETS = {"bt_inst": "AAPL", "bt_custom": "", "bt_yrs": 3, "bt_ind1": "RSI", "bt_p1": 14, "bt_op1": "lt",
               "bt_v1": 30.0, "bt_logic": "and", "bt_c2on": True, "bt_src2": "sma", "bt_p2": 200,
               "bt_op2": "above", "bt_dir": "long", "bt_slMode": "atr", "bt_slV": 2.0, "bt_tpMode": "rr",
-              "bt_tpV": 2.0, "bt_maxBars": 0, "bt_cap": 10000.0, "bt_risk": 1.0, "bt_comm": 0.1, "bt_xmin": 0}
+              "bt_tpV": 2.0, "bt_maxBars": 0, "bt_cap": 10000.0, "bt_risk": 1.0, "bt_comm": 0.1, "bt_xmin": 0,
+              # v4.9: hazır stratejiler
+              "bt_strat": "custom", "bt_d_trend": 120, "bt_d_entry": 20, "bt_d_exit": 20, "bt_f_adv": 30.0,
+              "bt_f_pole": 40, "bt_f_min": 5, "bt_f_max": 15, "bt_f_depth": 25.0, "bt_f_vol": 1.5, "bt_f_tp1": 2.0,
+              "bt_cf_weekly": False, "bt_cf_adx": False, "bt_cf_regime": False}
+BT_SP_KEYS = {"donchian2": {"n_trend": "bt_d_trend", "n_entry": "bt_d_entry", "n_exit": "bt_d_exit"},
+              "flag": {"min_adv": "bt_f_adv", "pole_max": "bt_f_pole", "flag_min": "bt_f_min", "flag_max": "bt_f_max",
+                       "max_depth": "bt_f_depth", "vol_x": "bt_f_vol", "tp1_r": "bt_f_tp1"}}
+BT_STRAT_NAME = {"custom": "🧪 Custom rules — build it from indicators", "donchian2": "📈 Double Donchian (120 / 20)",
+                 "flag": "🚩 Flag after a strong advance"}
 for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journal_closed": [],
                "flt_rows": copy.deepcopy(en.DEFAULT_FILTER), "flt_logic": "AND",
                "flt_min": len(en.DEFAULT_FILTER) - 1, "flt_lastN": len(en.DEFAULT_FILTER),
@@ -939,6 +950,43 @@ a.lnk{color:#5B8CFF;text-decoration:none;font-weight:700}
 a.opp-row,a.opp-row:hover,a.opp-row:visited,a.opp-row:active{text-decoration:none!important;color:#ECEEF1!important}
 a.opp-row *{text-decoration:none!important}
 .aist{font-size:10.5px;font-weight:800;border-radius:5px;padding:2px 7px;white-space:nowrap}
+/* v4.9 — hazır stratejiler: kural adımları + teyit listesi */
+.strat-pick-l{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8D96A5}
+.strat-box{background:var(--panel2);border:1px solid var(--border);border-radius:16px;padding:14px 16px;
+ margin:0 0 16px 0;box-sizing:border-box;width:100%}
+.strat-hd{display:flex;align-items:flex-start;gap:12px;margin-bottom:12px}
+.strat-hd b{font-size:14.5px}
+.strat-hd .small{line-height:1.5;margin-top:2px}
+.strat-ic{flex:none;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:19px;
+ background:color-mix(in srgb,var(--acc) 16%,transparent);border:1px solid color-mix(in srgb,var(--acc) 40%,transparent)}
+.strat-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.strat-step{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:12px;min-width:0;
+ background:color-mix(in srgb,var(--c) 8%,transparent);border:1px solid color-mix(in srgb,var(--c) 34%,transparent);
+ border-left:4px solid var(--c)}
+.strat-step .n{flex:none;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;
+ font-weight:800;color:#0A0B0D;background:var(--c)}
+.strat-step b{display:block;font-size:12.5px;margin-bottom:3px}
+.strat-step span{font-size:12px;line-height:1.5}
+.strat-step div{min-width:0;overflow-wrap:anywhere;font-size:12px;line-height:1.5}
+.strat-step div span{color:#8D96A5}
+.ck-top{display:flex;align-items:center;gap:12px;margin:2px 0 10px 0}
+.ck-score{flex:none;display:flex;align-items:baseline;gap:2px;padding:6px 11px;border-radius:12px;
+ background:color-mix(in srgb,var(--c) 12%,transparent);border:1px solid color-mix(in srgb,var(--c) 42%,transparent)}
+.ck-score b{font-family:ui-monospace,monospace;font-size:20px;font-weight:800;color:var(--c);line-height:1.1}
+.ck-score span{font-size:11px;color:#8D96A5}
+.ck-lab{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12.5px}
+.ck-lab span{font-size:11.5px;color:#8D96A5}
+.ck-bar{height:6px;border-radius:4px;background:var(--border);margin-top:7px;overflow:hidden}
+.ck-bar i{display:block;height:6px;border-radius:4px}
+.ck-grp{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8D96A5;
+ margin:12px 0 4px 0}
+.ck-row{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-top:1px solid var(--border);font-size:12px;
+ line-height:1.45}
+.ck-ic{flex:none;width:17px;height:17px;border-radius:50%;border:1.5px solid;display:grid;place-items:center;
+ font-size:10px;font-weight:800;line-height:1;margin-top:1px}
+.ck-n{flex:1 1 46%;min-width:0;font-weight:600;overflow-wrap:anywhere}
+.ck-v{flex:1 1 54%;min-width:0;text-align:right;overflow-wrap:anywhere}
+[class*="st-key-aick_"]{margin-top:4px}
 .funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:6px 0 16px 0;width:100%}
 /* v4.6 — rejim uyarısı: rozetlerin altında, alttaki kutulardan 16 px uzakta */
 .regime-warn{display:flex;align-items:flex-start;gap:10px;margin:4px 0 16px 0;padding:12px 16px;border-radius:14px;
@@ -4860,7 +4908,12 @@ def _pl(pts):
     return [[int(i), float(p)] for i, p in pts]
 
 
-def st_overlay(payload, sym, best=None, levels=None):
+def _plf(pts):
+    """Kesirli bar konumları (basamaklı kanal çizgileri için)."""
+    return [[round(float(i), 2), float(p)] for i, p in pts]
+
+
+def st_overlay(payload, sym, best=None, levels=None, strat=None, params=None):
     """Grafik katmanı ve özet. Hesaplar grafikte görünen barların kendisinden yapılır (aynı konumlar).
     Döner: (ov, info)  info = {'geo', 'obs', 'marks', 'uw', 'df'}"""
     bars = payload.get("bars") or []
@@ -4872,7 +4925,21 @@ def st_overlay(payload, sym, best=None, levels=None):
         return ov, info
     last = len(df) - 1
     daily = str(payload.get("interval") or "1d") == "1d"
-    geo = en.setup_geometry(df, (best or {}).get("key")) if (best and daily) else None
+    sgeo = []
+    if strat in en.STRAT_PARAMS and daily:          # v4.9: hazır strateji — kanallar / direk + bayrak, parça parça etiketli
+        try:
+            sgeo = en.strategy_geometry(df, strat, params)
+        except Exception:
+            sgeo = []
+        for g_ in sgeo:
+            ov["patterns"].append({"label": g_.get("label"), "color": g_["color"],
+                                   "at": _plf([g_["at"]])[0] if g_.get("at") else None,
+                                   "lines": [{"pts": _plf(ln["pts"]), "dash": bool(ln.get("dash")), "w": ln.get("w", 2)}
+                                             for ln in g_.get("lines") or []],
+                                   "dots": _plf(g_.get("dots") or []),
+                                   "fill": _plf(g_["fill"]) if g_.get("fill") else None})
+        info["sgeo"] = sgeo
+    geo = en.setup_geometry(df, (best or {}).get("key")) if (best and daily and strat not in en.STRAT_PARAMS) else None
     if geo:
         info["geo"] = geo
         info["pat_col"] = PAT_COLS.get(geo["key"], PAT_COL)
@@ -5192,7 +5259,19 @@ def _pulse_section(sym, info):
         render_sentiment_box(sym, mp)
 
 
-def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
+def strat_legend(key, params=None):
+    """Grafiğin altındaki renk açıklaması — stratejinin kural adımlarıyla aynı renkler."""
+    P = en.strat_params(key, params)
+    sw = lambda c_: f'<span class="ovsw" style="background:{c_}"></span>'
+    if key == "donchian2":
+        return (f'{sw(en.C_TREND)} {P["n_trend"]}-day high = direction · {sw(en.C_ENTRY)} {P["n_entry"]}-day high = '
+                f'buy trigger · {sw(en.C_STOP)} dashed {P["n_exit"]}-day low = trailing stop · {sw(en.C_ON)} shaded '
+                f'= direction is on · green / red dots = simulated buys / sells of the rule · ')
+    return (f'{sw(en.C_POLE)} advance (flagpole) · {sw(en.C_FLAG)} flag box · {sw(en.C_ENTRY)} dashed base high = '
+            f'buy trigger · {sw(en.C_STOP)} dashed = stop below the flag · ')
+
+
+def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai", strat=None, params=None):
     """Seçili şirket: büyük grafik (katmanlarla) + kurumsal akış + topluluk duyarlılığı."""
     anchor("stchart")
     info = {"obs": [], "marks": [], "uw": None, "df": None}
@@ -5210,8 +5289,8 @@ def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
             t = st.columns(4)
             new = {}
             for col_, (k, lab, hlp) in zip(t, (
-                    ("patterns", "Pattern", "Draws the pattern from the table (triangle, rectangle, staircase, "
-                                            "breakout) with its pivots, plus the plan levels."),
+                    ("patterns", "Pattern", "Draws the setup from the table — the pattern with its pivots, or the "
+                                            "strategy's channels / flagpole and flag — plus the plan levels."),
                     ("obs", "Order blocks", "Last opposite candle before a strong, high-volume move — the zone "
                                             "stays until price closes through it."),
                     ("marks", "Volume buys / sells", "Bars with at least twice the 20-bar average volume: ▲ bought "
@@ -5227,17 +5306,22 @@ def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
         lb, tf = range_controls("w_stlb", "w_sttf")
 
         def _ov(payload):
-            ov, inf = st_overlay(payload, sym, best, levels)
+            ov, inf = st_overlay(payload, sym, best, levels, strat, params)
             info.update(inf)
             return ov
         render_big_chart(sym, tf, height=ST_CHART_H, tf_key="w_sttf", lb=lb, ov_fn=_ov, comp_key="pulse_chart_st",
                          fit=ST_CHART_FIT)
         g = info.get("geo")
+        is_st = strat in en.STRAT_PARAMS
         H(f'<div class="muted small" style="margin-top:4px">'
-          + (f'<b style="color:{info.get("pat_col", PAT_COL)}">{esc(g["label"])}</b> is drawn with its pivot '
-             f'points. ' if g else
-             ('The pattern is drawn on daily candles — switch the candle interval back to Daily to see it. '
-              if best and tf != "1d" else ""))
+          + ((f'<b style="color:{TXT}">{esc(en.strat_info(strat, params)["name"])}</b> is drawn on the chart: '
+              + strat_legend(strat, params)) if is_st and info.get("sgeo") else
+             (f'<b style="color:{info.get("pat_col", PAT_COL)}">{esc(g["label"])}</b> is drawn with its pivot '
+              f'points. ' if g else
+              (('The strategy is drawn on daily candles — switch the candle interval back to Daily to see it. '
+                if is_st else
+                'The pattern is drawn on daily candles — switch the candle interval back to Daily to see it. ')
+               if best and tf != "1d" else "")))
           + f'<span class="ovkey" style="color:{UP}">▲</span>/<span class="ovkey" style="color:{DOWN}">▼</span> '
             f'bought / sold on ≥ 2× average volume · '
             f'<span class="ovsw" style="background:{OB_COL["bull"]}"></span>'
@@ -5252,7 +5336,11 @@ def render_st_focus(sym, name="", best=None, levels=None, chip="", back="ai"):
 
 
 AI_STATE_STYLE = {"breakout": (UP, UP_BG, "BREAKOUT"), "retest": (ACCENT, ACC_BG, "RETEST"),
-                  "forming": (WARN, WARN_BG, "FORMING")}
+                  "forming": (WARN, WARN_BG, "FORMING"), "armed": (WARN, WARN_BG, "ARMED"),
+                  "running": (VIOLET, "rgba(167,139,250,.14)", "IN TREND")}
+ST_STATE_RANK = {"breakout": 0, "retest": 1, "forming": 2, "armed": 2, "running": 3}
+STRAT_SEG = {"ai": "🤖 Pattern breakout", "donchian2": "📈 Double Donchian", "flag": "🚩 Flag after advance"}
+CK_ICON = {"ok": ("✓", UP), "warn": ("~", WARN), "bad": ("✕", DOWN), "na": ("·", MUT)}
 C15_STYLE = {"confirmed": (UP, UP_BG), "pending": (WARN, WARN_BG),
              "failed": (DOWN, DOWN_BG), "no data": (MUT, NEU_BG)}
 
@@ -5291,14 +5379,66 @@ def run_ai_scan(token, cfg_json):
             b = r["best"]
             en.ai_apply_15m(r, en.confirm_15m(i15.get(r["ticker"]), b["level"], b["kind"]) if b else None)
     top.sort(key=lambda r: -r["score"])
+    spy = idx.get("SPY") if idx else None
     for r in top:
         r["summary"] = en.ai_summary(r)
         d = daily.get(r["ticker"])
         r["df"] = d.tail(120).copy() if d is not None else None   # ayrıntı grafiği için
+        r["strat"] = "ai"
+        try:      # v4.9: bağımsız teyitler (çoklu zaman dilimi, göstergeler, direnç) — AI skoru aynı kalır
+            if r["best"] and r["best"]["kind"] == "bull" and d is not None:
+                r["checks"] = en.strat_checks("ai", d, r["best"], r["plan"], spy["Close"] if spy is not None else None,
+                                              r.get("zones"), bool(regime.get("ok")), r.get("c15"))
+                r["conf"] = en.checks_score(r["checks"])
+        except Exception:
+            pass
     return {"rows": top, "steps": steps, "regime": regime, "ema_fail": ema_fail,
             "prelim_n": len(prelim), "passed_n": len(passed),
             "src": snap.attrs.get("src", "mock") if snap is not None else "none",
-            "capless": bool(steps.get("capless")),
+            "capless": bool(steps.get("capless")), "strat": "ai",
+            "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M")}
+
+
+ST_PRELIM = 120      # hazır stratejilerde günlük verisi çekilen aday sayısı (kurulumlar seyrek olduğu için daha geniş)
+
+
+@st.cache_data(ttl=600, show_spinner="Scanning the market — NASDAQ + NYSE…")
+def run_strat_scan(token, key, cfg_json):
+    """v4.9: hazır strateji taraması (Doppelter Donchian / Flagge). Aynı ucuz ön filtre, ardından stratejinin
+    kendi kurulumu aranır; kırılım / geri test durumundakiler 15 dakikalık grafikle teyit edilir."""
+    cfg = json.loads(cfg_json)
+    snap = md.get_market_snapshot()
+    cand, steps = en.ai_prefilter(snap, cfg)
+    idx = md.get_daily_batch(("SPY", "QQQ"))
+    regime = en.ai_regime(idx, int(cfg.get("regime_ema", 50)))
+    spy = idx.get("SPY") if idx else None
+    bench = spy["Close"] if spy is not None else None
+    prelim = list(cand["ticker"].head(ST_PRELIM)) if len(cand) else []
+    daily = md.get_daily_batch(tuple(prelim)) if prelim else {}
+    meta = cand.set_index("ticker").to_dict("index") if len(cand) else {}
+    found = []
+    for t in prelim:
+        r = en.strat_evaluate(key, t, daily.get(t), meta=meta.get(t), bench=bench, regime_ok=bool(regime.get("ok")),
+                              tp1_part=float(cfg.get("tp1_part", 0.40)))
+        if r:
+            found.append(r)
+    found.sort(key=lambda r: (ST_STATE_RANK.get(r["best"]["state"], 9), -r["score"]))
+    top = found[:int(cfg.get("top", 20))]
+    live = [r for r in top if r["best"]["state"] in ("breakout", "retest")]
+    if live:
+        i15 = md.get_intraday_batch(tuple(r["ticker"] for r in live))
+        for r in live:
+            b = r["best"]
+            en.strat_apply_15m(r, en.confirm_15m(i15.get(r["ticker"]), b["level"], b["kind"]))
+    top.sort(key=lambda r: (ST_STATE_RANK.get(r["best"]["state"], 9), -r["score"]))
+    for r in top:
+        r["summary"] = en.strat_summary(r)
+        d = daily.get(r["ticker"])
+        r["df"] = d.tail(120).copy() if d is not None else None
+    return {"rows": top, "steps": steps, "regime": regime, "ema_fail": len(prelim) - len(found),
+            "prelim_n": len(prelim), "passed_n": len(found),
+            "src": snap.attrs.get("src", "mock") if snap is not None else "none",
+            "capless": bool(steps.get("capless")), "strat": key,
             "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M")}
 
 
@@ -5340,7 +5480,10 @@ def push_notes(rows):
     user = (ss.get("auth") or {}).get("user")
     added = 0
     for r in rows:
-        if not en.ai_fresh_breakout(r):
+        if r.get("strat") in en.STRAT_PARAMS:
+            if not (en.strat_fresh(r) and (r.get("c15") or {}).get("state") in ("confirmed", "pending")):
+                continue
+        elif not en.ai_fresh_breakout(r):
             continue
         k = f'{r["ticker"]}|{day}'
         if k in have or k in gone:     # aynı gün tekrar düşmesin, silinenler geri gelmesin
@@ -5363,10 +5506,51 @@ def push_notes(rows):
     return added
 
 
-def render_ai_opps():
+def strat_steps_html(key, params=None):
+    """Stratejinin kuralları adım adım — renkler grafikteki çizgilerle aynı."""
+    info = en.strat_info(key, params)
+    return (f'<div class="strat-box"><div class="strat-hd"><span class="strat-ic">{info["icon"]}</span><div>'
+            f'<b>{esc(info["long"])}</b><div class="muted small">{esc(info["tagline"])}</div></div></div>'
+            f'<div class="strat-steps">' + "".join(
+                f'<div class="strat-step" style="--c:{c_}"><span class="n">{i + 1}</span><div><b>{esc(t)}</b>'
+                f'<span>{esc(d)}</span></div></div>' for i, (t, d, c_) in enumerate(info["steps"]))
+            + '</div></div>')
+
+
+def conf_checks_html(checks, cs):
+    """Teyit listesi: gruplar hâlinde ✓ / ~ / ✕ satırları + toplam skor çubuğu."""
+    if not checks or not cs:
+        return ""
+    sc = float(cs["score"])
+    col_ = UP if sc >= 75 else ACCENT if sc >= 60 else WARN if sc >= 45 else DOWN
+    out = (f'<div class="ck-top"><div class="ck-score" style="--c:{col_}"><b>{tr(sc, 0)}</b><span>/100</span></div>'
+           f'<div style="flex:1;min-width:0"><div class="ck-lab"><b style="color:{col_}">{esc(cs["label"])} '
+           f'confirmation</b><span>{cs["ok"]} of {cs["n"]} checks agree</span></div><div class="ck-bar"><i '
+           f'style="width:{sc:.0f}%;background:{col_}"></i></div></div></div>')
+    for grp in en.CHECK_GROUPS:
+        rows_ = [c for c in checks if c["grp"] == grp]
+        if not rows_:
+            continue
+        out += f'<div class="ck-grp">{esc(grp)}</div>'
+        for c in rows_:
+            ic, cc = CK_ICON.get(c["state"], CK_ICON["na"])
+            out += (f'<div class="ck-row" title="{esc(c.get("note") or "")}"><span class="ck-ic" style="color:{cc};'
+                    f'border-color:{cc}">{ic}</span><span class="ck-n">{esc(c["name"])}</span><span class="ck-v" '
+                    f'style="color:{SOFT if c["state"] != "na" else MUT}">{esc(c["value"])}</span></div>')
+    return out + ('<div class="muted" style="font-size:10.5px;margin-top:8px;line-height:1.5">✓ supports the trade '
+                  '· ~ neutral / partly · ✕ argues against it · hover a row for the reason. The score weighs every '
+                  'check that could be calculated.</div>')
+
+
+def render_ai_opps(strat="ai"):
     anchor("ai")
     cfg = en.ai_cfg({"tp1_part": 0.40})
-    res = run_ai_scan(ai_token(), json.dumps(cfg, sort_keys=True))
+    is_st = strat in en.STRAT_PARAMS
+    sinfo = en.strat_info(strat)
+    if is_st:
+        res = run_strat_scan(ai_token(), strat, json.dumps(cfg, sort_keys=True))
+    else:
+        res = run_ai_scan(ai_token(), json.dumps(cfg, sort_keys=True))
     rows, reg, steps = res["rows"], res["regime"], res["steps"]
     new_n = push_notes(rows)
     if new_n:
@@ -5376,11 +5560,14 @@ def render_ai_opps():
     t1, t2 = st.columns([2.8, 1.6], vertical_alignment="center")
     with t1:
         H(f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-          f'<span style="font-size:20px;font-weight:800">🤖 AI Trade Opportunities</span>'
+          f'<span style="font-size:20px;font-weight:800">'
+          f'{"🤖 AI Trade Opportunities" if not is_st else sinfo["icon"] + " " + esc(sinfo["name"])}</span>'
           f'{src_chip(res["src"])}</div>'
           f'<div class="muted small" style="margin-top:3px">NASDAQ + NYSE scan · last scan {res["at"]} · '
-          f'top {res["prelim_n"]} candidates → {res["passed_n"]} pass the EMA gate → highest volume '
-          f'{len(rows)}</div>')
+          + (f'top {res["prelim_n"]} candidates by volume → {res["passed_n"]} with a setup → best {len(rows)}'
+             if is_st else
+             f'top {res["prelim_n"]} candidates → {res["passed_n"]} pass the EMA gate → highest volume {len(rows)}')
+          + '</div>')
     with t2:
         c1, c2 = st.columns(2)
         with c1:
@@ -5417,20 +5604,27 @@ def render_ai_opps():
       f'<div>Daily change +<b>{steps.get("degisim", 0)}</b></div>'
       f'<div>Market cap ≥ $300M<b>'
       f'{"—" if res["capless"] else steps.get("piyasa_degeri", 0)}</b></div>'
-      f'<div>Above 21 &amp; 50 EMA<b>{res["passed_n"]}</b></div>'
-      f'<div>Top {cfg["top"]} by volume<b>{len(rows)}</b></div></div>')
+      + (f'<div>{esc(sinfo["name"])} setup<b>{res["passed_n"]}</b></div><div>Best {cfg["top"]} shown<b>{len(rows)}'
+         f'</b></div></div>' if is_st else
+         f'<div>Above 21 &amp; 50 EMA<b>{res["passed_n"]}</b></div>'
+         f'<div>Top {cfg["top"]} by volume<b>{len(rows)}</b></div></div>'))
     if res["capless"]:
         H('<div class="muted small">The Nasdaq screener did not respond — scanned a limited universe, '
           'the market-cap filter could not be applied.</div>')
 
+    if is_st:      # v4.9: kurallar adım adım (grafikteki çizgilerle aynı renkler)
+        H(strat_steps_html(strat))
     if not rows:
-        H('<div class="muted" style="padding:18px 0">No stocks match the filter today.</div>')
+        H('<div class="muted" style="padding:18px 0">'
+          + (f'No stock among today\'s {res["prelim_n"]} most active candidates shows a {esc(sinfo["name"])} setup '
+             f'right now. These setups are rare — check again later or test the rule on any symbol in the Backtest '
+             f'tab.' if is_st else 'No stocks match the filter today.') + '</div>')
         return
 
     sel = next((r for r in rows if r["ticker"] == AIP), rows[0])
     left, right = st.columns([2.25, 1], gap="medium")
     with left:
-        head = ('<div class="opp-grid ai-grid opp-head"><span>Symbol</span><span>Pattern</span>'
+        head = (f'<div class="opp-grid ai-grid opp-head"><span>Symbol</span><span>{"Setup" if is_st else "Pattern"}</span>'
                 '<span class="r">Price</span><span class="r">Volume</span><span>15 min</span>'
                 '<span class="r">Stop</span><span class="r">R/R</span><span>Score</span></div>')
         body = ""
@@ -5457,13 +5651,17 @@ def render_ai_opps():
                      f'<span><span class="aist" style="color:{cfg_};background:{cbg}">'
                      f'{esc(c.get("state", "—"))}</span></span>'
                      f'<span class="r" style="color:{DOWN}">{tr(p["stop"]) if p else "—"}</span>'
-                     f'<span class="r" style="font-weight:700">{tr(p["rr1"], 1) if p else "—"}</span>'
+                     f'<span class="r" style="font-weight:700">'
+                     f'{(tr(p["rr1"], 1) if p.get("rr1") is not None else "trail") if p else "—"}</span>'
                      f'<span class="cellscore"><span class="scorebar"><span style="display:block;height:6px;'
                      f'width:{r["score"]:.0f}%;background:{sc}"></span></span>'
                      f'<span class="mono" style="font-weight:600">{tr(r["score"], 0)}</span></span></a>')
         H(f'<div class="opp"><div class="opp-scroll">{head}{body}</div><div class="opp-foot">'
-          f'<span>Score: pattern strength + breakout state + 15-minute confirmation + R/R + trend</span>'
-          f'<span style="margin-left:auto">The top {cfg["top"]} stocks by volume are evaluated</span></div></div>')
+          + (f'<span>Score: 40 % setup quality + 60 % confirmation checks (weekly / daily trend, 15-minute chart, '
+             f'indicators, patterns, resistance, market)</span><span style="margin-left:auto">Breakouts first, then '
+             f'setups waiting for the trigger</span></div></div>' if is_st else
+             f'<span>Score: pattern strength + breakout state + 15-minute confirmation + R/R + trend</span>'
+             f'<span style="margin-left:auto">The top {cfg["top"]} stocks by volume are evaluated</span></div></div>'))
     with right:
         render_ai_detail(sel)
     b, p = sel.get("best"), sel.get("plan")
@@ -5471,11 +5669,14 @@ def render_ai_opps():
     if b:
         lv.append(("Level", b["level"], ACCENT))
     if p:
-        lv += [("Stop", p["stop"], DOWN), ("TP1", p["tp1"], UP), ("TP2", p["tp2"], "#6EE7B7")]
+        lv += [("Stop", p["stop"], DOWN)]
+        if p.get("tp1") is not None:
+            lv += [("TP1", p["tp1"], UP), ("TP2", p["tp2"], "#6EE7B7")]
     sfg, sbg, slab = AI_STATE_STYLE.get((b or {}).get("state"), (MUT, NEU_BG, "—"))
     render_st_focus(sel["ticker"], sel["name"], b, lv,
                     chip=(f'<span class="aist" style="color:{sfg};background:{sbg}">{slab}</span> <span class="muted '
-                          f'small">{esc(b["name"])}</span>') if b else "")
+                          f'small">{esc(b["name"])}</span>') if b else "",
+                    strat=strat if is_st else None, params=sel.get("params"))
     if ss.get("ai_auto"):
         components.html(_AUTO_JS % 180, height=0)
         H('<div class="muted small" style="margin-top:8px">Intraday refresh is on — the page reloads every '
@@ -5504,21 +5705,35 @@ def render_ai_detail(r):
           + (f'<span class="ai-tag">{esc(b["name"])}</span>' if b else "")
           + f'<span class="aist" style="color:{cfg_};background:{cbg}">15m · {esc(c.get("state", "—"))}</span></div>')
         if p:
-            tiles = [("Entry", tr(p["entry"]), TXT), ("Stop", tr(p["stop"]), DOWN),
-                     (f'TP1 · {round(p["part1"] * 100)}%', tr(p["tp1"]), UP),
-                     (f'TP2 · rest {round(p["part2"] * 100)}%', tr(p["tp2"]), "#6EE7B7")]
+            has_tp = p.get("tp1") is not None
+            e_lab = "Buy-stop (trigger)" if p.get("pending") else "Entry"
+            if has_tp:
+                tiles = [(e_lab, tr(p["entry"]), TXT), ("Stop", tr(p["stop"]), DOWN),
+                         (f'TP1 · {round(p["part1"] * 100)}%', tr(p["tp1"]), UP),
+                         (f'TP2 · rest {round(p["part2"] * 100)}%', tr(p["tp2"]), "#6EE7B7")]
+            else:       # Donchian: hedef yok — stop kanalla birlikte yükselir
+                tiles = [(e_lab, tr(p["entry"]), TXT), ("Stop · trails up", tr(p["stop"]), DOWN)]
             H('<div class="plan">' + "".join(
                 f'<div class="tile"><span class="k">{esc(k)}</span>'
                 f'<span class="v" style="color:{c_}">{v}</span></div>' for k, v, c_ in tiles) + "</div>")
             H(f'<div class="planrow"><span class="l">Risk</span>'
               f'<span class="v" style="color:{DOWN}">−{tr(p["risk_pct"], 2)}%</span></div>'
-              f'<div class="planrow"><span class="l">R/R · TP1 / TP2</span>'
-              f'<span class="v">1 : {tr(p["rr1"], 2)}  ·  1 : {tr(p["rr2"], 2)}</span></div>'
-              f'<div class="planrow"><span class="l">Stop based on</span>'
-              f'<span class="v" style="font-size:12px">{esc(p["stop_src"])}</span></div>'
-              f'<div class="planrow"><span class="l">TP1 based on</span>'
-              f'<span class="v" style="font-size:12px">{esc(p["tp1_src"])}</span></div>')
+              + (f'<div class="planrow"><span class="l">R/R · TP1 / TP2</span>'
+                 f'<span class="v">1 : {tr(p["rr1"], 2)}  ·  1 : {tr(p["rr2"], 2)}</span></div>' if has_tp else
+                 f'<div class="planrow"><span class="l">Target</span>'
+                 f'<span class="v" style="font-size:12px">none — exit by the trailing stop</span></div>')
+              + f'<div class="planrow"><span class="l">Stop based on</span>'
+                f'<span class="v" style="font-size:12px">{esc(p["stop_src"])}</span></div>'
+              + (f'<div class="planrow"><span class="l">TP1 based on</span>'
+                 f'<span class="v" style="font-size:12px">{esc(p["tp1_src"])}</span></div>' if has_tp else ""))
             H(f'<div class="gtext plan-rule">{esc(p["rule"])}</div>')
+        # v4.9: bağımsız teyitler — çoklu zaman dilimi, göstergeler, formasyon / direnç, piyasa
+        if r.get("checks") and r.get("conf"):
+            cs_ = r["conf"]
+            with st.container(key=f'aick_{r["ticker"]}'):
+                with st.expander(f'Confirmation checks · {tr(cs_["score"], 0)}/100 · {cs_["ok"]} of {cs_["n"]} agree',
+                                 expanded=r.get("strat") in en.STRAT_PARAMS):
+                    H(conf_checks_html(r["checks"], cs_))
         # v4.4: aklama kendi satırında; açıldığında alttaki düğme aşağı kayar, metne binmez
         if r.get("summary"):
             with st.container(key=f'aiwhy_{r["ticker"]}'):
@@ -5528,7 +5743,8 @@ def render_ai_detail(r):
             if ss.journal is None:
                 ss.journal = []
             ss.journal.append({"t": r["ticker"], "dir": "LONG", "entry": p["entry"], "stop": p["stop"],
-                               "target": p["tp1"], "atr": p["atr"],
+                               "target": p["tp1"] if p.get("tp1") is not None else p["entry"] + 3 * p["risk"],
+                               "atr": p["atr"],
                                "date": pd.Timestamp.today().strftime("%Y-%m-%d"), "example": False})
             st.toast(f'{r["ticker"]} added to the trade journal')
 
@@ -5540,7 +5756,8 @@ AI_MODE = "🤖 AI Opportunities"
 # v4.3 — Demo hesabı (kâğıt işlem) + otomatik işlem botları
 # ======================================================================
 ALLOC_COLS = ["#5B8CFF", "#A78BFA", "#22D3EE", "#3DDC97", "#F5B544", "#F472B6", "#FB923C", "#94A3B8"]
-BOT_SRC_NAME = {"ai": "AI Opportunities filter", "filter": "My Filter"}
+BOT_SRC_NAME = {"ai": "AI Opportunities filter", "filter": "My Filter", "donchian2": "Double Donchian",
+                "flag": "Flag after a strong advance"}
 BOT_UNI_NAME = {"demo": "Demo watchlist", "scan": "Whole market scan"}
 
 
@@ -5776,11 +5993,15 @@ def render_bot_form(acct):
     """Yeni bot: strateji (AI filtresi ya da kendi filtren), evren, risk ve çıkış kuralları."""
     saved = ss.get("saved_filters") or []
     cur_name = ss.get("flt_name") or "My filter"
-    opts = ["ai", "flt:__current__"] + [f'flt:{x["name"]}' for x in saved if x.get("name") != cur_name]
+    opts = ["ai", "st:donchian2", "st:flag", "flt:__current__"] + \
+        [f'flt:{x["name"]}' for x in saved if x.get("name") != cur_name]
 
     def fmt(o):
         if o == "ai":
-            return "AI Opportunities filter (pattern + 15-min confirmation)"
+            return "🤖 Pattern breakout — AI Opportunities filter (pattern + 15-min confirmation)"
+        if o.startswith("st:"):
+            i_ = en.strat_info(o[3:])
+            return f'{i_["icon"]} {i_["long"]}'
         return f"My Filter — {cur_name} (as it is now)" if o == "flt:__current__" else f"My Filter — {o[4:]} (saved)"
     with st.expander("➕  New bot", expanded=not (acct.get("bots") or [])):
         c1, c2, c3 = st.columns([1.3, 1.9, 1.4])
@@ -5805,17 +6026,33 @@ def render_bot_form(acct):
             alloc = st.number_input("Max. size of one position (%)", 2.0, 100.0, float(d["max_alloc"]), 1.0,
                                     key="bot_alloc")
             days = st.number_input("Max. holding time (days)", 1, 120, int(d["max_days"]), 1, key="bot_days")
-        k1, k2 = st.columns(2)
+        skey = strat[3:] if str(strat).startswith("st:") else None
+        k1, k2, k3 = st.columns([1.25, 1.35, 1], vertical_alignment="bottom")
         with k1:
-            c15 = st.checkbox("Require the 15-minute confirmation (AI filter)", value=True, key="bot_c15")
+            c15 = st.checkbox("Require the 15-minute confirmation", value=True, key="bot_c15",
+                              help="AI filter and ready-made strategies: the breakout must hold above the level on "
+                                   "the 15-minute chart with volume.")
         with k2:
             reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
+        with k3:
+            mconf = st.number_input("Min. confirmation score", 0, 100, 50 if skey else 0, 5,
+                                    key=f"bot_conf_{skey or 'na'}", disabled=not skey,
+                                    help="0 = off. Ready-made strategies only: the bot buys only when the confirmation "
+                                         "checks (weekly / daily trend, indicators, patterns, resistance, market) "
+                                         "reach this score.")
+        if skey:      # v4.9: stratejinin kuralları + hangi ayarların geçerli olduğu
+            H(strat_steps_html(skey))
+            if skey == "donchian2":
+                H('<div class="muted" style="font-size:11.5px;line-height:1.5">For this strategy the minimum reward / '
+                  'risk, the ATR trailing stop and the maximum holding time are not used: there is no price target, '
+                  'the bot raises the stop to the new 20-day low every day and sells only when price falls to it.'
+                  '</div>')
         if button("Create bot", key="bot_create", primary=True):
             if len(acct.get("bots") or []) >= bk.BOT_MAX:
                 st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
             else:
                 flt = None
-                if strat != "ai":
+                if str(strat).startswith("flt:"):
                     if strat == "flt:__current__":
                         flt = {"name": cur_name, "rows": en.normalize_conds(ss.flt_rows), "logic": ss.flt_logic,
                                "min": int(ss.flt_min or 1)}
@@ -5823,17 +6060,20 @@ def render_bot_form(acct):
                         sv = next((x for x in saved if x.get("name") == strat[4:]), None) or {}
                         flt = {"name": sv.get("name") or strat[4:], "rows": en.normalize_conds(sv.get("rows") or []),
                                "logic": sv.get("logic") or "AND", "min": int(sv.get("min") or 1)}
-                nm = (name or "").strip() or ("AI bot" if strat == "ai" else f'{flt["name"]} bot')
-                b = bk.bot_new(nm, "ai" if strat == "ai" else "filter", uni,
+                nm = (name or "").strip() or ("AI bot" if strat == "ai" else
+                                              f'{en.strat_info(skey)["name"]} bot' if skey else f'{flt["name"]} bot')
+                b = bk.bot_new(nm, "ai" if strat == "ai" else (skey or "filter"), uni,
                                {"risk_pct": risk, "max_pos": maxp, "max_alloc": alloc, "min_rr": minrr,
-                                "trail_atr": trail, "max_days": days, "need_c15": c15, "regime": reg}, flt)
+                                "trail_atr": trail, "max_days": days, "need_c15": c15, "regime": reg,
+                                "min_conf": float(mconf) if skey else 0.0}, flt)
                 bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b))
                 st.toast(f"{nm} is running — first check within 15 minutes")
                 st.rerun()
         H('<div class="muted" style="font-size:11px;margin-top:4px">Entry: the strategy must be fully met on the '
           'last closed 15-minute bar; size = account × risk % ÷ (entry − stop), capped by the position limit and '
           'your cash. Exit: stop-loss, 40 % at TP1 (the stop then moves to the entry), the rest at TP2 or by the '
-          'ATR trailing stop, at the latest after the maximum holding time.</div>')
+          'ATR trailing stop, at the latest after the maximum holding time. Double Donchian exits only by its '
+          'trailing 20-day low.</div>')
 
 
 def _bots_body():
@@ -5869,7 +6109,8 @@ def _bots_body():
                 for b in bots:
                     stt = bk.bot_stats(acct, b["id"], val)
                     lc = b.get("last") or {}
-                    strat = "AI filter" if b["src"] == "ai" else f'Filter: {(b.get("flt") or {}).get("name", "—")}'
+                    strat = ("AI filter" if b["src"] == "ai" else BOT_SRC_NAME[b["src"]] if b["src"] in en.STRAT_PARAMS
+                             else f'Filter: {(b.get("flt") or {}).get("name", "—")}')
                     on = bool(b.get("on"))
                     note = lc.get("note") or ((str(lc.get("buys", 0)) + " bought, " + str(lc.get("sells", 0)) + " sold")
                                               if lc else "waiting for the first check")
@@ -5894,7 +6135,8 @@ def _bots_body():
                   f'{rows}</tbody></table></div>')
             else:
                 H('<div class="muted" style="padding:12px 0 4px 0">No bot yet. Create one below — it trades the demo '
-                  'account automatically with the AI filter or with one of your own filters.</div>')
+                  'account automatically with the AI filter, a ready-made strategy (Double Donchian, Flag after a '
+                  'strong advance) or one of your own filters.</div>')
             render_bot_form(acct)
             brow = [r for r in val["rows"] if r["owner"] != "manual"]
             if brow:
@@ -5903,7 +6145,7 @@ def _bots_body():
                     f'{esc(r["sym"])}</b></span></td><td style="text-align:left;font-family:inherit">{esc(r["bot"])}'
                     f'</td><td>{r["qty"]:g}</td><td style="color:{SOFT}">{tr(r["entry"])}</td><td>{tr(r["last"])}</td>'
                     f'<td style="color:{DOWN}">{tr(r["stop"]) if r.get("stop") else "—"}</td><td style="color:{UP}">'
-                    f'{("✓ " if r.get("tp1_done") else "") + tr(r["tp1"]) if r.get("tp1") else "—"}</td>'
+                    f'{("✓ " if r.get("tp1_done") else "") + tr(r["tp1"]) if r.get("tp1") else ("trail" if r.get("trail_n") else "—")}</td>'
                     f'<td style="color:{col(r["pnl"])};font-weight:700">{"+" if r["pnl"] >= 0 else ""}'
                     f'{money(r["pnl"], cur)} <span class="bsub" style="display:inline">({pct(r["pnl_pct"], 1)})</span>'
                     f'</td><td><a class="lnk small" target="_self" href="{link(demo_sell=r["key"], f="bots")}">'
@@ -6495,7 +6737,10 @@ def render_short():
       f'</div>')
     mode = seg("Mode", [AI_MODE, "My Filter"], "w_aimode", AI_MODE)
     if mode == AI_MODE:
-        render_ai_opps()
+        # v4.9: hangi hazır strateji taransın — aynı seçenekler botlarda ve Backtest'te de var
+        H('<div class="strat-pick-l">Strategy</div>')
+        strat = seg("Strategy", en.STRAT_KEYS, "w_strat", "ai", fmt=lambda k: STRAT_SEG.get(k, k))
+        render_ai_opps(strat or "ai")
         render_bots_section(md.get_universe_history()["hist"])     # v4.3: botlar "My Open Trades"in yerinde
         return
     render_own_filter()
@@ -6772,12 +7017,18 @@ def _data_token(sym):
 
 
 def bt_cfg():
-    return {"sym": bt_symbol(), "yrs": int(ss.bt_yrs), "ind1": ss.bt_ind1, "p1": int(ss.bt_p1), "op1": ss.bt_op1,
-            "v1": float(ss.bt_v1), "logic": ss.bt_logic, "c2on": bool(ss.bt_c2on), "src2": ss.bt_src2,
-            "p2": int(ss.bt_p2), "op2": ss.bt_op2, "dir": ss.bt_dir, "slMode": ss.bt_slMode,
-            "slV": float(ss.bt_slV), "tpMode": ss.bt_tpMode, "tpV": float(ss.bt_tpV),
-            "maxBars": int(ss.bt_maxBars), "cap": float(ss.bt_cap), "risk": float(ss.bt_risk),
-            "comm": float(ss.bt_comm), "extra": en.normalize_conds(ss.bt_extra), "extra_min": _bt_xmin()}
+    cfg = {"sym": bt_symbol(), "yrs": int(ss.bt_yrs), "ind1": ss.bt_ind1, "p1": int(ss.bt_p1), "op1": ss.bt_op1,
+           "v1": float(ss.bt_v1), "logic": ss.bt_logic, "c2on": bool(ss.bt_c2on), "src2": ss.bt_src2,
+           "p2": int(ss.bt_p2), "op2": ss.bt_op2, "dir": ss.bt_dir, "slMode": ss.bt_slMode,
+           "slV": float(ss.bt_slV), "tpMode": ss.bt_tpMode, "tpV": float(ss.bt_tpV),
+           "maxBars": int(ss.bt_maxBars), "cap": float(ss.bt_cap), "risk": float(ss.bt_risk),
+           "comm": float(ss.bt_comm), "extra": en.normalize_conds(ss.bt_extra), "extra_min": _bt_xmin()}
+    k = ss.get("bt_strat")
+    if k in en.STRAT_PARAMS:       # v4.9: hazır strateji — özel kurallar yok sayılır (eski kayıtlar aynı kalır)
+        cfg.update({"strat": k, "sp": en.strat_params(k, {a: ss.get(w) for a, w in BT_SP_KEYS[k].items()}),
+                    "cf_weekly": bool(ss.get("bt_cf_weekly")), "cf_adx": bool(ss.get("bt_cf_adx")),
+                    "cf_regime": bool(ss.get("bt_cf_regime"))})
+    return cfg
 
 
 def _bt_xmin():
@@ -6804,6 +7055,14 @@ def _bt_load(cfg):
     for a, b in m.items():
         if a in cfg:
             ss[b] = copy.deepcopy(cfg[a])
+    k = cfg.get("strat")
+    ss.bt_strat = k if k in en.STRAT_PARAMS else "custom"
+    if k in en.STRAT_PARAMS:
+        for a, w in BT_SP_KEYS[k].items():
+            if a in (cfg.get("sp") or {}):
+                ss[w] = type(BT_WIDGETS[w])(cfg["sp"][a])
+        for a in ("cf_weekly", "cf_adx", "cf_regime"):
+            ss["bt_" + a] = bool(cfg.get(a))
     code = next((c for c, s, _ in md.BT_QUICK if s == cfg.get("sym")), None)
     ss.bt_inst, ss.bt_custom = (code, "") if code else ("AAPL", cfg.get("sym", ""))
     ss.pop("bt_pick", None)
@@ -6824,11 +7083,143 @@ def run_backtest(cfg_json, data_token=""):
     if any(c["Indicator"] == "Relative strength vs SPY (3M)" or c["Compare"] == "Relative strength vs SPY (3M)"
            for c in cfg.get("extra", [])):
         bench = md.get_history("SPY")["Close"]
-    res = en.backtest(df, cfg, cfg.get("extra"), bench)
+    if cfg.get("strat") in en.STRAT_PARAMS:
+        bench = md.get_history("SPY")["Close"] if cfg.get("cf_regime") else None
+        res = en.backtest_strategy(df, cfg, bench)
+    else:
+        res = en.backtest(df, cfg, cfg.get("extra"), bench)
+    if not res.get("ok"):
+        return res
     res["src"] = df.attrs.get("src", "real")
     d = md.get_company_detail(cfg["sym"]) if cfg["sym"] not in md.NAMES else None
     res["name"] = d["name"] if d else md.company_name(cfg["sym"])
     return res
+
+
+def _bt_custom_rules():
+    """Özel kurallar: gösterge koşulları, yön, stop / hedef (v4.9'dan önceki ayar paneli)."""
+    step_head(4, "Entry rules")
+    with st.container(border=True):
+        H('<div class="boxlbl">Indicator 1</div>')
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.selectbox("Indicator 1", en.IND1_OPTIONS, key="bt_ind1", label_visibility="collapsed")
+        with c2:
+            st.number_input("Period", min_value=2, max_value=100, step=1, key="bt_p1",
+                            label_visibility="collapsed", disabled=ss.bt_ind1 == en.IND1_OFF)
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.selectbox("Condition", list(en.OPS1), format_func=en.OPS1.get, key="bt_op1",
+                         label_visibility="collapsed", disabled=ss.bt_ind1 == en.IND1_OFF)
+        with c2:
+            st.number_input("Threshold", step=1.0, key="bt_v1", label_visibility="collapsed", format="%.1f",
+                            disabled=ss.bt_ind1 == en.IND1_OFF)
+    seg("Logic", ["and", "or"], "bt_logic", "and", fmt=lambda x: "AND" if x == "and" else "OR")
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 1], vertical_alignment="center")
+        with c1:
+            H('<div class="boxlbl">Indicator 2 · Trend filter</div>')
+        with c2:
+            st.checkbox("Use", key="bt_c2on")
+        c1, c2 = st.columns([0.7, 2], vertical_alignment="center")
+        with c1:
+            H('<b style="font-size:13px;color:#C4CAD4">Price</b>')
+        with c2:
+            st.selectbox("Position", ["above", "below"], key="bt_op2", label_visibility="collapsed",
+                         format_func={"above": "above", "below": "below"}.get, disabled=not ss.bt_c2on)
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.selectbox("Average", ["sma", "ema"], key="bt_src2", label_visibility="collapsed",
+                         format_func=str.upper, disabled=not ss.bt_c2on)
+        with c2:
+            st.number_input("Average period", min_value=2, max_value=250, step=1, key="bt_p2",
+                            label_visibility="collapsed", disabled=not ss.bt_c2on)
+    with st.expander(f"+ Add condition (MACD, Bollinger, Volume…){f' · {len(ss.bt_extra)} extra conditions' if ss.bt_extra else ''}",
+                     expanded=bool(ss.get("bt_show_extra"))):
+        cond_editor("bt_extra", "bt_extra_ver", "bt_ed")
+        n_ex = len([c for c in en.normalize_conds(ss.bt_extra) if c["Active"]])
+        if n_ex >= 2:
+            opts = [0] + list(range(n_ex - 1, 0, -1))
+            if ss.get("bt_xmin") not in opts:
+                ss.bt_xmin = 0
+            st.selectbox("How many of the extra conditions must hold?", opts, key="bt_xmin",
+                         format_func=lambda k: f"All ({n_ex}/{n_ex})" if k == 0 else f"At least {k}/{n_ex}")
+        st.caption("Extra conditions are added to the entry signal with AND; they apply the same way to short trades.")
+    H('<div class="hdr-line" style="margin:10px 0"></div>')
+    step_head(5, "Side")
+    seg("Side", ["long", "short", "both"], "bt_dir", "long",
+        fmt={"long": "Long only", "short": "Short only", "both": "Both"}.get)
+    st.caption("For short trades the conditions are mirrored (e.g. RSI < 30 → RSI > 70, price below the average).")
+    H('<div class="hdr-line" style="margin:10px 0"></div>')
+    step_head(6, "Exit rules")
+    H(f'<span style="font-size:12px;font-weight:700;color:{DOWN}">Stop loss</span>')
+    c1, c2 = st.columns([2.1, 1], vertical_alignment="center")
+    with c1:
+        seg("Stop type", ["pct", "atr"], "bt_slMode", "atr", fmt={"pct": "Fixed %", "atr": "ATR ×"}.get)
+    with c2:
+        st.number_input("Stop value", min_value=0.1, step=0.1, key="bt_slV", label_visibility="collapsed",
+                        format="%.1f")
+    H(f'<span style="font-size:12px;font-weight:700;color:{UP}">Take profit</span>')
+    c1, c2 = st.columns([2.1, 1], vertical_alignment="center")
+    with c1:
+        seg("Take-profit type", ["pct", "rr", "atr"], "bt_tpMode", "rr",
+            fmt={"pct": "Fixed %", "rr": "R multiple", "atr": "ATR ×"}.get)
+    with c2:
+        st.number_input("Take-profit value", min_value=0.1, step=0.1, key="bt_tpV", label_visibility="collapsed",
+                        format="%.1f")
+    st.number_input("Max. holding period (days, 0 = none)", min_value=0, step=1, key="bt_maxBars")
+
+
+def _bt_strategy_rules(k):
+    """v4.9: hazır stratejinin ayarları — parametreler, teyit filtreleri, yön / süre."""
+    H(strat_steps_html(k, {a: ss.get(w) for a, w in BT_SP_KEYS[k].items()}))
+    H('<div class="hdr-line" style="margin:10px 0"></div>')
+    step_head(4, "Parameters")
+    if k == "donchian2":
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.number_input("Direction channel (days)", min_value=40, max_value=300, step=5, key="bt_d_trend",
+                            help="A close above this N-day high switches the long side on.")
+        with c2:
+            st.number_input("Entry channel (days)", min_value=5, max_value=100, step=1, key="bt_d_entry",
+                            help="Every close above this N-day high is bought while the direction is on.")
+        with c3:
+            st.number_input("Stop channel (days)", min_value=5, max_value=100, step=1, key="bt_d_exit",
+                            help="The stop trails at this N-day low.")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.number_input("Advance at least (%)", min_value=10.0, max_value=200.0, step=5.0, key="bt_f_adv",
+                            format="%.0f", help="Size of the rise before the flag (low to high of the flagpole).")
+            st.number_input("Flag: min. candles", min_value=3, max_value=15, step=1, key="bt_f_min")
+            st.number_input("Flag: max. pullback (%)", min_value=5.0, max_value=45.0, step=1.0, key="bt_f_depth",
+                            format="%.0f", help="Deepest allowed drop from the base high inside the flag.")
+        with c2:
+            st.number_input("…within at most (days)", min_value=5, max_value=80, step=5, key="bt_f_pole",
+                            help="Longest allowed flagpole.")
+            st.number_input("Flag: max. candles", min_value=5, max_value=40, step=1, key="bt_f_max")
+            st.number_input("Breakout volume (× 20-day avg.)", min_value=1.0, max_value=5.0, step=0.1, key="bt_f_vol",
+                            format="%.1f")
+        st.number_input("First target (R multiple, 40 % is sold there)", min_value=0.5, max_value=6.0, step=0.5,
+                        key="bt_f_tp1", format="%.1f")
+    H('<div class="hdr-line" style="margin:10px 0"></div>')
+    step_head(5, "Confirmations", "optional")
+    st.checkbox("Weekly uptrend — close above the 30-week average", key="bt_cf_weekly",
+                help="Multi-timeframe check: only take signals while the last completed week closed above its "
+                     "30-week average.")
+    st.checkbox("Trend strength — ADX (14) at least 20", key="bt_cf_adx")
+    st.checkbox("Market regime — S&P 500 above its 50-day EMA", key="bt_cf_regime")
+    st.caption("Run the test with and without a confirmation to see whether it really improves the result.")
+    H('<div class="hdr-line" style="margin:10px 0"></div>')
+    step_head(6, "Side & time limit")
+    if k == "donchian2":
+        seg("Side", ["long", "short", "both"], "bt_dir", "long",
+            fmt={"long": "Long only", "short": "Short only", "both": "Both"}.get)
+        st.caption("Short side is the mirror image: a close below the direction channel's low switches it on, "
+                   "entries on a close below the entry channel's low, stop at the stop channel's high.")
+    else:
+        st.caption("Long only — the pattern is a continuation of a strong advance.")
+    st.number_input("Max. holding period (days, 0 = none)", min_value=0, step=1, key="bt_maxBars")
 
 
 def _bt_settings():
@@ -6863,78 +7254,16 @@ def _bt_settings():
             H(f'<div class="mono small" style="color:{DIM}">{dfh.index[-n_]:%b %d, %y} – {dfh.index[-1]:%b %d, %y}'
               f'{short}</div>')
         H('<div class="hdr-line" style="margin:10px 0"></div>')
-        step_head(3, "Entry rules")
-        with st.container(border=True):
-            H('<div class="boxlbl">Indicator 1</div>')
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.selectbox("Indicator 1", en.IND1_OPTIONS, key="bt_ind1", label_visibility="collapsed")
-            with c2:
-                st.number_input("Period", min_value=2, max_value=100, step=1, key="bt_p1",
-                                label_visibility="collapsed", disabled=ss.bt_ind1 == en.IND1_OFF)
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.selectbox("Condition", list(en.OPS1), format_func=en.OPS1.get, key="bt_op1",
-                             label_visibility="collapsed", disabled=ss.bt_ind1 == en.IND1_OFF)
-            with c2:
-                st.number_input("Threshold", step=1.0, key="bt_v1", label_visibility="collapsed", format="%.1f",
-                                disabled=ss.bt_ind1 == en.IND1_OFF)
-        seg("Logic", ["and", "or"], "bt_logic", "and", fmt=lambda x: "AND" if x == "and" else "OR")
-        with st.container(border=True):
-            c1, c2 = st.columns([2, 1], vertical_alignment="center")
-            with c1:
-                H('<div class="boxlbl">Indicator 2 · Trend filter</div>')
-            with c2:
-                st.checkbox("Use", key="bt_c2on")
-            c1, c2 = st.columns([0.7, 2], vertical_alignment="center")
-            with c1:
-                H('<b style="font-size:13px;color:#C4CAD4">Price</b>')
-            with c2:
-                st.selectbox("Position", ["above", "below"], key="bt_op2", label_visibility="collapsed",
-                             format_func={"above": "above", "below": "below"}.get, disabled=not ss.bt_c2on)
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.selectbox("Average", ["sma", "ema"], key="bt_src2", label_visibility="collapsed",
-                             format_func=str.upper, disabled=not ss.bt_c2on)
-            with c2:
-                st.number_input("Average period", min_value=2, max_value=250, step=1, key="bt_p2",
-                                label_visibility="collapsed", disabled=not ss.bt_c2on)
-        with st.expander(f"+ Add condition (MACD, Bollinger, Volume…){f' · {len(ss.bt_extra)} extra conditions' if ss.bt_extra else ''}",
-                         expanded=bool(ss.get("bt_show_extra"))):
-            cond_editor("bt_extra", "bt_extra_ver", "bt_ed")
-            n_ex = len([c for c in en.normalize_conds(ss.bt_extra) if c["Active"]])
-            if n_ex >= 2:
-                opts = [0] + list(range(n_ex - 1, 0, -1))
-                if ss.get("bt_xmin") not in opts:
-                    ss.bt_xmin = 0
-                st.selectbox("How many of the extra conditions must hold?", opts, key="bt_xmin",
-                             format_func=lambda k: f"All ({n_ex}/{n_ex})" if k == 0 else f"At least {k}/{n_ex}")
-            st.caption("Extra conditions are added to the entry signal with AND; they apply the same way to short trades.")
+        step_head(3, "Strategy")
+        st.selectbox("Strategy", list(BT_STRAT_NAME), key="bt_strat", format_func=BT_STRAT_NAME.get,
+                     label_visibility="collapsed")
+        if ss.bt_strat in en.STRAT_PARAMS:
+            _bt_strategy_rules(ss.bt_strat)
+        else:
+            H('<div class="hdr-line" style="margin:10px 0"></div>')
+            _bt_custom_rules()
         H('<div class="hdr-line" style="margin:10px 0"></div>')
-        step_head(4, "Side")
-        seg("Side", ["long", "short", "both"], "bt_dir", "long",
-            fmt={"long": "Long only", "short": "Short only", "both": "Both"}.get)
-        st.caption("For short trades the conditions are mirrored (e.g. RSI < 30 → RSI > 70, price below the average).")
-        H('<div class="hdr-line" style="margin:10px 0"></div>')
-        step_head(5, "Exit rules")
-        H(f'<span style="font-size:12px;font-weight:700;color:{DOWN}">Stop loss</span>')
-        c1, c2 = st.columns([2.1, 1], vertical_alignment="center")
-        with c1:
-            seg("Stop type", ["pct", "atr"], "bt_slMode", "atr", fmt={"pct": "Fixed %", "atr": "ATR ×"}.get)
-        with c2:
-            st.number_input("Stop value", min_value=0.1, step=0.1, key="bt_slV", label_visibility="collapsed",
-                            format="%.1f")
-        H(f'<span style="font-size:12px;font-weight:700;color:{UP}">Take profit</span>')
-        c1, c2 = st.columns([2.1, 1], vertical_alignment="center")
-        with c1:
-            seg("Take-profit type", ["pct", "rr", "atr"], "bt_tpMode", "rr",
-                fmt={"pct": "Fixed %", "rr": "R multiple", "atr": "ATR ×"}.get)
-        with c2:
-            st.number_input("Take-profit value", min_value=0.1, step=0.1, key="bt_tpV", label_visibility="collapsed",
-                            format="%.1f")
-        st.number_input("Max. holding period (days, 0 = none)", min_value=0, step=1, key="bt_maxBars")
-        H('<div class="hdr-line" style="margin:10px 0"></div>')
-        step_head(6, "Capital & risk")
+        step_head(7, "Capital & risk")
         c1, c2, c3 = st.columns(3)
         with c1:
             st.number_input("Capital ($)", min_value=100.0, step=1000.0, key="bt_cap", format="%.0f")
@@ -7025,19 +7354,40 @@ def _bt_results():
     T = res["trades"]
     with c1:
         with st.container(border=True):
-            ma_lbl = (f'{ss.bt_ran["src2"].upper()}({ss.bt_ran["p2"]})' if ss.bt_ran["c2on"] else "")
+            skey = res.get("strat")
+            ma_lbl = (f'{ss.bt_ran["src2"].upper()}({ss.bt_ran["p2"]})' if (ss.bt_ran["c2on"] and not skey) else "")
+            if skey == "donchian2":       # v4.9: kanallar çizilir — hangi çizgi neyi tetikliyor görülsün
+                extra_leg = "".join(f'<span><i style="background:{ln["color"]}"></i>{esc(ln["name"])}</span>'
+                                    for ln in res.get("lines") or [])
+            elif skey == "flag":
+                extra_leg = (f'<span><i style="background:{en.C_POLE}"></i>Advance</span><span><i style="background:'
+                             f'{en.C_FLAG};height:8px;opacity:.6"></i>Flag</span>')
+            else:
+                extra_leg = (f'<span><i style="background:{ACCENT if ma_lbl else "#3A404A"}"></i>'
+                             f'{esc(ma_lbl or "Average off")}</span>')
             H(f'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px">'
               f'<span class="panel-title">Price &amp; Trades</span><span class="legend"><span><i style="background:'
               f'{UP};width:9px;height:9px;border-radius:50%"></i>Long entry</span><span><i style="background:{WARN};'
               f'width:9px;height:9px;border-radius:50%"></i>Short entry</span><span><i style="background:transparent;'
               f'border:2px solid {TXT};width:9px;height:9px;border-radius:50%;box-sizing:border-box"></i>Exit</span>'
-              f'<span><i style="background:{ACCENT if ma_lbl else "#3A404A"}"></i>{esc(ma_lbl or "Average off")}'
-              f'</span></span></div>')
+              f'{extra_leg}</span></div>')
             fig = go.Figure(go.Scatter(x=res["price"].index, y=res["price"], mode="lines", name="Close",
                                        line=dict(color=SOFT, width=1.3)))
             if res["ma"] is not None:
                 fig.add_trace(go.Scatter(x=res["ma"].index, y=res["ma"], mode="lines", name=ma_lbl,
                                          line=dict(color=ACCENT, width=1.4)))
+            for ln in res.get("lines") or []:
+                fig.add_trace(go.Scatter(x=ln["s"].index, y=ln["s"], mode="lines", name=ln["name"],
+                                         line=dict(color=ln["color"], width=1.3, dash=ln.get("dash"), shape="hv")))
+            for bx in (res.get("boxes") or [])[-40:]:
+                fig.add_trace(go.Scatter(x=[bx["q"], bx["p"]], y=[bx["pole_lo"], bx["hi"]], mode="lines",
+                                         name=f'Advance +{tr(bx["adv"], 0)}%', showlegend=False, hoverinfo="skip",
+                                         line=dict(color=en.C_POLE, width=2.5)))
+                fig.add_trace(go.Scatter(x=[bx["p"], bx["b"], bx["b"], bx["p"], bx["p"]],
+                                         y=[bx["lo"], bx["lo"], bx["hi"], bx["hi"], bx["lo"]], mode="lines",
+                                         fill="toself", fillcolor="rgba(34,211,238,.16)", showlegend=False,
+                                         name=f'Flag · {bx["f"]} candles', hoverinfo="skip",
+                                         line=dict(color=en.C_FLAG, width=1)))
             for side, color_, nm in ((True, UP, "Long entry"), (False, WARN, "Short entry")):
                 tt = [t for t in T if t["long"] == side]
                 if tt:
@@ -7046,7 +7396,7 @@ def _bt_results():
             if T:
                 fig.add_trace(go.Scatter(x=[t["xd"] for t in T], y=[t["exit"] for t in T], mode="markers", name="Exit",
                                          marker=dict(color=PANEL, size=7, line=dict(color=TXT, width=2))))
-            plot(_layout(fig, 250), config=CHART_CFG, key="bt_px")
+            plot(_layout(fig, 320 if skey else 250), config=CHART_CFG, key="bt_px")
     with c2:
         with st.container(border=True):
             H('<div style="display:flex;justify-content:space-between;align-items:center"><span class="panel-title">'
@@ -7070,7 +7420,8 @@ def _bt_results():
         with h2:
             tf = seg("Trade filter", ["All", "Winners", "Losers"], "w_bttf", "All")
         RS = {"TP": ("Target", UP, UP_BG), "SL": ("Stop", DOWN, DOWN_BG), "Time": ("Time exit", WARN, WARN_BG),
-              "Open": ("Open", NEU, NEU_BG)}
+              "Open": ("Open", NEU, NEU_BG), "TP1": ("Target 1 · 40 %", UP, UP_BG), "TP2": ("Target 2", UP, UP_BG),
+              "Trail": ("Channel stop", ACCENT, ACC_BG), "BE": ("Break-even stop", NEU, NEU_BG)}
         numbered = [(i + 1, t) for i, t in enumerate(T)]
         shown = [(no, t) for no, t in numbered if tf == "All" or (tf == "Winners") == (t["pnl"] > 0)][::-1][:150]
         with h3:
@@ -7095,21 +7446,29 @@ def _bt_results():
                      f'{pct(t["ret"])}</td><td style="color:{c_}">{chg(t["R"])}R</td><td style="font-weight:600;color:{c_}">'
                      f'{"+" if t["pnl"] >= 0 else ""}{money(t["pnl"], cur)}</td></tr>')
         empty = ("" if rows else '<div class="muted" style="padding:28px;text-align:center">No trades were generated with these '
-                 'settings. Try loosening the threshold or turning off the 2nd condition.</div>')
+                 + ('settings. This setup is rare on a single symbol — try a longer period, a smaller advance / shorter '
+                    'channels, or turn off the confirmations.</div>' if res.get("strat") else
+                    'settings. Try loosening the threshold or turning off the 2nd condition.</div>'))
         H(f'<div class="tt-wrap"><table class="jt" style="min-width:820px"><thead><tr><th>#</th><th style="text-align:'
           f'left">Side</th><th style="text-align:left">Entry date</th><th>Entry</th><th style="text-align:left">'
           f'Exit date</th><th>Exit</th><th style="text-align:left">Reason</th><th>Duration</th><th>Return</th><th>R</th>'
           f'<th>P/L</th></tr></thead><tbody>{rows}</tbody></table>{empty}</div><div class="muted small" '
           f'style="border-top:1px solid {LINE};padding-top:10px;margin-top:6px;line-height:1.5">Signals form on the candle '
           f'close; the trade is entered at the next candle\'s open. If stop and target are both hit in the same candle, '
-          f'the stop is assumed. Past performance does not guarantee future results.</div>')
+          f'the stop is assumed.'
+          + (' With a first target, 40 % of the position is sold there and listed as its own row; the stop on the '
+             'rest moves to the entry.' if res.get("strat") == "flag" else
+             ' The channel stop is recalculated every day and only ever moves in the trade\'s favour.'
+             if res.get("strat") == "donchian2" else "")
+          + ' Past performance does not guarantee future results.</div>')
 
 
 def render_backtest():
     t1, t2 = st.columns([2.2, 2.2], vertical_alignment="bottom")
     with t1:
         H('<div class="kicker">Backtest · Find your strategy</div><div class="page-title">Strategy Lab</div>'
-          '<div class="muted">Combine indicators, define entry and exit rules, test on historical data.</div>')
+          '<div class="muted">Test a ready-made strategy (Double Donchian, Flag) or combine indicators into your '
+          'own entry and exit rules — on historical data.</div>')
     with t2:
         b0, b1, b2 = st.columns([1.5, 1.2, 1.2], vertical_alignment="center")
         with b0:
