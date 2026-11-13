@@ -1,4 +1,62 @@
-# Pulse — Market Dashboard (Streamlit) · v4.9
+# Pulse — Market Dashboard (Streamlit) · v5.0
+
+## Neu in v5.0 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py`, `pulse_chart/index.html` **und
+`pulse_list/index.html`** hochladen (die alte `pulse_list`-Datei unbedingt ersetzen — liegt dort eine alte
+Version, wird sie weiter benutzt), dann *Reboot app*. Keine neuen Secrets.
+Neu: Die Listen-Komponente ist jetzt zusätzlich **in `chart.py` eingebaut** — fehlt der Ordner `pulse_list`
+komplett, schreibt die App sie beim Start selbst. Drag & Drop funktioniert also in jedem Fall, und der alte
+Hinweis „Upload pulse_list/index.html …“ ist entfernt.
+
+### Vor- und nachbörsliche Kurse (wie TradingView)
+* **Überall:** Markets (Indexkarten, großer Kurs-Kopf, Top Movers, Watchlist), Short Term (Tabelle und
+  Detailkarte), Valuation-Kopf, Long Term (neue Spalte „Pre / post market“ bei den Cheap Companies) und
+  Demo Account (Demo-Watchlist, Open Positions unter „Last“, Order Ticket neben „Price“).
+* **Kennzeichnung:** ☀️ (gelb/orange) = Pre-Market 04:00–09:30 ET · 🌙 (blau/violett) = After-Hours ab
+  16:00 ET. Nachts und am Wochenende bleibt der letzte 🌙-Kurs stehen — wie bei TradingView.
+* **Darstellung:** Der reguläre Kurs steht groß darüber bzw. daneben (im Kopf mit „At close“, solange die
+  Börse zu ist); die ☀️/🌙-Zeile zeigt Kurs + absolute und prozentuale Veränderung **gegenüber dem regulären
+  Schlusskurs**, grün bei +, rot bei −, immer einzeilig (kein Umbruch, keine Überlappung, 12 px Abstand,
+  in Tabellen rechtsbündig). Fährt man mit der Maus darüber, steht dort auch die Uhrzeit des letzten
+  außerbörslichen Trades (ET).
+* **Datenquelle:** letzte 1-Minuten-Kerze inklusive Pre/Post (höchstens ~60 s alt). Ausreißer über ±60 %
+  werden verworfen; ohne Daten erscheint einfach keine Zeile. Mock-Kurse bekommen nie eine ☀️/🌙-Zeile.
+* **Wichtig:** Gehandelt (Demo-Orders, SL/TP) wird weiterhin zum regulären bzw. Live-Kurs — die
+  ☀️/🌙-Zeilen sind reine Anzeige.
+
+### Tagesprozente repariert
+Bisher konnten Kurs und Tagesprozent aus verschiedenen Quellen stammen — am deutlichsten im großen
+Kurs-Kopf: Dort kam der Kurs nachbörslich schon vom After-Hours-Handel, der Prozentsatz aber vom regulären
+Tag (oder umgekehrt). Jetzt gilt überall: **Kurs und Prozent sind immer dasselbe Paar** (letzter regulärer
+Kurs ÷ Vortagesschluss), auch in den Short-Term-Zeilen (dort kommt das Prozent jetzt aus denselben
+Tageskerzen wie der Kurs statt aus dem älteren Börsen-Screener). Alles Außerbörsliche steht getrennt in der
+☀️/🌙-Zeile.
+
+### Watchlist: flüssiges Sortieren
+* **Ziehen am ganzen Eintrag:** Festhalten direkt auf Logo, Name oder Kurs — mit der Maus beginnt das
+  Ziehen nach 6 px Bewegung (ein normaler Klick öffnet weiter den Chart), auf iPad/Handy mit
+  **Gedrückthalten (~0,3 s) und Ziehen**; schnelles Wischen scrollt die Liste ganz normal. Der ⋮⋮-Griff
+  zieht wie bisher sofort.
+* Beim Ziehen hebt sich die Zeile mit Schatten und leichtem Zoom ab, die anderen Einträge weichen per
+  Transition aus; am Rand scrollt die Liste automatisch weiter.
+* **↑ / ↓ ohne Seiten-Reload:** Die Pfeile (und das Ziehen) sortieren nur noch innerhalb der Liste um und
+  speichern die Reihenfolge **still** — die Seite wird nicht mehr neu aufgebaut und springt nicht mehr an
+  den Anfang. Gespeichert wird sofort (Profil bzw. Demo-Konto) und bleibt beim Neuladen erhalten.
+* Gilt für die Markets-Watchlist und „My demo watchlist“ im Demo Account.
+
+### Demo Account: Zahnrad-Button
+Der ⚙-Button neben dem Konto-Dropdown ist jetzt ein sauberes 44 × 44-px-Quadrat auf Höhe des Dropdowns,
+das Zahnrad exakt zentriert (kein gequetschter Rand, der Dropdown-Pfeil im Button ist ausgeblendet).
+
+**Getestet:** 63 Szenarien in 4 Modi (online/offline × neue/alte Streamlit-Version) — darunter
+Seansphasen-Logik, ☀️/🌙 auf jeder Seite, Prozent-Konsistenz im Kopf und in den Short-Term-Zeilen,
+stilles Sortieren ohne Rerun und die Byte-Gleichheit der eingebetteten Komponente; Browser-Test der Liste
+(Ziehen am Logo/Namen mit Maus und Touch-Longpress, Wisch-Scroll bleibt erhalten, Klick öffnet weiter,
+☀️/🌙-Zeile ohne Überlappung bei 330–760 px); 28 Chart-Schritte; Abstands-Tests. Die ☀️/🌙-Zeilen in den
+Screenshots sind simulierte Daten (die Testumgebung hat keinen Live-Pre/Post-Feed).
+
+---
 
 ## Neu in v4.9 (Deutsch)
 
