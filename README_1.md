@@ -1,4 +1,75 @@
-# Pulse — Market Dashboard (Streamlit) · v5.0
+# Pulse — Market Dashboard (Streamlit) · v5.1
+
+## Neu in v5.1 (Deutsch)
+
+**Dateien:** `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py`, `pulse_chart/index.html`
+hochladen, dann *Reboot app*. `pulse_list/index.html` ist unverändert (bleibt auf 5.0). Keine neuen Secrets.
+
+### Zwei neue Strategien — in Short Term, bei den Bots und im Backtest
+
+**☁️ Ichimoku — Kumo-Breakout mit Kijun-Trail (und Kijun-Bounce)**
+1. *Einstieg (Breakout, alles auf Schlusskursbasis):* Schlusskurs **über der Wolke** (über Senkou A **und**
+   B), **Tenkan über Kijun**, **Chikou-Bestätigung** (heutiger Schluss über dem Schluss vor 26 Kerzen) und
+   **nicht hinterherlaufen**: höchstens 2 ATR Abstand zum Kijun.
+2. *Stop:* anfangs knapp unter dem Kijun (Kijun − 0,25 ATR).
+3. *Trailing/Ausstieg:* Kein Kursziel — raus, **sobald ein Schlusskurs unter dem Kijun liegt** (verkauft wird
+   zur nächsten Eröffnung, wie es auf Tageskerzen realistisch ist).
+4. *Zweiter Einstieg (Kijun-Bounce):* Läuft der Trend (Kurs über der Wolke, Chikou frei), wird der Rücksetzer
+   an den Kijun gekauft, sobald der Kurs **wieder über dem Tenkan schließt**. Abschaltbar.
+5. *Markt-Presets* (im Bot-Formular und im Backtest wählbar): **Gold/Silber** 9/26/52, nur long, zusätzlich
+   Wochenschluss über der Wochen-Wolke · **Öl** 9/26/52 long **und** short (gespiegelt), ADX > 20 ·
+   **Bitcoin**: drei Varianten 9/26/52, 10/30/60, 20/60/120 — der Backtest kann sie **direkt vergleichen**
+   (Checkbox „Compare the three Bitcoin variants“): gleiche Regeln, gleicher Zeitraum, eine Tabelle mit
+   Trades/Trefferquote/Netto/Buy & Hold/Drawdown/Profitfaktor. Genau das, was deine zitierten Tests sagen:
+   das Signal allein reicht nicht, der Vorteil kommt aus Filter, Stop und Trailing — hier sieht man es.
+6. *Hinweis zu den Bots:* Der Bot zieht den Stop täglich auf den aktuellen Kijun nach (nur nach oben, nie
+   runter) — eine Sicherheits-Vereinfachung der exakten „Schluss unter Kijun“-Regel. Der **Backtest**
+   rechnet die exakte Regel.
+
+**🌊 WaveTrend — Crosses + Volumen + Nadaraya-Watson-Envelope** (Design war mir überlassen; so funktioniert
+sie am besten):
+1. *Ausverkauf:* WaveTrend (10/21) unter −53 — es wird nur der ausgewaschene Rücksetzer gekauft, nicht jedes
+   Kreuz.
+2. *Am Band:* Der Kurs berührt oder unterschreitet das **untere Nadaraya-Watson-Band** (Gauß-Kernel,
+   ±2,5-faches mittleres Fehlerband). Wichtig: **Endpoint-Methode ohne Repainting** — jede Kerze wird nur aus
+   ihrer eigenen Vergangenheit gerechnet; das klassische NW-Envelope malt rückwirkend um und würde im
+   Backtest schummeln (im Test nachgewiesen: Werte ändern sich nicht, wenn Zukunftsdaten dazukommen).
+3. *Auslöser:* WaveTrend kreuzt über seine Signallinie **und** das Volumen liegt mindestens 1,2× über dem
+   20-Tage-Schnitt — ohne Volumen kein Kauf.
+4. *Ziele:* TP1 an der **NW-Mittellinie** (40 % Verkauf, Stop auf Einstand), Rest läuft zum oberen Band.
+5. *Stop:* unter dem Tief des Rücksetzers; Ausstieg außerdem, wenn WaveTrend über null wieder nach unten
+   kreuzt.
+
+Beide Strategien haben wie die bisherigen: eigene Erklärkarte mit Regel-Schritten, Scan-Tabelle mit
+Status (Breakout/Armed/Kijun-Bounce …), bewertete Bestätigungs-Checks (Multi-Timeframe, Indikatoren,
+Formationen, Markt), eigene **Chart-Einzeichnung** (Wolke, Tenkan/Kijun, Breakout-/Bounce-Punkte bzw.
+NW-Envelope, Mittellinie, Cross-Punkte, Stop) und volle **Bot**- und **Backtest**-Unterstützung
+(im Backtest-Chart inklusive Wolke bzw. NW-Bändern und Exit-Gründen „Close below the Kijun“ /
+„WaveTrend cross down“).
+
+### Aufgeräumte, professionellere Charts
+* **Kerzen zuerst:** Levels, Zonen und Formations-Flächen liegen jetzt **hinter** den Kerzen (zweistufiges
+  Zeichnen) — keine zugedeckten Kerzen mehr. Linien von Formationen sind dünner gedeckelt und leicht
+  transparent.
+* **Dezentere Levels:** Support/Resistance feiner gestrichelt und blasser, Zonen-Füllungen und
+  Stärke-Balken deutlich zurückgenommen.
+* **Keine Label-Überlappung:** Alle Beschriftungen (Levels, Formationen, Strategie-Linien) laufen durch
+  eine Spur-Verwaltung, die sie automatisch versetzt statt übereinander zu stapeln.
+* **Bei aktiver Strategie-Zeichnung** wird zusätzlich entrümpelt: höchstens 3 starke Zonen, nur offene
+  Order-Blocks — die Strategie steht im Vordergrund.
+
+**Getestet:** 65 Szenarien in 4 Modi (online/offline × neue/alte Streamlit-Version) — darunter die
+Ichimoku-Mathematik gegen Handrechnung (Wolken-Verschiebung ohne Blick in die Zukunft), alle vier
+Einstiegsregeln einzeln, Bounce an- und abschaltbar, ATR-Abstandsregel, Presets inkl. automatischem
+Umschalten der Felder, der Bitcoin-Varianten-Vergleich, die exakte Kijun-Exit-Regel im Backtest
+(Schluss unter Kijun → Verkauf zur nächsten Eröffnung), Short-Spiegelung, Wochen-Wolken-Filter nur mit
+abgeschlossenen Wochen, NW-Repaint-Freiheit, Volumen-Pflicht beim WaveTrend-Kauf und die kompletten
+Bot-Abläufe (Kauf mit Kijun-Trail, Stop-Anhebung mit Log-Eintrag, Verkauf als „Trailing Stop“).
+Dazu 28 Chart-Schritte im echten Browser und Render-Checks der neuen Zeichnungen („label problems:
+none“). Ehrliche Einschränkungen: Der Plotly-Backtest-Chart läuft in der Testumgebung nur gegen eine
+Attrappe, und die Chart-Screenshots nutzen synthetische Kursdaten.
+
+---
 
 ## Neu in v5.0 (Deutsch)
 
