@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="pulse-ui" content="5.0">
+<meta name="pulse-ui" content="5.1">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Pulse Chart</title>
 <style id="baseCss">
@@ -588,8 +588,9 @@ function draw(){
   S.lane=[]; S.patLbl=[]; S.drawn=[];   // v4.2: etiketler önce toplanır, sonra çakışmasız yerleştirilir
   for(const p of S.panes){
     ctx.save(); ctx.beginPath(); ctx.rect(0,p.top,S.plotW,p.h); ctx.clip();
-    if(p.id==="price"){ drawZones(p); drawGaps(p); drawOB(p); drawPrice(p); drawOverlays(p); drawDivPrice(p);
-      drawPrints(p); drawPatterns(p); drawLevels(p); drawMarks(p); }
+    if(p.id==="price"){ drawZones(p); drawGaps(p); drawOB(p); drawLevels(p); drawPatterns(p,"bg");
+      drawPrice(p); drawOverlays(p); drawDivPrice(p);
+      drawPrints(p); drawPatterns(p,"fg"); drawMarks(p); }
     else if(p.id==="vol") drawVol(p);
     else if(p.id==="rsi") drawRSI(p);
     else if(p.id==="stoch") drawStoch(p);
@@ -791,7 +792,7 @@ function drawLevels(p){
   for(const l of lv){
     const y=Y(p,l.price); if(!isFinite(y)||y<p.top||y>p.top+p.h) continue;
     const col=l.color||ACCENT, x0=l.from==null?0:Math.max(0,X(l.from));
-    ctx.setLineDash([6,4]); ctx.strokeStyle=hexa(col,.9); ctx.lineWidth=1.4;
+    ctx.setLineDash([5,4]); ctx.strokeStyle=hexa(col,.62); ctx.lineWidth=1.1;
     ctx.beginPath(); ctx.moveTo(x0,Math.round(y)+0.5); ctx.lineTo(S.plotW,Math.round(y)+0.5); ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -802,8 +803,8 @@ function drawLevels(p){
   if(st&&en&&tp){
     const xs=Math.max(0,X(en.from==null?S.bars.length-20:en.from));
     const ye=Y(p,en.price), ys=Y(p,st.price), yt=Y(p,tp.price);
-    ctx.fillStyle=hexa(DOWN,.06); ctx.fillRect(xs,Math.min(ye,ys),S.plotW-xs,Math.abs(ys-ye));
-    ctx.fillStyle=hexa(UP,.06); ctx.fillRect(xs,Math.min(ye,yt),S.plotW-xs,Math.abs(yt-ye));
+    ctx.fillStyle=hexa(DOWN,.045); ctx.fillRect(xs,Math.min(ye,ys),S.plotW-xs,Math.abs(ys-ye));
+    ctx.fillStyle=hexa(UP,.045); ctx.fillRect(xs,Math.min(ye,yt),S.plotW-xs,Math.abs(yt-ye));
   }
   ctx.restore();
 }
@@ -1106,19 +1107,20 @@ function drawZones(p){
     if(Math.max(y1,y2)<p.top-30||Math.min(y1,y2)>p.top+p.h+30) continue;
     const x0=Math.max(0,X(z.start)), h=Math.max(9,Math.abs(y2-y1)), top=Math.min(y1,y2);
     const res=z.kind==="res", base=res?cRes:cSup;
-    const a=z.weak?0.10:0.17;
+    const a=z.weak?0.055:0.10;
     ctx.fillStyle=hexa(base,a);
     ctx.fillRect(x0,top,S.plotW-x0,h);
-    ctx.strokeStyle=hexa(base,.5);
+    ctx.strokeStyle=hexa(base,.34);
     ctx.lineWidth=1; ctx.beginPath();
     ctx.moveTo(x0,Math.round(top)+0.5); ctx.lineTo(S.plotW,Math.round(top)+0.5);
     ctx.moveTo(x0,Math.round(top+h)-0.5); ctx.lineTo(S.plotW,Math.round(top+h)-0.5); ctx.stroke();
     // güç çubuğu + etiket
-    const bwid=Math.min(170,(S.plotW-x0)*0.5)*z.pct/100;
-    ctx.fillStyle=hexa(base,.42);
-    ctx.fillRect(x0,top,bwid,Math.min(h,13));
-    ctx.fillStyle="#FFFFFF"; ctx.textAlign="left";
-    if(bwid>28) ctx.fillText(z.pct+"%",x0+5,top+Math.min(h,13)/2);
+    const bwid=Math.min(120,(S.plotW-x0)*0.35)*z.pct/100;
+    ctx.fillStyle=hexa(base,.30);
+    ctx.fillRect(x0,top,bwid,Math.min(h,10));
+    ctx.fillStyle=hexa("#FFFFFF",.85); ctx.textAlign="left"; ctx.font="9.5px sans-serif";
+    if(bwid>30) ctx.fillText(z.pct+"%",x0+5,top+Math.min(h,10)/2);
+    ctx.font="10px sans-serif";
     // v4.2: etiket sağ şeride gider (çakışmasız); bandın görünen kısmının ortasına bağlanır
     const vt=Math.max(top,p.top), vb=Math.min(top+h,p.top+p.h);
     if(vb>vt) laneAdd((vt+vb)/2, z.label, base, z.weak?1:3,
@@ -1170,18 +1172,23 @@ function drawOB(p){
   }
   ctx.restore();
 }
-function drawPatterns(p){
+function drawPatterns(p,pass){
+  /* v5.1: iki geçiş — "bg": dolgular mumların ALTINA (kerzeler hep görünür kalır),
+     "fg": çizgiler, noktalar, etiketler mumların üstüne ama yarı saydam ve ince. */
   if(!ovOn("patterns")||!(S.ov.patterns||[]).length) return;
   ctx.save(); ctx.lineJoin="round"; ctx.textBaseline="middle";
   for(const pt of S.ov.patterns){
     const col=pt.color||"#F5B544";
-    if(pt.fill&&pt.fill.length>2){
-      ctx.beginPath();
-      pt.fill.forEach(function(q,k){ const x=X(q[0]+.5), y=Y(p,q[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-      ctx.closePath(); ctx.fillStyle=hexa(col,.08); ctx.fill();
+    if(pass!=="fg"){
+      if(pt.fill&&pt.fill.length>2){
+        ctx.beginPath();
+        pt.fill.forEach(function(q,k){ const x=X(q[0]+.5), y=Y(p,q[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+        ctx.closePath(); ctx.fillStyle=hexa(col,pt.soft?.055:.08); ctx.fill();
+      }
+      continue;
     }
     for(const ln of (pt.lines||[])){
-      ctx.beginPath(); ctx.lineWidth=ln.w||2; ctx.strokeStyle=ln.c||col;
+      ctx.beginPath(); ctx.lineWidth=Math.min(ln.w||2,2.6); ctx.strokeStyle=hexa(ln.c||col,.82);
       ctx.setLineDash(ln.dash?[6,5]:[]);
       (ln.pts||[]).forEach(function(q,k){ const x=X(q[0]+.5), y=Y(p,q[1]); k?ctx.lineTo(x,y):ctx.moveTo(x,y); });
       ctx.stroke();
