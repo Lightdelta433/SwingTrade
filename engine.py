@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "5.0"
+ENGINE_VERSION = "5.1"
 NAN = float("nan")
 
 
@@ -5331,15 +5331,38 @@ def bot_manage(pos, bars, cfg=None, now=None):
 #   hedef), checks (çoklu zaman dilimi + gösterge + formasyon teyitleri), skor. Böylece Short Term listesi,
 #   botlar, grafik çizimi ve backtest aynı tanımdan beslenir.
 # ======================================================================
-STRAT_KEYS = ["ai", "donchian2", "flag"]
+STRAT_KEYS = ["ai", "donchian2", "flag", "ichimoku", "wavetrend"]
 STRAT_PARAMS = {
     "donchian2": {"n_trend": 120, "n_entry": 20, "n_exit": 20},
     "flag": {"min_adv": 30.0, "pole_max": 40, "flag_min": 5, "flag_max": 15, "max_depth": 25.0,
              "max_retr": 50.0, "vol_x": 1.5, "tp1_r": 2.0},
+    # v5.1 — Ichimoku: Kumo kırılımı + Kijun geri çekilmesi, Kijun izleme çıkışı (kapanış esaslı)
+    "ichimoku": {"tenkan": 9, "kijun": 26, "senkou": 52, "max_atr": 2.0, "bounce": 1},
+    # v5.1 — WaveTrend kesişimi + hacim + Nadaraya-Watson bandı (uç nokta yöntemi, geleceğe bakmaz)
+    "wavetrend": {"n1": 10, "n2": 21, "os": 53, "vol_x": 1.2, "nw_h": 8.0, "nw_mult": 2.5, "nw_win": 120},
 }
 STRAT_LIMITS = {"n_trend": (40, 300), "n_entry": (5, 100), "n_exit": (5, 100), "min_adv": (10.0, 200.0),
                 "pole_max": (5, 80), "flag_min": (3, 15), "flag_max": (5, 40), "max_depth": (5.0, 45.0),
-                "max_retr": (20.0, 80.0), "vol_x": (1.0, 5.0), "tp1_r": (0.5, 6.0)}
+                "max_retr": (20.0, 80.0), "vol_x": (1.0, 5.0), "tp1_r": (0.5, 6.0),
+                "tenkan": (5, 60), "kijun": (10, 120), "senkou": (20, 240), "max_atr": (0.5, 6.0),
+                "bounce": (0, 1), "n1": (4, 30), "n2": (8, 60), "os": (30, 80),
+                "nw_h": (2.0, 20.0), "nw_mult": (1.0, 4.0), "nw_win": (40, 400)}
+# Piyasa ön ayarları (Ichimoku): aynı kural seti, ayarlar piyasaya göre değişir
+ICHI_PRESETS = {
+    "standard": {"label": "Standard · 9 / 26 / 52", "sp": {"tenkan": 9, "kijun": 26, "senkou": 52},
+                 "dir": "long", "cf_weekly": False, "cf_adx": False},
+    "gold": {"label": "Gold / Silver · 9 / 26 / 52 · long only · weekly-cloud filter",
+             "sp": {"tenkan": 9, "kijun": 26, "senkou": 52}, "dir": "long", "cf_weekly": True, "cf_adx": False},
+    "oil": {"label": "Oil · 9 / 26 / 52 · long + short · ADX ≥ 20",
+            "sp": {"tenkan": 9, "kijun": 26, "senkou": 52}, "dir": "both", "cf_weekly": False, "cf_adx": True},
+    "btc1030": {"label": "Bitcoin · 10 / 30 / 60 (24/7 markets)", "sp": {"tenkan": 10, "kijun": 30, "senkou": 60},
+                "dir": "long", "cf_weekly": False, "cf_adx": False},
+    "btc2060": {"label": "Bitcoin · 20 / 60 / 120 (slow)", "sp": {"tenkan": 20, "kijun": 60, "senkou": 120},
+                "dir": "long", "cf_weekly": False, "cf_adx": False},
+}
+ICHI_VARIANTS = [("9 / 26 / 52", {"tenkan": 9, "kijun": 26, "senkou": 52}),
+                 ("10 / 30 / 60", {"tenkan": 10, "kijun": 30, "senkou": 60}),
+                 ("20 / 60 / 120", {"tenkan": 20, "kijun": 60, "senkou": 120})]
 ST_FRESH = 3          # kırılım kaç gün "taze" sayılır (liste rozeti)
 ST_BOT_FRESH = 1      # bot en geç kaç gün sonra hâlâ alır
 C_TREND, C_ENTRY, C_STOP, C_ON, C_POLE, C_FLAG = "#A78BFA", "#F5B544", "#F87171", "#3DDC97", "#3DDC97", "#22D3EE"
@@ -5361,6 +5384,13 @@ def strat_params(key, over=None):
         base["flag_max"] = base["flag_min"]
     if key == "donchian2" and base["n_trend"] <= base["n_entry"]:
         base["n_trend"] = base["n_entry"] + 1
+    if key == "ichimoku":
+        if base["kijun"] <= base["tenkan"]:
+            base["kijun"] = base["tenkan"] + 1
+        if base["senkou"] <= base["kijun"]:
+            base["senkou"] = base["kijun"] + 1
+    if key == "wavetrend" and base["n2"] <= base["n1"]:
+        base["n2"] = base["n1"] + 1
     return base
 
 
@@ -5398,6 +5428,42 @@ def strat_info(key, params=None):
                           ("Exit", "Sell 40%% at %sR (the stop then moves to the entry); the rest runs to the "
                                    "measured move — the height of the advance added to the breakout."
                            % fmt_num(P["tp1_r"], 1), C_ON)]}
+    if key == "ichimoku":
+        P = strat_params(key, params)
+        t_, k_, sn = P["tenkan"], P["kijun"], P["senkou"]
+        return {"key": key, "name": "Ichimoku Kumo breakout", "icon": "☁️", "targets": False,
+                "long": "Ichimoku — Kumo breakout with Kijun trail (%d / %d / %d)" % (t_, k_, sn),
+                "tagline": "One rule set for every market — only the settings change (gold / silver long only "
+                           "with the weekly-cloud filter, oil long + short with ADX ≥ 20, Bitcoin with the "
+                           "9/26/52, 10/30/60 or 20/60/120 variants). Everything on closing prices.",
+                "steps": [("Breakout", "Close above the cloud (above Senkou A and B) with Tenkan (%d) above "
+                                       "Kijun (%d)." % (t_, k_), C_TREND),
+                          ("Chikou check", "Today's close is above the close %d candles ago — the past is not "
+                                           "in the way." % k_, C_FLAG),
+                          ("Not chasing", "Entry only while price is at most %s ATR above the Kijun, so the "
+                                          "risk / reward stays sensible." % fmt_num(P["max_atr"], 1), C_ENTRY),
+                          ("Second entry", "Kijun bounce: in a running trend, buy the pullback to the Kijun once "
+                                           "price closes back above the Tenkan." + ("" if P["bounce"] else
+                                           " (switched off)"), C_ON),
+                          ("Exit", "Initial stop just below the Kijun; afterwards trail — out as soon as a close "
+                                   "is below the Kijun. No price target.", C_STOP)]}
+    if key == "wavetrend":
+        P = strat_params(key, params)
+        return {"key": key, "name": "WaveTrend + NW envelope", "icon": "🌊", "targets": True,
+                "long": "WaveTrend cross + volume + Nadaraya-Watson envelope (%d / %d)" % (P["n1"], P["n2"]),
+                "tagline": "Buys the washed-out dip: the WaveTrend oscillator turns up in oversold territory "
+                           "right where price touches the lower Nadaraya-Watson band, confirmed by volume. "
+                           "The band is computed without look-ahead (endpoint method, no repainting).",
+                "steps": [("Oversold", "WaveTrend (%d / %d) is below −%d — the selling is stretched."
+                           % (P["n1"], P["n2"], int(P["os"])), C_TREND),
+                          ("At the band", "Price touches or dips below the lower Nadaraya-Watson envelope "
+                                          "(Gaussian kernel, ±%s× mean error)." % fmt_num(P["nw_mult"], 1), C_FLAG),
+                          ("Trigger", "WaveTrend crosses back above its signal line, with volume at least %s× "
+                                      "the 20-day average." % fmt_num(P["vol_x"], 1), C_ENTRY),
+                          ("Targets", "Sell 40% at the NW mid-line (stop moves to the entry); the rest runs to "
+                                      "the upper band.", C_ON),
+                          ("Stop", "Below the low of the dip — and out early if WaveTrend crosses down again "
+                                   "above zero.", C_STOP)]}
     return {"key": "ai", "name": "Pattern breakout", "icon": "🤖", "targets": True,
             "long": "Pattern breakout (AI Opportunities)",
             "tagline": "Triangles, rectangles, staircases and 20/55-day breakouts above the 21 and 50 EMA, "
@@ -5618,6 +5684,220 @@ def strat_flag(df, **params):
     return None
 
 
+# ---------------------------------------------------------------- Ichimoku (v5.1)
+def ichimoku_series(df, tenkan=9, kijun=26, senkou=52):
+    """Ichimoku bileşenleri. Bulut BUGÜNE kaydırılmış hâliyle verilir (spanA/B = kijun dönem önce hesaplanan
+    değerler) — yani c[i] > spanA[i] doğrudan "kapanış bulutun üstünde" demektir. Geleceğe bakış yok."""
+    H, L, C = df["High"].astype(float), df["Low"].astype(float), df["Close"].astype(float)
+    t_, k_, s_ = int(tenkan), int(kijun), int(senkou)
+
+    def mid(n):
+        return (H.rolling(n, min_periods=n).max() + L.rolling(n, min_periods=n).min()) / 2
+    ten, kij = mid(t_), mid(k_)
+    spa = ((ten + kij) / 2).shift(k_)              # bugünün üstündeki bulut
+    spb = mid(s_).shift(k_)
+    return {"ten": ten.to_numpy(float), "kij": kij.to_numpy(float), "spa": spa.to_numpy(float),
+            "spb": spb.to_numpy(float), "c": C.to_numpy(float), "h": H.to_numpy(float), "l": L.to_numpy(float),
+            "disp": k_,
+            "ten_f": ten.to_numpy(float), "kij_f": kij.to_numpy(float)}
+
+
+def _ichi_ok(s, i, short=False):
+    """i. barın kapanışında 1–3 numaralı giriş koşulları (bulut + Tenkan/Kijun + Chikou)."""
+    c, k_ = s["c"], s["disp"]
+    if i < k_ or not (_ok(s["spa"][i]) and _ok(s["spb"][i]) and _ok(s["ten"][i]) and _ok(s["kij"][i])):
+        return False
+    if short:
+        return (c[i] < min(s["spa"][i], s["spb"][i]) and s["ten"][i] < s["kij"][i] and c[i] < c[i - k_])
+    return (c[i] > max(s["spa"][i], s["spb"][i]) and s["ten"][i] > s["kij"][i] and c[i] > c[i - k_])
+
+
+def _ichi_trend_ok(s, i):
+    """Geri çekilme girişi için trend şartı: bulutun üstünde + Chikou temiz. (Tenkan kısa vadeli olduğundan
+    sağlıklı bir Kijun geri çekilmesinde geçici olarak Kijun'un altına sarkabilir — burada aranmaz;
+    tetik zaten 'Tenkan'ın ÜSTÜNE kapanış'tır.)"""
+    c, k_ = s["c"], s["disp"]
+    if i < k_ or not (_ok(s["spa"][i]) and _ok(s["spb"][i])):
+        return False
+    return c[i] > max(s["spa"][i], s["spb"][i]) and c[i] > c[i - k_]
+
+
+def _ichi_bounce(s, i):
+    """Kijun geri çekilmesi: trend koşulları dururken son 5 barda Kijun'a dokunulmuş ve bugün Tenkan'ın
+    üstüne kapanmış (dün değil) olmalı."""
+    c, l, ten, kij = s["c"], s["l"], s["ten"], s["kij"]
+    if i < 6 or not (_ok(ten[i]) and _ok(ten[i - 1])):
+        return False
+    touched = any(_ok(kij[j]) and l[j] <= kij[j] * 1.004 for j in range(max(0, i - 5), i + 1))
+    return touched and c[i] > ten[i] and c[i - 1] <= ten[i - 1]
+
+
+def strat_ichimoku(df, tenkan=9, kijun=26, senkou=52, max_atr=2.0, bounce=1, **_):
+    """Son barın durumu: breakout (taze Kumo kırılımı) · retest (Kijun geri çekilmesi) · armed (koşullar
+    tamam ama Kijun'a uzaklık > max_atr·ATR) · running (trend işlemde). Long tarafı (tarama için)."""
+    P = strat_params("ichimoku", {"tenkan": tenkan, "kijun": kijun, "senkou": senkou,
+                                  "max_atr": max_atr, "bounce": bounce})
+    need = P["senkou"] + P["kijun"] + 5
+    if df is None or len(df) < need:
+        return None
+    s = ichimoku_series(df, P["tenkan"], P["kijun"], P["senkou"])
+    last = len(df) - 1
+    full_ok = _ichi_ok(s, last)
+    bounce_ok = bool(P["bounce"]) and _ichi_trend_ok(s, last) and _ichi_bounce(s, last)
+    if not (full_ok or bounce_ok):
+        return None
+    px, kij = float(s["c"][last]), float(s["kij"][last])
+    a = _last(atr(df, 14)) or px * 0.02
+    dist = (px - kij) / a if a > 0 else 99.0
+    # kırılım günü: koşulların kesintisiz sağlandığı ilk gün
+    k0 = last
+    while k0 > P["senkou"] + P["kijun"] and _ichi_ok(s, k0 - 1):
+        k0 -= 1
+    age = last - k0
+    stop = kij - 0.25 * a
+    cloud_top = float(max(s["spa"][last], s["spb"][last]))
+    base = {"key": "ichimoku", "kind": "bull", "level": cloud_top, "lower": kij, "stop": float(stop),
+            "vol_x": round(_vx_at(df, last), 2), "vol_ok": True, "start": int(max(0, k0 - P["kijun"])),
+            "kij": kij, "ten": float(s["ten"][last]), "dist_atr": round(float(dist), 2), "age": int(age),
+            "trail_kj": int(P["kijun"]), "spa": float(s["spa"][last]), "spb": float(s["spb"][last]),
+            "atr": float(a)}
+    if full_ok and age <= ST_FRESH and dist <= P["max_atr"]:
+        conf = 0.62 + (0.10 if dist <= 1.0 else 0.0) + (0.06 if age == 0 else 0.0)
+        return dict(base, name="Kumo breakout", state="breakout", bars_since=int(age),
+                    conf=round(min(1.0, conf), 2),
+                    note="close above the cloud, Tenkan > Kijun, Chikou clear · %s ATR above the Kijun "
+                         "(max %s) · day %d of the trend" % (fmt_num(dist, 1), fmt_num(P["max_atr"], 1), age + 1))
+    if bounce_ok and dist <= P["max_atr"]:
+        return dict(base, name="Kijun bounce", state="retest", bars_since=0, conf=0.60,
+                    note="running trend pulled back to the Kijun and closed back above the Tenkan · %s ATR "
+                         "above the Kijun" % fmt_num(dist, 1))
+    if not full_ok:
+        return None
+    if dist > P["max_atr"]:
+        return dict(base, name="Extended above the Kijun", state="armed", bars_since=int(age), conf=0.40,
+                    note="trend is on, but price is %s ATR above the Kijun (max %s) — wait for the pullback "
+                         "or the Kijun bounce" % (fmt_num(dist, 1), fmt_num(P["max_atr"], 1)))
+    return dict(base, name="Trend above the cloud", state="running", bars_since=int(age), conf=0.50,
+                note="in the trend for %d days — exits on a close below the Kijun %s"
+                     % (age, fmt_num(kij, 2)))
+
+
+def kijun_stop(df, kijun=26, now=None):
+    """Bot pozisyonu için güncel Kijun (tamamlanmış günlük mumlardan)."""
+    if df is None or len(df) < int(kijun) + 1:
+        return None
+    d = df
+    try:
+        if bar_progress(df, now) < 1.0:
+            d = df.iloc[:-1]
+    except Exception:
+        pass
+    H, L = d["High"].astype(float), d["Low"].astype(float)
+    n = int(kijun)
+    v = (float(H.tail(n).max()) + float(L.tail(n).min())) / 2
+    return v if v == v and v > 0 else None
+
+
+# ---------------------------------------------------------------- WaveTrend + Nadaraya-Watson (v5.1)
+def nw_causal(close, h=8.0, mult=2.5, win=120):
+    """Nadaraya-Watson zarfı, UÇ NOKTA yöntemi: her barın değeri yalnızca o bara kadarki kapanışlardan
+    (Gauss çekirdeği, geriye dönük) hesaplanır → yeniden boyama / geleceğe bakış yok.
+    Döner: (üst, alt, orta) numpy dizileri."""
+    y = pd.to_numeric(close, errors="coerce").ffill().to_numpy(float)
+    n = len(y)
+    h = max(0.5, float(h))
+    L = int(min(max(10, int(win)), max(n, 10)))
+    k = np.arange(L, dtype=float)
+    w = np.exp(-(k * k) / (2 * h * h))
+    mid = np.full(n, np.nan)
+    for i in range(n):
+        m = min(L, i + 1)
+        ww = w[:m]
+        mid[i] = float((ww * y[i::-1][:m]).sum() / ww.sum())
+    err = np.abs(y - mid)
+    mae = pd.Series(err).rolling(win, min_periods=20).mean().to_numpy(float) * max(0.1, float(mult))
+    return mid + mae, mid - mae, mid
+
+
+def wavetrend_series(df, P):
+    """WT + NW bantları + hacim oranı (hepsi geriye dönük)."""
+    wt1, wt2 = wavetrend(df, P["n1"], P["n2"])
+    up, lo, mid = nw_causal(df["Close"], P["nw_h"], P["nw_mult"], int(P["nw_win"]))
+    v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+    vavg = v.rolling(20, min_periods=5).mean().shift(1)
+    return {"wt1": wt1.to_numpy(float), "wt2": wt2.to_numpy(float), "up": up, "lo": lo, "mid": mid,
+            "v": v.to_numpy(float), "vavg": vavg.to_numpy(float),
+            "c": df["Close"].to_numpy(float), "l": df["Low"].to_numpy(float), "h": df["High"].to_numpy(float)}
+
+
+def _wt_cross_up(s, i):
+    return (i >= 1 and _ok(s["wt1"][i]) and _ok(s["wt2"][i]) and _ok(s["wt1"][i - 1]) and _ok(s["wt2"][i - 1])
+            and s["wt1"][i] > s["wt2"][i] and s["wt1"][i - 1] <= s["wt2"][i - 1])
+
+
+def _wt_touch(s, i, lookback=3):
+    return any(_ok(s["lo"][j]) and s["l"][j] <= s["lo"][j] for j in range(max(1, i - lookback + 1), i + 1))
+
+
+def _wt_sig_at(s, i, P, df=None):
+    """i. barın kapanışında alım sinyali var mı? (kesişim + aşırı satım + bant + hacim)"""
+    if not (_wt_cross_up(s, i) and _ok(s["lo"][i])):
+        return False
+    if not (min(s["wt1"][i - 1], s["wt1"][i]) <= -float(P["os"]) * 0.75 or s["wt1"][i - 1] <= -float(P["os"])):
+        return False
+    if not _wt_touch(s, i):
+        return False
+    va = s["vavg"][i]
+    if df is not None and i == len(s["c"]) - 1:
+        vx = _vx_at(df, i)
+        return vx >= float(P["vol_x"])
+    return bool(va and va > 0 and s["v"][i] / va >= float(P["vol_x"]))
+
+
+def strat_wavetrend(df, **params):
+    """Son barın durumu: breakout (taze sinyal) · forming (bantta, kesişim bekleniyor) · running."""
+    P = strat_params("wavetrend", params)
+    need = int(P["nw_win"]) + 30
+    if df is None or len(df) < need:
+        return None
+    s = wavetrend_series(df, P)
+    last = len(df) - 1
+    px = float(s["c"][last])
+    a = _last(atr(df, 14)) or px * 0.02
+    if not _ok(s["lo"][last]):
+        return None
+
+    def pack(b, state, name, note, conf, vx):
+        low0 = float(np.nanmin(s["l"][max(0, b - 4):b + 1]))
+        return {"key": "wavetrend", "kind": "bull", "name": name, "state": state,
+                "level": float(s["mid"][b]), "lower": float(s["lo"][b]), "stop": float(low0 - 0.25 * a),
+                "bars_since": int(last - b), "conf": round(min(1.0, max(0.15, conf)), 2),
+                "vol_x": round(float(vx), 2), "vol_ok": True, "note": note, "start": int(max(0, b - 40)),
+                "wt": round(float(s["wt1"][b]), 1), "touch_lo": low0, "nw_up": float(s["up"][last]),
+                "nw_mid": float(s["mid"][last]), "nw_lo": float(s["lo"][last]), "b": int(b)}
+
+    for k in range(0, ST_FRESH + 1):
+        b = last - k
+        if b < 2 or not _wt_sig_at(s, b, P, df if k == 0 else None):
+            continue
+        if float(np.nanmin(s["l"][b:last + 1])) < float(np.nanmin(s["l"][max(0, b - 4):b + 1])) - 0.25 * a:
+            continue                                    # sinyalden sonra dip kırıldıysa geçersiz
+        vx = _vx_at(df, b)
+        wt0 = float(s["wt1"][b - 1])
+        conf = 0.58 + (0.12 if wt0 <= -float(P["os"]) else 0.04) + (0.08 if vx >= 1.8 else 0.0)             + (0.06 if s["c"][b] <= s["mid"][b] else 0.0)
+        return pack(b, "breakout", "WaveTrend cross at the lower band",
+                    "WT turned up from %s (oversold −%d), price at the lower NW band · volume %sx"
+                    % (fmt_num(wt0, 0), int(P["os"]), fmt_num(vx, 1)), conf, vx)
+    # bantta ama kesişim yok → kurulum oluşuyor
+    if _wt_touch(s, last) and _ok(s["wt1"][last]) and s["wt1"][last] <= -float(P["os"]) * 0.75             and s["wt1"][last] <= s["wt2"][last]:
+        vx = _vx_at(df, last)
+        return pack(last, "forming", "At the lower band — waiting for the WT cross",
+                    "WaveTrend %s, price at the lower NW band — the buy trigger is the cross back above the "
+                    "signal line on ≥ %s× volume" % (fmt_num(s["wt1"][last], 0), fmt_num(P["vol_x"], 1)),
+                    0.45, vx)
+    return None
+
+
 # ---------------------------------------------------------------- plan, teyitler, skor
 def strat_plan(key, df, sig, params=None, tp1_part=0.40):
     """İşlem planı (swing_plan ile aynı anahtarlar). Donchian'da hedef yok: tp1 / tp2 = None."""
@@ -5627,7 +5907,12 @@ def strat_plan(key, df, sig, params=None, tp1_part=0.40):
     px = float(df["Close"].iloc[-1])
     a = _last(atr(df, 14)) or px * 0.02
     live = sig["state"] in ("breakout", "retest", "running")
-    entry = px if live else float(sig["level"])
+    if key == "wavetrend":
+        entry = px                                   # tetik gösterge kesişimi — fiyat seviyesi değil
+    elif key == "ichimoku" and not live:
+        entry = float(sig.get("kij") or sig["level"])    # aşırı uzamışsa: Kijun'a geri çekilmeyi bekle
+    else:
+        entry = px if live else float(sig["level"])
     stop = float(sig["stop"])
     risk = max(entry - stop, 0.15 * a)
     out = {"entry": round(entry, 4), "stop": round(stop, 4), "risk": round(risk, 4),
@@ -5641,7 +5926,30 @@ def strat_plan(key, df, sig, params=None, tp1_part=0.40):
                              "new %d-day low; the whole position is sold when price falls to it."
                              % (P["n_exit"], fmt_num(stop, 2), P["n_exit"]))})
         return out
+    if key == "ichimoku":
+        out.update({"tp1": None, "tp2": None, "rr1": None, "rr2": None, "part1": 0.0, "part2": 1.0,
+                    "trail_kj": int(sig.get("trail_kj") or P["kijun"]),
+                    "stop_src": "just below the Kijun (%s)" % fmt_num(sig.get("kij") or stop, 2),
+                    "tp1_src": "no target", "tp2_src": "no target",
+                    "rule": ("No price target. The initial stop sits just below the Kijun (%s); afterwards the "
+                             "trade is closed as soon as a daily close is below the Kijun — winners run along "
+                             "the base line." % fmt_num(sig.get("kij") or stop, 2))})
+        return out
     part = float(min(0.9, max(0.1, tp1_part)))
+    if key == "wavetrend":
+        tp1 = float(sig.get("nw_mid") or (entry + 1.5 * risk))
+        tp2 = float(sig.get("nw_up") or (entry + 3.0 * risk))
+        tp1 = max(tp1, entry + 0.6 * risk)
+        tp2 = max(tp2, tp1 + 0.8 * risk)
+        out.update({"tp1": round(tp1, 4), "tp2": round(tp2, 4), "rr1": round((tp1 - entry) / risk, 2),
+                    "rr2": round((tp2 - entry) / risk, 2), "part1": part, "part2": round(1 - part, 2),
+                    "stop_src": "below the low of the dip", "tp1_src": "Nadaraya-Watson mid-line",
+                    "tp2_src": "upper Nadaraya-Watson band",
+                    "rule": ("Sell %d%% at the NW mid-line (%s) and move the stop on the rest to the entry; the "
+                             "remaining %d%% runs to the upper band (%s). Out early if WaveTrend crosses back "
+                             "down above zero." % (round(part * 100), fmt_num(tp1, 2), round((1 - part) * 100),
+                                                   fmt_num(tp2, 2)))})
+        return out
     tp1 = entry + float(P["tp1_r"]) * risk
     mm = float(sig["level"]) + float(sig.get("pole_h") or 0.0)
     alt = entry + (float(P["tp1_r"]) + 1.5) * risk
@@ -5834,6 +6142,34 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
                        % (fmt_num(sig.get("depth", 0), 1), fmt_num(sig.get("retr", 0), 0)),
                        "ok" if sig.get("retr", 100) <= 33 else "warn", 6,
                        "Strong flags hold the upper third of the advance."))
+    elif key == "ichimoku":
+        d_ = float(sig.get("dist_atr") or 0.0)
+        out.append(_ck(G[2], "Distance to the Kijun", "%s ATR above the base line" % fmt_num(d_, 1),
+                       "ok" if d_ <= 1.2 else "warn" if d_ <= 2.0 else "bad", 8,
+                       "Entries close to the Kijun keep the stop tight — no chasing."))
+        if sig.get("spa") is not None and sig.get("spb") is not None:
+            thick = abs(float(sig["spa"]) - float(sig["spb"])) / max(float(sig.get("atr") or 1.0), 1e-9)
+            out.append(_ck(G[2], "Thickness of the cloud", "%s ATR between Senkou A and B" % fmt_num(thick, 1),
+                           "ok" if thick >= 1.0 else "warn", 6,
+                           "A thick cloud below the price is strong support; a thin one breaks easily."))
+        out.append(_ck(G[2], "Age of the trend", "day %d above the cloud" % (int(sig.get("age") or 0) + 1),
+                       "ok" if sig.get("age", 0) <= 40 else "warn", 6,
+                       "Fresh Kumo breakouts carry further than late entries."))
+    elif key == "wavetrend":
+        w_ = float(sig.get("wt") or 0.0)
+        out.append(_ck(G[2], "Depth of the washout", "WaveTrend %s at the signal" % fmt_num(w_, 0),
+                       "ok" if w_ <= -50 else "warn" if w_ <= -35 else "bad", 8,
+                       "The deeper the oversold reading, the stronger the snap-back tends to be."))
+        try:
+            mid_ = float(sig.get("nw_mid") or 0.0)
+            up_ = float(sig.get("nw_up") or 0.0)
+            pxn = float(df["Close"].iloc[-1])
+            pos_ = (pxn - float(sig.get("nw_lo") or pxn)) / max(up_ - float(sig.get("nw_lo") or 0.0), 1e-9)
+            out.append(_ck(G[2], "Position in the envelope", "%s%% of the band width" % fmt_num(pos_ * 100, 0),
+                           "ok" if pos_ <= 0.35 else "warn" if pos_ <= 0.6 else "bad", 6,
+                           "Buying low in the band leaves room up to the mid-line and the upper band."))
+        except Exception:
+            pass
     # ---- 4) piyasa
     if regime_ok is not None:
         out.append(_ck(G[3], "Market regime", "S&P 500 and Nasdaq %s their 50-day EMA"
@@ -5851,8 +6187,10 @@ def strat_evaluate(key, ticker, df, meta=None, bench=None, regime_ok=None, param
     if key not in STRAT_PARAMS or df is None or len(df) < 45:
         return None
     P = strat_params(key, params)
+    fn = {"donchian2": strat_donchian, "flag": strat_flag, "ichimoku": strat_ichimoku,
+          "wavetrend": strat_wavetrend}.get(key)
     try:
-        sig = strat_donchian(df, **P) if key == "donchian2" else strat_flag(df, **P)
+        sig = fn(df, **P)
     except Exception:
         sig = None
     if not sig:
@@ -5913,9 +6251,10 @@ def strat_summary(r):
 
 
 def strat_fresh(r, max_bars=ST_BOT_FRESH):
-    """Bildirim / bot için yeterince taze kırılım mı?"""
+    """Bildirim / bot için yeterince taze sinyal mi? (Ichimoku'da Kijun geri çekilmesi de sinyaldir.)"""
     b = (r or {}).get("best")
-    return bool(b and b["state"] == "breakout" and int(b.get("bars_since") or 0) <= max_bars
+    states = ("breakout", "retest") if (r or {}).get("strat") == "ichimoku" else ("breakout",)
+    return bool(b and b["state"] in states and int(b.get("bars_since") or 0) <= max_bars
                 and b.get("vol_ok", True))
 
 
@@ -5930,10 +6269,13 @@ def bot_signal_strat(r, cfg=None, regime_ok=True):
     if not b:
         return None, "no setup"
     if b["state"] == "armed":
-        return None, "armed — waiting for the close above %s" % fmt_num(b["level"], 2)
+        return None, ("extended — waiting for the pullback to the Kijun" if key == "ichimoku" else
+                      "armed — waiting for the close above %s" % fmt_num(b["level"], 2))
     if b["state"] == "forming":
-        return None, "flag still forming — trigger %s" % fmt_num(b["level"], 2)
-    if b["state"] != "breakout":
+        return None, ("at the band — waiting for the WaveTrend cross" if key == "wavetrend" else
+                      "flag still forming — trigger %s" % fmt_num(b["level"], 2))
+    buy_states = ("breakout", "retest") if key == "ichimoku" else ("breakout",)
+    if b["state"] not in buy_states:
         return None, ("trend trade already running" if b["state"] == "running" else "price back below the level")
     if int(b.get("bars_since") or 0) > ST_BOT_FRESH:
         return None, "breakout is %d days old" % int(b["bars_since"])
@@ -5950,17 +6292,22 @@ def bot_signal_strat(r, cfg=None, regime_ok=True):
     risk = px - stop
     if risk <= 0:
         return None, "price is at / below the stop"
-    if px > float(b["level"]) + c["max_chase"] * max(risk, float(p["risk"])):
+    if key not in ("ichimoku", "wavetrend") and px > float(b["level"]) + c["max_chase"] * max(risk, float(p["risk"])):
         return None, "price already ran away from the breakout level"
+    if key == "ichimoku" and p.get("trail_kj") and float(b.get("dist_atr") or 0) > strat_params(key).get("max_atr", 2.0) + 0.5:
+        return None, "price is too far above the Kijun"
     has_tp = p.get("tp1") is not None
-    if has_tp and p["rr1"] < c["min_rr"]:
-        return None, "reward / risk 1:%s is below 1:%s" % (fmt_num(p["rr1"], 1), fmt_num(c["min_rr"], 1))
+    rr_gate = p.get("rr2") if key == "wavetrend" else p.get("rr1")   # WT'de hedef bandın üstü
+    if has_tp and rr_gate is not None and rr_gate < c["min_rr"]:
+        return None, "reward / risk 1:%s is below 1:%s" % (fmt_num(rr_gate, 1), fmt_num(c["min_rr"], 1))
     why = "%s — %s, 15-min %s, confirmation %s/100" % (strat_info(key)["name"], b["name"],
                                                        (c15 or {}).get("state") or "n/a", fmt_num(cs, 0))
     sig = {"entry": px, "stop": stop, "tp1": float(p["tp1"]) if has_tp else 0.0,
            "tp2": float(p["tp2"]) if has_tp else 0.0, "atr": float(p.get("atr") or 0.0), "why": why, "strat": key}
     if key == "donchian2":
         sig.update({"trail_n": int(p.get("trail_n") or 20), "no_time": True})
+    elif key == "ichimoku":
+        sig.update({"trail_kj": int(p.get("trail_kj") or 26), "no_time": True})
     return sig, "signal"
 
 
@@ -6076,11 +6423,96 @@ def strategy_geometry(df, key, params=None, span=260):
                     "lines": [{"pts": [(p + 0.5, sig["stop"]), (last + 0.5, sig["stop"])], "w": 1.5, "dash": True}],
                     "dots": [], "fill": None, "at": (last, sig["stop"])})
         return out
+    if key == "ichimoku":
+        if len(df) < P["senkou"] + P["kijun"] + 5:
+            return []
+        s = ichimoku_series(df, P["tenkan"], P["kijun"], P["senkou"])
+        i0 = max(P["senkou"] + P["kijun"], last - int(span))
+
+        def line(arr, a_, b_):
+            return [(i, float(arr[i])) for i in range(a_, b_ + 1) if arr[i] == arr[i]]
+        # bulut: A ve B arasında, renk üstünlüğe göre (yeşil = A üstte, kırmızı = B üstte) — parça parça
+        i = i0
+        segs = []
+        while i <= last:
+            if not (_ok(s["spa"][i]) and _ok(s["spb"][i])):
+                i += 1
+                continue
+            up_ = s["spa"][i] >= s["spb"][i]
+            j = i
+            while j + 1 <= last and _ok(s["spa"][j + 1]) and _ok(s["spb"][j + 1]) and (s["spa"][j + 1] >= s["spb"][j + 1]) == up_:
+                j += 1
+            segs.append((i, j, up_))
+            i = j + 1
+        for a_, b_, up_ in segs:
+            aa = line(s["spa"], max(i0, a_ - 1), b_)
+            bb = line(s["spb"], max(i0, a_ - 1), b_)
+            if len(aa) > 1 and len(bb) > 1:
+                out.append({"label": None, "color": C_ON if up_ else C_STOP, "lines": [],
+                            "dots": [], "fill": aa + bb[::-1], "at": None, "soft": True})
+        mid_i = (i0 + last) // 2
+        ymid = s["spb"][mid_i] if _ok(s["spb"][mid_i]) else s["spa"][mid_i]
+        out.append({"label": "Kumo (cloud) · Senkou A / B", "color": "#8D96A5",
+                    "lines": [{"pts": line(s["spa"], i0, last), "w": 1}, {"pts": line(s["spb"], i0, last), "w": 1,
+                                                                         "dash": True}],
+                    "dots": [], "fill": None, "at": (mid_i, float(ymid)) if _ok(ymid) else None})
+        out.append({"label": "Tenkan (%d)" % P["tenkan"], "color": "#5B8CFF",
+                    "lines": [{"pts": line(s["ten"], i0, last), "w": 1.6}], "dots": [], "fill": None,
+                    "at": (last - 4, float(s["ten"][last - 4])) if _ok(s["ten"][last - 4]) else None})
+        out.append({"label": "Kijun (%d) · stop & trail — exit on a close below" % P["kijun"], "color": C_ENTRY,
+                    "lines": [{"pts": line(s["kij"], i0, last), "w": 2.2}], "dots": [], "fill": None,
+                    "at": (last - 11, float(s["kij"][last - 11])) if _ok(s["kij"][last - 11]) else None})
+        # giriş noktaları: kırılım ve geri çekilme sinyal günleri
+        dots_b, dots_r = [], []
+        for i in range(max(i0, P["senkou"] + P["kijun"] + 1), last + 1):
+            if _ichi_ok(s, i) and not _ichi_ok(s, i - 1):
+                dots_b.append((i, float(s["c"][i])))
+            elif _ichi_ok(s, i) and _ichi_bounce(s, i) and P["bounce"]:
+                dots_r.append((i, float(s["c"][i])))
+        if dots_b:
+            out.append({"label": "Kumo breakout · close above the cloud", "color": C_ON, "lines": [],
+                        "dots": dots_b[-5:], "fill": None, "at": dots_b[-1]})
+        if dots_r:
+            out.append({"label": "Kijun bounce · back above the Tenkan", "color": C_FLAG, "lines": [],
+                        "dots": dots_r[-4:], "fill": None, "at": dots_r[-1]})
+        return out
+    if key == "wavetrend":
+        sig = strat_wavetrend(df, **P)
+        s = wavetrend_series(df, P)
+        i0 = max(25, last - int(span), int(np.argmax(~np.isnan(s["lo"]))))
+
+        def line(arr, a_, b_):
+            return [(i, float(arr[i])) for i in range(a_, b_ + 1) if arr[i] == arr[i]]
+        band_up, band_lo = line(s["up"], i0, last), line(s["lo"], i0, last)
+        if len(band_up) > 1 and len(band_lo) > 1:
+            out.append({"label": None, "color": "#8B9CF8", "lines": [], "dots": [],
+                        "fill": band_up + band_lo[::-1], "at": None, "soft": True})
+        out.append({"label": "Nadaraya-Watson envelope (±%s× error)" % fmt_num(P["nw_mult"], 1),
+                    "color": "#8B9CF8",
+                    "lines": [{"pts": band_up, "w": 1.3}, {"pts": band_lo, "w": 1.3}], "dots": [], "fill": None,
+                    "at": (last - 7, float(s["up"][last - 7])) if _ok(s["up"][last - 7]) else None})
+        out.append({"label": "NW mid-line · TP1 (40% sold here)", "color": C_ENTRY,
+                    "lines": [{"pts": line(s["mid"], i0, last), "w": 1.5, "dash": True}], "dots": [], "fill": None,
+                    "at": (last - 16, float(s["mid"][last - 16])) if _ok(s["mid"][last - 16]) else None})
+        dots = []
+        for i in range(max(i0 + 1, 2), last + 1):
+            if _wt_sig_at(s, i, P, df if i == last else None):
+                dots.append((i, float(s["c"][i])))
+        if dots:
+            out.append({"label": "WT cross up at the band · volume ≥ %s×" % fmt_num(P["vol_x"], 1),
+                        "color": C_ON, "lines": [], "dots": dots[-5:], "fill": None, "at": dots[-1]})
+        if sig:
+            out.append({"label": "Stop · below the dip", "color": C_STOP,
+                        "lines": [{"pts": [(max(i0, sig["b"] - 4), sig["stop"]), (last + 0.5, sig["stop"])],
+                                   "w": 1.3, "dash": True}], "dots": [], "fill": None,
+                        "at": (last - 2, sig["stop"])})
+        return out
     return []
 
 
 # ---------------------------------------------------------------- backtest
-BT_STRAT_REASONS = {"TP1": "Target 1 (partial)", "TP2": "Target 2", "Trail": "Channel stop", "BE": "Break-even stop"}
+BT_STRAT_REASONS = {"TP1": "Target 1 (partial)", "TP2": "Target 2", "Trail": "Channel stop", "BE": "Break-even stop",
+                    "Kijun": "Close below the Kijun", "WT": "WaveTrend cross down"}
 
 
 def describe_strategy(cfg):
@@ -6091,13 +6523,23 @@ def describe_strategy(cfg):
              "channel · stop: trailing %d-day %s" % (P["n_trend"], P["n_entry"], P["n_exit"],
                                                     "low" if cfg.get("dir", "long") == "long" else "low / high"))
         s += " · " + {"long": "Long", "short": "Short", "both": "Long + Short"}.get(cfg.get("dir"), "Long")
-    else:
+    elif key == "flag":
         s = ("Flag after a strong advance · advance ≥ %s%% in ≤ %d days · %d–%d tight candles (pullback ≤ %s%%) · "
              "entry: close above the base high on ≥ %s× volume · stop below the flag low · 40%% at %sR, rest at the "
              "measured move · Long" % (fmt_num(P["min_adv"], 0), P["pole_max"], P["flag_min"], P["flag_max"],
                                       fmt_num(P["max_depth"], 0), fmt_num(P["vol_x"], 1), fmt_num(P["tp1_r"], 1)))
-    cf = [n for k, n in (("cf_weekly", "weekly uptrend"), ("cf_adx", "ADX ≥ 20"), ("cf_regime", "S&P 500 above "
-                                                                                              "its 50-day EMA"))
+    if key == "ichimoku":
+        s = ("Ichimoku %d / %d / %d · entry: close above the cloud, Tenkan > Kijun, Chikou clear, ≤ %s ATR above "
+             "the Kijun%s · exit: close below the Kijun (initial stop just under it)"
+             % (P["tenkan"], P["kijun"], P["senkou"], fmt_num(P["max_atr"], 1),
+                " · + Kijun-bounce entries" if P["bounce"] else ""))
+        s += " · " + {"long": "Long", "short": "Short", "both": "Long + Short"}.get(cfg.get("dir"), "Long")
+    elif key == "wavetrend":
+        s = ("WaveTrend %d / %d cross up below −%d at the lower Nadaraya-Watson band (±%s× error, window %d) on "
+             "≥ %s× volume · 40%% at the mid-line, rest at the upper band · out on a WT cross down above zero · Long"
+             % (P["n1"], P["n2"], int(P["os"]), fmt_num(P["nw_mult"], 1), int(P["nw_win"]), fmt_num(P["vol_x"], 1)))
+    cf = [n for k, n in (("cf_weekly", "weekly cloud" if key == "ichimoku" else "weekly uptrend"),
+                         ("cf_adx", "ADX ≥ 20"), ("cf_regime", "S&P 500 above its 50-day EMA"))
           if cfg.get(k)]
     if cf:
         s += " · confirmations: " + ", ".join(cf)
@@ -6119,7 +6561,9 @@ def backtest_strategy(df, cfg, bench=None):
         return {"ok": False, "msg": "No price data."}
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
     total = len(df)
-    need = (P["n_trend"] + P["n_entry"] + 5) if key == "donchian2" else 60
+    need = {"donchian2": P.get("n_trend", 0) + P.get("n_entry", 0) + 5,
+            "ichimoku": P.get("senkou", 0) + P.get("kijun", 0) + 10,
+            "wavetrend": int(P.get("nw_win", 0)) + 30}.get(key, 60)
     if total < need:
         return {"ok": False, "msg": "Not enough price data (at least %d candles needed)." % need}
     N = max(30, min(int(round(float(cfg["yrs"]) * 252)), total - 1))
@@ -6133,8 +6577,13 @@ def backtest_strategy(df, cfg, bench=None):
     if cfg.get("cf_weekly"):
         w = _weekly(df)
         if w is not None and len(w) >= 12:
-            nl = 30 if len(w) >= 40 else 10
-            okw = (w["Close"] > sma(w["Close"], nl)).shift(1)        # yalnızca TAMAMLANMIŞ haftalar
+            if key == "ichimoku":                                    # haftalık kapanış haftalık BULUTUN üstünde
+                wi = ichimoku_series(w, P["tenkan"], P["kijun"], P["senkou"])
+                okw = pd.Series((wi["c"] > np.fmax(wi["spa"], wi["spb"]))
+                                & np.isfinite(wi["spa"]) & np.isfinite(wi["spb"]), index=w.index).shift(1)
+            else:
+                nl = 30 if len(w) >= 40 else 10
+                okw = (w["Close"] > sma(w["Close"], nl)).shift(1)    # yalnızca TAMAMLANMIŞ haftalar
             idx = df.index.tz_localize(None) if getattr(df.index, "tz", None) is not None else df.index
             m = okw.reindex(okw.index.union(idx)).ffill().reindex(idx)
             fmask &= m.fillna(False).to_numpy(dtype=bool)
@@ -6160,8 +6609,10 @@ def backtest_strategy(df, cfg, bench=None):
     cash, pos, trades, marks = cap, None, [], []
     eq = np.full(total, cap, dtype=float)
     s = donchian_series(df, P["n_trend"], P["n_entry"], P["n_exit"]) if key == "donchian2" else None
-    side_long = cfg.get("dir", "long") != "short" or key == "flag"
-    side_short = key == "donchian2" and cfg.get("dir", "long") != "long"
+    ichi = ichimoku_series(df, P["tenkan"], P["kijun"], P["senkou"]) if key == "ichimoku" else None
+    wts = wavetrend_series(df, P) if key == "wavetrend" else None
+    side_long = cfg.get("dir", "long") != "short" or key in ("flag", "wavetrend")
+    side_short = key in ("donchian2", "ichimoku") and cfg.get("dir", "long") != "long"
 
     def close_part(i, px, reason, qty):
         nonlocal cash, pos
@@ -6189,6 +6640,30 @@ def backtest_strategy(df, cfg, bench=None):
             if side_short and s["dir"][i] == -1 and s["lo_e"][i] == s["lo_e"][i] and c[i] < s["lo_e"][i]:
                 return {"long": False, "stop": float(np.nanmax(h[max(0, i - nx + 1):i + 1])), "tp1": None, "tp2": None}
             return None
+        if key == "ichimoku":
+            a = av[i] if av[i] == av[i] else c[i] * 0.02
+            kij = ichi["kij"][i]
+            if not _ok(kij) or a <= 0:
+                return None
+            if side_long:
+                fresh = _ichi_ok(ichi, i) and not _ichi_ok(ichi, i - 1)        # Kumo kırılım günü
+                bnc = (P["bounce"] and _ichi_trend_ok(ichi, i) and _ichi_bounce(ichi, i))   # Kijun geri çekilmesi
+                if (fresh or bnc) and (c[i] - kij) <= float(P["max_atr"]) * a:
+                    return {"long": True, "stop": float(kij - 0.25 * a), "tp1": None, "tp2": None}
+            if side_short and _ichi_ok(ichi, i, short=True):
+                fresh = not _ichi_ok(ichi, i - 1, short=True)
+                if fresh and (kij - c[i]) <= float(P["max_atr"]) * a:
+                    return {"long": False, "stop": float(kij + 0.25 * a), "tp1": None, "tp2": None}
+            return None
+        if key == "wavetrend":
+            if not (side_long and _wt_sig_at(wts, i, P)):
+                return None
+            a = av[i] if av[i] == av[i] else c[i] * 0.02
+            lo0 = float(np.nanmin(l[max(0, i - 4):i + 1]))
+            mid_, up_ = wts["mid"][i], wts["up"][i]
+            if not (_ok(mid_) and _ok(up_)):
+                return None
+            return {"long": True, "stop": float(lo0 - 0.25 * a), "tp1": float(mid_), "tp2": float(up_)}
         g = _flag_at(h, l, c, v, i - 1, P)
         if not g or not (c[i] > g["base_hi"]):
             return None
@@ -6201,6 +6676,10 @@ def backtest_strategy(df, cfg, bench=None):
                 "mark": dict(g, b=i)}
 
     for i in range(max(start, 1), total):
+        if pos is not None and i >= pos["ei"]:
+            lng = pos["long"]
+            if pos.get("xnext"):                                    # dünkü kapanış kuralı → bugünkü açılışta çık
+                close_part(i, o[i], pos.pop("xnext"), pos["qty"])
         if pos is not None and i >= pos["ei"]:
             lng = pos["long"]
             if pos["chan"]:                                         # kanal stopu her gün yeniden hesaplanır
@@ -6219,6 +6698,20 @@ def backtest_strategy(df, cfg, bench=None):
                     close_part(i, max(o[i], pos["tp1"]), "TP1", q1)
                 if pos is not None and pos["tp2"] is not None and h[i] >= pos["tp2"]:
                     close_part(i, max(o[i], pos["tp2"]), "TP2", pos["qty"])
+            if pos is not None and key == "ichimoku":               # kural: Kijun'un altındaki KAPANIŞ → çık
+                kij = ichi["kij"][i]
+                if _ok(kij) and ((lng and c[i] < kij) or (not lng and c[i] > kij)):
+                    if i == total - 1:
+                        close_part(i, c[i], "Kijun", pos["qty"])
+                    else:
+                        pos["xnext"] = "Kijun"
+            if pos is not None and key == "wavetrend":              # WT sıfırın üstünde aşağı kesişim → çık
+                if (i >= 1 and _ok(wts["wt1"][i]) and _ok(wts["wt2"][i]) and wts["wt1"][i] < wts["wt2"][i]
+                        and wts["wt1"][i - 1] >= wts["wt2"][i - 1] and wts["wt1"][i] > 0):
+                    if i == total - 1:
+                        close_part(i, c[i], "WT", pos["qty"])
+                    else:
+                        pos["xnext"] = "WT"
             if pos is not None and max_bars > 0 and i - pos["ei"] + 1 >= max_bars:
                 close_part(i, c[i], "Time", pos["qty"])
         eq[i] = cash + ((1 if pos["long"] else -1) * (c[i] - pos["entry"]) * pos["qty"] if pos else 0.0)
@@ -6256,6 +6749,19 @@ def backtest_strategy(df, cfg, bench=None):
             more["lines"].append({"name": "%d-day low (direction, short)" % P["n_trend"], "color": C_TREND,
                                   "dash": "dash", "s": pd.Series(s["lo_t"][start:], index=idx)})
         more["dir"] = dirs
+    elif key == "ichimoku":
+        more["lines"] = [
+            {"name": "Tenkan (%d)" % P["tenkan"], "color": "#5B8CFF", "dash": None,
+             "s": pd.Series(ichi["ten"][start:], index=idx)},
+            {"name": "Kijun (%d) — trail" % P["kijun"], "color": C_ENTRY, "dash": None,
+             "s": pd.Series(ichi["kij"][start:], index=idx)}]
+        more["cloud"] = {"a": pd.Series(ichi["spa"][start:], index=idx),
+                         "b": pd.Series(ichi["spb"][start:], index=idx)}
+    elif key == "wavetrend":
+        more["lines"] = [
+            {"name": "NW upper band", "color": "#8B9CF8", "dash": None, "s": pd.Series(wts["up"][start:], index=idx)},
+            {"name": "NW mid-line (TP1)", "color": C_ENTRY, "dash": "dot", "s": pd.Series(wts["mid"][start:], index=idx)},
+            {"name": "NW lower band", "color": "#8B9CF8", "dash": None, "s": pd.Series(wts["lo"][start:], index=idx)}]
     else:
         for g in marks:
             if g["q"] >= start:
