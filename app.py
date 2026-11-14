@@ -2583,7 +2583,8 @@ def render_tech(df, tf="1A", sym=""):
                      f'<span class="gb"><i style="width:{max(2, grp["score"]):.0f}%;background:{gc}"></i></span>'
                      f'<span class="gv">{tr(grp["score"], 0)}</span></div>')
         H(rows)
-        H(f'<div class="gtext">{_BOLD.sub(r"<b>\1</b>", esc(g["text"]))}</div>')
+        _gtext = _BOLD.sub(r"<b>\1</b>", esc(g["text"]))  # Py3.11: kein Backslash im f-string-Ausdruck
+        H(f'<div class="gtext">{_gtext}</div>')
         with st.expander("Why this grade — what each group looked at"):
             for grp in g["groups"]:
                 items = "".join(f"<div>• {esc(r)}</div>" for r in grp["reasons"]) or \
@@ -6800,13 +6801,14 @@ def _render_demo_body():
                 for r in val["rows"]:
                     pc = UP if r["pnl"] >= 0 else DOWN
                     pe_ = ext_html(extp.get(r["sym"]), size=10.5)
+                    pe_div = f'<div style="margin-top:2px">{pe_}</div>' if pe_ else ""  # Py3.11: kein verschachteltes f-string
                     rows += (
                         f'<tr><td class="l"><span class="pos-sym">{avatar(r["sym"], 30)}<span><b>{esc(r["sym"])}</b>'
                         f'<i>{esc(md.company_name(r["sym"]) or "")[:20]}</i></span></span></td>'
                         f'<td class="l"><span class="pos-by{" bot" if r["owner"] != "manual" else ""}">'
                         f'{"Manual" if r["owner"] == "manual" else "🤖 " + esc(r["bot"])}</span></td>'
                         f'<td>{r["qty"]:g}</td><td class="dim">{tr(r["entry"])}</td>'
-                        f'<td>{tr(r["last"])}{f"<div style='margin-top:2px'>{pe_}</div>" if pe_ else ""}</td>'
+                        f'<td>{tr(r["last"])}{pe_div}</td>'
                         f'<td class="sltp"><span style="color:{DOWN}">'
                         f'{(tr(r["stop"]) + (" ↗" if r.get("trail") else "")) if (r.get("orders") and r.get("stop")) else "—"}'
                         f'</span><span style="color:{UP}">{_next_tp(r) if r.get("orders") else "—"}</span></td>'
