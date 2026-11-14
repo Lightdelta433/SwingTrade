@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.0"
+BACKEND_VERSION = "5.1"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -1017,7 +1017,7 @@ def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan
             acct["pos"][key] = pos
         if plan:
             pos.update({k: plan[k] for k in ("stop", "tp1", "tp2", "atr", "why", "cfg", "trail", "strat",
-                                             "trail_n", "no_time") if k in plan})
+                                             "trail_n", "trail_kj", "no_time") if k in plan})
             pos.update({"hi": max(price, float(pos.get("hi") or 0)), "tp1_done": bool(plan.get("tp1_done", False)),
                         "checked": plan.get("checked") or ts})
             if owner == "manual":
@@ -1061,7 +1061,7 @@ def demo_value(acct, quotes=None, eurusd=None):
                      "pnl_pct": (pl / p["cost"] * 100) if p["cost"] else 0.0, "stop": p.get("stop"),
                      "tp1": p.get("tp1"), "tp2": p.get("tp2"), "tp1_done": p.get("tp1_done"),
                      "trail": p.get("trail"), "orders": has_orders(p), "manual_orders": bool(p.get("manual_orders")),
-                     "strat": p.get("strat"), "trail_n": p.get("trail_n"),
+                     "strat": p.get("strat"), "trail_n": p.get("trail_n"), "trail_kj": p.get("trail_kj"),
                      "fxm": fxm,
                      "opened": p.get("opened"), "why": p.get("why") or "", "live": q.get("src") == "real"})
     rpl = sum(t["pnl"] for t in acct.get("trades") or [] if t.get("pnl") is not None)
@@ -1147,19 +1147,23 @@ def bots_collect(md, acct):
     watch = [s for s in acct.get("watch") or [] if inst_ccy(s)]
     data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "eurusd": None, "err": {},
             "chan": {}}
-    # v4.9: kanal stoplu (Donchian) pozisyonlar — güncel N günlük dip günlük veriden okunur
+    # v4.9/5.1: izleyen stoplu pozisyonlar — Donchian: N günlük dip · Ichimoku: Kijun (günlük veriden)
     chan = {}
     for p in acct["pos"].values():
-        if p.get("trail_n") and not p.get("manual_orders"):
-            chan[p["sym"]] = max(int(p["trail_n"]), chan.get(p["sym"], 0))
+        if p.get("manual_orders"):
+            continue
+        if p.get("trail_n"):
+            chan[(p["sym"], f'n{int(p["trail_n"])}')] = ("n", int(p["trail_n"]))
+        elif p.get("trail_kj"):
+            chan[(p["sym"], f'k{int(p["trail_kj"])}')] = ("k", int(p["trail_kj"]))
     if chan:
         try:
-            dd = md.get_daily_batch(tuple(sorted(chan)))
-            for t, n_ in chan.items():
+            dd = md.get_daily_batch(tuple(sorted({t for t, _ in chan})))
+            for (t, spec), (kind, n_) in chan.items():
                 if _real(dd.get(t)):
-                    v_ = en.channel_stop(dd[t], n_)
+                    v_ = en.channel_stop(dd[t], n_) if kind == "n" else en.kijun_stop(dd[t], n_)
                     if v_:
-                        data["chan"][t] = v_
+                        data["chan"][f"{t}|{spec}"] = v_
         except Exception:
             pass
     try:
@@ -1294,13 +1298,19 @@ def bots_apply(acct, data, now=None):
         acct.setdefault("log", []).append({"ts": round(now), "bot": bot, "sym": sym, "text": text})
         del acct["log"][:-200]
 
-    # 0) v4.9: kanal stopu (Donchian) — yeni N günlük dibe yükseltilir, asla düşmez
+    # 0) v4.9/5.1: izleyen stop — yeni N günlük dibe / Kijun'a yükseltilir, asla düşmez
     for p in acct["pos"].values():
-        new = (data.get("chan") or {}).get(p["sym"])
-        if new and p.get("trail_n") and not p.get("manual_orders") and new > float(p.get("stop") or 0) + 1e-9:
+        if p.get("manual_orders"):
+            continue
+        spec = f'n{int(p["trail_n"])}' if p.get("trail_n") else (f'k{int(p["trail_kj"])}' if p.get("trail_kj") else None)
+        if not spec:
+            continue
+        new = (data.get("chan") or {}).get(f'{p["sym"]}|{spec}')
+        if new and new > float(p.get("stop") or 0) + 1e-9:
             p["stop"] = float(new)
             log(names.get(p["owner"]) or p.get("bot") or "Bot", p["sym"],
-                f'stop raised to {new:.2f} — new {int(p["trail_n"])}-day low')
+                f'stop raised to {new:.2f} — ' + (f'new {int(p["trail_n"])}-day low' if p.get("trail_n") else
+                                                  f'the Kijun ({int(p["trail_kj"])}) moved up'))
 
     # 1) çıkışlar (kapanmış 15 dk mumlarıyla)
     def bars_of(p):
@@ -1353,7 +1363,9 @@ def bots_apply(acct, data, now=None):
                                    "tp1": s["tp1"]})
                     log(b["name"], sym, f'BUY {qty:g} @ {s["entry"]:.2f} — {s["why"]} · stop {s["stop"]:.2f} · '
                                         + (f'TP1 {s["tp1"]:.2f}' if s["tp1"] else
-                                           f'no target, stop trails the {int(s.get("trail_n") or 20)}-day low'))
+                                           ('no target, stop trails the Kijun (%d)' % int(s["trail_kj"])
+                                            if s.get("trail_kj") else
+                                            f'no target, stop trails the {int(s.get("trail_n") or 20)}-day low')))
             if not buys and not note:
                 sk = data["skip"].get(bid) or []
                 note = ("no setup passed — e.g. " + "; ".join(f"{t}: {w}" for t, w in sk[:2])) if sk else \
@@ -1380,7 +1392,7 @@ def _exit_reason(raw, manual, p):
         return EXIT_WHY["tp"]
     if manual:
         return EXIT_WHY["trail"] if p.get("trail") else EXIT_WHY["stop"]
-    if p.get("trail_n"):                       # v4.9: Donchian — stop her zaman kanalın iz süren dibidir
+    if p.get("trail_n") or p.get("trail_kj"):  # v4.9/5.1: Donchian / Ichimoku — stop her zaman iz süren çizgidir
         return EXIT_WHY["trail"]
     if r.startswith("trailing"):
         return EXIT_WHY["trail"]
