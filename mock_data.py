@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "5.1"
+DATA_VERSION = "5.3"
 
 try:
     import yfinance as yf
@@ -623,7 +623,8 @@ def get_ext_quotes(tickers):
             continue
         ref = float(base[t].get("last") or 0)
         ph = _ext_phase_of(ts)
-        if not ph or not (ref > 0 and px > 0 and np.isfinite(px)) or abs(px / ref - 1) > 0.60:
+        # v5.3: small cap'lerde seans dışı +%400 / −%60 gerçek olabilir — yalnızca bariz veri hatası elenir
+        if not ph or not (ref > 0 and px > 0 and np.isfinite(px)) or not (-0.9 < px / ref - 1 < 5.0):
             continue
         base[t] = dict(base[t], ext={"phase": ph, "px": px, "chg_abs": px - ref,
                                      "chg_pct": (px / ref - 1) * 100,
@@ -1539,6 +1540,273 @@ def get_top_losers(n=5):
         except Exception:
             pass
     return _fallback_movers(False, n)
+
+
+# ======================================================================
+# v5.3 — Geniş momentum taraması (Top Movers)
+#   Evren: Yahoo'nun hazır tarayıcıları (günün kazananları / kaybedenleri, en aktifler, small-cap kazananlar,
+#   agresif small cap'ler, büyüme teknolojisi, en çok açığa satılanlar) + piyasa değeri ve fiyat alt sınırı
+#   OLMAYAN özel sorgular (ABD: NYSE / NASDAQ / AMEX · Avrupa: DE, GB, FR, NL, IT, ES, CH, İskandinavya, …) +
+#   Yahoo'da trend olan semboller. Seans öncesi / sonrası: preMarketChangePercent / postMarketChangePercent.
+#   Sıralama: seçilen seans yüzdesinin MUTLAK büyüklüğü, eşitlikte göreli hacim (RVOL).
+# ======================================================================
+MV_EU_REGIONS = ("de", "gb", "fr", "nl", "it", "es", "ch", "se", "dk", "no", "fi", "be", "at", "ie", "pt", "pl")
+MV_PREDEF = ("day_gainers", "day_losers", "most_actives", "small_cap_gainers", "aggressive_small_caps",
+             "growth_technology_stocks", "most_shorted_stocks")
+_MV_EU_SFX = (".DE", ".F", ".L", ".PA", ".AS", ".MI", ".MC", ".SW", ".ST", ".CO", ".OL", ".HE", ".BR", ".VI",
+              ".IR", ".LS", ".WA", ".IL")
+_MV_US_EXCH = ("NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS", "NAS", "NYS")
+
+
+def _mv_queries():
+    """Özel Yahoo sorguları (yfinance EquityQuery): piyasa değeri ve 5 $ fiyat alt sınırı YOK — small cap'ler dahil.
+    Döner: [(ad, sorgu, sıralama alanı, artan mı)]."""
+    EQ = getattr(yf, "EquityQuery", None) if _HAS_YF else None
+    if EQ is None:
+        return []
+    try:
+        us = EQ("eq", ["region", "us"])
+        eu = EQ("or", [EQ("eq", ["region", r]) for r in MV_EU_REGIONS])
+        liq_us = [EQ("gte", ["intradayprice", 0.5]), EQ("gt", ["dayvolume", 100000])]
+        liq_eu = [EQ("gte", ["intradayprice", 0.2]), EQ("gt", ["dayvolume", 20000])]
+        return [
+            ("us_up", EQ("and", [us, EQ("gt", ["percentchange", 4])] + liq_us), "percentchange", False),
+            ("us_down", EQ("and", [us, EQ("lt", ["percentchange", -4])] + liq_us), "percentchange", True),
+            ("us_active", EQ("and", [us, EQ("gt", ["dayvolume", 3000000]), EQ("gte", ["intradayprice", 0.5])]),
+             "dayvolume", False),
+            ("eu_up", EQ("and", [eu, EQ("gt", ["percentchange", 3])] + liq_eu), "percentchange", False),
+            ("eu_down", EQ("and", [eu, EQ("lt", ["percentchange", -3])] + liq_eu), "percentchange", True),
+        ]
+    except Exception:
+        return []
+
+
+def _mv_screen(job):
+    """Tek tarayıcı isteği → Yahoo kotasyon listesi (hata = boş liste). Hazır sorguda `count`, özelde `size`."""
+    name, q, sort, asc = job
+    try:
+        if isinstance(q, str):
+            try:
+                res = yf.screen(q, count=250)
+            except TypeError:
+                res = yf.screen(q)
+        else:
+            try:
+                res = yf.screen(q, size=250, sortField=sort, sortAsc=bool(asc))
+            except TypeError:
+                res = yf.screen(q)
+        quotes = res.get("quotes", []) if isinstance(res, dict) else []
+        return [dict(x, _src=name) for x in quotes if isinstance(x, dict)]
+    except Exception:
+        return []
+
+
+def _mv_trending(n=30):
+    """Yahoo'da şu an trend olan semboller (seans öncesi koşucular burada erken görünür) — yalnızca semboller."""
+    if not _HAS_REQ:
+        return []
+    out = []
+    for reg in ("US",):
+        try:
+            r = requests.get(f"https://query1.finance.yahoo.com/v1/finance/trending/{reg}", params={"count": n},
+                             headers=_HEADERS, timeout=6)
+            res = ((((r.json() or {}).get("finance") or {}).get("result")) or [{}])[0]
+            out += [str(x.get("symbol")) for x in res.get("quotes", []) if x.get("symbol")]
+        except Exception:
+            continue
+    return [s for s in dict.fromkeys(out) if s and "^" not in s and "=" not in s and not s.endswith("-USD")]
+
+
+def mv_region(sym, exch=""):
+    """'US' | 'EU' | 'Other' — sembol sonekinden ve borsa kodundan."""
+    s = str(sym or "").upper()
+    if s.endswith(_MV_EU_SFX):
+        return "EU"
+    if "." not in s and (not exch or str(exch).upper() in _MV_US_EXCH):
+        return "US"
+    return "Other"
+
+
+def _mv_row(q):
+    """Yahoo kotasyonu → movers satırı (hisse dışı / varant / hak / birim / bozuk veri → None)."""
+    sym = str(q.get("symbol") or "").upper().strip()
+    if not sym or q.get("quoteType", "EQUITY") not in ("EQUITY", None):
+        return None
+    exch = str(q.get("exchange") or "")
+    if exch in ("NMS", "NGM", "NCM", "NAS") and re.match(r"^[A-Z]{4}[WRUZ]$", sym):      # NASDAQ 5. harf kuralı
+        return None
+    if re.search(r"(-WT|\.WS|-WS|\.U|-U|\.R|-R|\.RT|-RT)$", sym):
+        return None
+    px = _num(q.get("regularMarketPrice"))
+    if not px or px <= 0:
+        return None
+    day = _num(q.get("regularMarketChangePercent"))
+    pre, post = _num(q.get("preMarketChangePercent")), _num(q.get("postMarketChangePercent"))
+    vol = _num(q.get("regularMarketVolume"))
+    avg = _num(q.get("averageDailyVolume3Month")) or _num(q.get("averageDailyVolume10Day"))
+
+    def ok(v):
+        return v is not None and -97.0 < v < 3000.0
+    return {"ticker": sym, "name": str(q.get("shortName") or q.get("longName") or q.get("displayName") or sym)[:60],
+            "exch": str(q.get("fullExchangeName") or exch), "region": mv_region(sym, exch),
+            "cap": _num(q.get("marketCap")), "last": px, "day_pct": day if ok(day) else None,
+            "pre_pct": pre if ok(pre) else None, "pre_px": _num(q.get("preMarketPrice")),
+            "post_pct": post if ok(post) else None, "post_px": _num(q.get("postMarketPrice")),
+            "vol": vol, "avg_vol": avg, "rvol": (vol / avg) if (vol and avg and avg > 0) else None,
+            "state": str(q.get("marketState") or ""), "cur": str(q.get("currency") or ""), "src": "real"}
+
+
+def _mv_fill_ext(rows, extra_syms, phase):
+    """Yahoo kotasyonunda seans dışı alanı yoksa (ya da trend sembolleri için) 1 dakikalık seans dışı mumlardan
+    tamamlar — en fazla 60 sembol, yalnızca ABD seans öncesi / sonrası sırasında."""
+    if phase not in ("pre", "post"):
+        return rows
+    key = "pre_pct" if phase == "pre" else "post_pct"
+    have = {r["ticker"]: r for r in rows}
+    need = [t for t in extra_syms if t not in have]
+    need += [r["ticker"] for r in sorted(rows, key=lambda r: -(r.get("vol") or 0))
+             if r["region"] == "US" and r.get(key) is None]
+    need = list(dict.fromkeys(need))[:60]
+    if not need:
+        return rows
+    try:
+        q5 = get_quotes(need)
+        data = _batch_ext(tuple(sorted(need)))
+    except Exception:
+        return rows
+    for t in need:
+        q = q5.get(t)
+        df = data.get(t) if isinstance(data, dict) else None
+        if not q or q.get("src") != "real" or df is None or not len(df):
+            continue
+        try:
+            c = df["Close"].dropna()
+            ts, px = c.index[-1], float(c.iloc[-1])
+        except Exception:
+            continue
+        ref = float(q.get("last") or 0)
+        if not (ref > 0 and px > 0) or _ext_phase_of(ts) != phase or not (-0.97 < px / ref - 1 < 30):
+            continue
+        pct_ = (px / ref - 1) * 100
+        ext_vol = None
+        try:
+            ph_ = [_ext_phase_of(x) == phase for x in df.index]
+            ext_vol = float(df["Volume"][ph_].sum()) if "Volume" in df else None
+        except Exception:
+            pass
+        r = have.get(t)
+        if r is None:
+            r = {"ticker": t, "name": company_name(t), "exch": "", "region": mv_region(t), "cap": None,
+                 "last": ref, "day_pct": float(q.get("change_pct") or 0.0), "pre_pct": None, "pre_px": None,
+                 "post_pct": None, "post_px": None, "vol": float(q.get("volume") or 0) or None, "avg_vol": None,
+                 "rvol": None, "state": phase.upper(), "cur": "", "src": "real"}
+            rows.append(r)
+            have[t] = r
+        r[key], r[key[:-4] + "_px"] = pct_, px
+        r["ext_vol"] = ext_vol
+    return rows
+
+
+def _mv_mock_pool():
+    """Çevrimdışı / veri yok: izleme evreninin (mock) günlük değişimi ve sentetik göreli hacmi."""
+    rows = []
+    for t, q in get_quotes(SCAN_UNIVERSE).items():
+        try:
+            s = _synth(t)
+            v = float(s["Volume"].iloc[-1])
+            avg = float(s["Volume"].tail(21).iloc[:-1].mean())
+        except Exception:
+            v, avg = float(q.get("volume") or 0), 0.0
+        rows.append({"ticker": t, "name": q.get("name") or t, "exch": "", "region": mv_region(t), "cap": None,
+                     "last": q["last"], "day_pct": q["change_pct"], "pre_pct": None, "pre_px": None, "post_pct": None,
+                     "post_px": None, "vol": v, "avg_vol": avg or None, "rvol": (v / avg) if avg else None,
+                     "state": "", "cur": "", "src": q.get("src", "mock")})
+    return rows
+
+
+@_ttl_cache(90, fail_ttl=45)
+def get_mover_pool():
+    """Tüm tarayıcıların birleşik aday havuzu (≤ 90 sn önbellek). Döner: {'rows', 'src', 'n', 'phase', 'at',
+    'sources'}. Aynı sembol birden fazla kaynakta varsa en dolu satır (seans dışı alanlı) tutulur."""
+    phase = market_phase()
+    pool, sources = {}, {}
+    if _HAS_YF and hasattr(yf, "screen"):
+        jobs = [(n, n, None, None) for n in MV_PREDEF] + _mv_queries()
+        for quotes in _pmap(_mv_screen, jobs, workers=6):
+            for q in quotes:
+                r = _mv_row(q)
+                if not r:
+                    continue
+                sources[q.get("_src")] = sources.get(q.get("_src"), 0) + 1
+                old = pool.get(r["ticker"])
+                if old is None or sum(v is not None for v in r.values()) > sum(v is not None for v in old.values()):
+                    pool[r["ticker"]] = r
+        trend = _mv_trending() if pool else []
+        rows = _mv_fill_ext(list(pool.values()), trend, phase)
+        if len(rows) >= 10:
+            return {"rows": rows, "src": "real", "n": len(rows), "phase": phase, "sources": sources,
+                    "at": pd.Timestamp.now(tz=TZ).strftime("%H:%M")}
+    rows = _mv_mock_pool()
+    return {"rows": rows, "src": rows[0]["src"] if rows else "none", "n": len(rows), "phase": phase,
+            "sources": {}, "at": pd.Timestamp.now(tz=TZ).strftime("%H:%M")}
+
+
+MV_CAPS = {"all": (None, None), "small": (None, 2e9), "mid": (2e9, 10e9), "large": (10e9, None)}
+MV_SESSIONS = {"day": "day_pct", "pre": "pre_pct", "post": "post_pct"}
+
+
+def mv_default_session(phase=None):
+    """Seansa göre varsayılan görünüm: seans öncesi → ☀️ pre-market · sonrası → 🌙 after-hours · aksi hâlde gün."""
+    ph = phase or market_phase()
+    return "pre" if ph == "pre" else "post" if ph == "post" else "day"
+
+
+def rank_movers(rows, side="up", session="day", region="all", cap="all", min_rvol=0.0, n=15):
+    """Havuzu süzer ve sıralar: seçilen seans yüzdesinin MUTLAK büyüklüğüne göre (kazananlarda en büyük artış,
+    kaybedenlerde en büyük düşüş), eşitlikte göreli hacme göre. min_rvol yalnızca normal seans hacmine uygulanır."""
+    key = MV_SESSIONS.get(session, "day_pct")
+    lo_c, hi_c = MV_CAPS.get(cap, (None, None))
+    out = []
+    for r in rows or []:
+        v = r.get(key)
+        if v is None or (side == "up" and v <= 0) or (side != "up" and v >= 0):
+            continue
+        if region != "all" and r.get("region") != region:
+            continue
+        cp = r.get("cap")
+        if (lo_c is not None or hi_c is not None) and cp is None:
+            continue
+        if lo_c is not None and cp < lo_c or hi_c is not None and cp >= hi_c:
+            continue
+        if min_rvol and session == "day" and (r.get("rvol") or 0.0) < float(min_rvol):
+            continue
+        out.append(dict(r, value=float(v)))
+    out.sort(key=lambda r: (-abs(r["value"]), -(r.get("rvol") or 0.0)))
+    return out[:int(n)]
+
+
+def get_movers(side="up", session="auto", region="all", cap="all", min_rvol=0.0, n=15):
+    """Top Movers paneli: {'rows', 'src', 'session', 'phase', 'n_pool', 'at', 'n_ext'}."""
+    pool = get_mover_pool()
+    ses = mv_default_session(pool["phase"]) if session == "auto" else session
+    rows = rank_movers(pool["rows"], side, ses, region, cap, min_rvol, n)
+    n_ext = sum(1 for r in pool["rows"] if r.get("pre_pct") is not None or r.get("post_pct") is not None)
+    return {"rows": rows, "src": pool["src"], "session": ses, "phase": pool["phase"], "n_pool": pool["n"],
+            "at": pool["at"], "n_ext": n_ext}
+
+
+# ======================================================================
+# v5.3 — Bilanço takvimine her zaman eklenen büyük şirketler
+# ======================================================================
+MAG7 = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA")
+MEGA10 = ("AVGO", "TSM", "BRK-B", "LLY", "JPM", "WMT", "V", "ORCL", "MA", "NFLX")
+_EARN_ALIAS = {"GOOG": "GOOGL", "BRK.B": "BRK-B", "BRK/B": "BRK-B", "BRKB": "BRK-B"}
+
+
+def earn_focus(sym):
+    """Takvim satırının etiketi: 'mag7' | 'mega' | None (sembol yazımı farklarına dayanıklı)."""
+    s = _EARN_ALIAS.get(str(sym or "").upper(), str(sym or "").upper())
+    return "mag7" if s in MAG7 else "mega" if s in MEGA10 else None
 
 
 # ======================================================================
