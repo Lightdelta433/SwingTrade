@@ -1,4 +1,149 @@
-# Pulse — Market Dashboard (Streamlit) · v5.1
+# Pulse — Market Dashboard (Streamlit) · v5.3
+
+## Neu in v5.3 (Deutsch)
+
+**Dateien:** alle hochladen — `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py`,
+`pulse_chart/index.html`, `pulse_list/index.html` — dann *Reboot app*. Keine neuen Secrets. Die
+Drag-&-Drop-Verbesserungen aus v5.2 sind in diesem Paket enthalten (in deinem Repo lag noch 5.1).
+Tipp: per *Add file → Upload files* (Drag & Drop) hochladen, nicht in den Web-Editor einfügen.
+
+### Top Movers: breites Screening inkl. Pre-Market, Small-/Mid-Caps und Europa
+* **Ganzes handelbares Universum statt nur Large-Caps:** Yahoos Screener *day gainers / losers*, *most
+  actives*, *small-cap gainers*, *aggressive small caps*, *growth technology*, *most shorted* plus eigene
+  Abfragen **ohne Mindest-Börsenwert und ohne 5-$-Grenze** (USA: NYSE / NASDAQ / AMEX · Europa: DE, GB, FR, NL,
+  IT, ES, CH, Skandinavien, BE, AT, IE, PT, PL) plus die Werte, die bei Yahoo gerade *trending* sind.
+  Varianten, Rechte, Units und ETFs werden aussortiert.
+* **Vor- und nachbörslich:** `preMarketChangePercent` / `postMarketChangePercent` aus den Yahoo-Kursdaten
+  (fehlen sie, werden sie aus den 1-Minuten-Kerzen mit Pre/Post-Market ergänzt). Bewegungen wie +20 % bis
+  +400 % oder −20 % bis −60 % werden nicht mehr als „Datenfehler“ verworfen.
+* **Sortierung strikt nach der größten absoluten Veränderung** der gewählten Sitzung, bei Gleichstand nach
+  relativem Volumen (heutiges Volumen ÷ 3-Monats-Schnitt). Umschalter **Session / ☀️ Pre-market / 🌙
+  After-hours** — automatisch passend zur Uhrzeit vorausgewählt.
+* **Filter:** Markt (alle / USA / Europa), Größe (Small < 2 Mrd. $, Mid 2–10 Mrd. $, Large > 10 Mrd. $) und
+  relatives Volumen (≥ 1,5× / 3× / 5×) für echte High-Momentum-Werte. Chips zeigen *small*, *penny* (< 1 $) und
+  *EU*; in der Sitzungsansicht steht die vor-/nachbörsliche Bewegung zusätzlich darunter.
+* **Live:** Das Panel lädt sich alle 90 Sekunden selbst neu (nur das Panel, nicht die Seite).
+* *Ehrliche Grenzen:* Yahoo bietet keinen Screener, der direkt nach Pre-Market-Prozent sucht. Vorbörsliche
+  Kandidaten kommen deshalb aus den Screenern (inkl. Small-Caps) und den Trending-Werten — ein Wert, der
+  vorbörslich aus dem Nichts explodiert, erscheint, sobald er bei Yahoo trendet. Das Pre-Market-Volumen ist
+  nicht Teil der Screener-Daten, der Volumenfilter gilt daher für die reguläre Sitzung.
+
+### Earnings-Kalender: zusätzlich Magnificent 7 + 10 Mega-Caps
+Neben deinen Watchlist-Werten (★) erscheinen immer: **Magnificent 7** (AAPL, MSFT, GOOGL, AMZN, NVDA, META,
+TSLA — Schildchen *M7*) und **10 weitere Mega-Caps** (AVGO, TSM, BRK-B, LLY, JPM, WMT, V, ORCL, MA, NFLX —
+Schildchen *MEGA*). Auch bei leerer Watchlist ist der Kalender damit nie leer.
+
+### Filter nur noch bei Strategie 1
+Regime-Filter und alle anderen Zusatzfilter gelten jetzt **nur für die erste Strategie** (🤖 Pattern breakout).
+Bei Double Donchian, Flag, Ichimoku und WaveTrend entfallen überall:
+* **Short Term:** keine Regime-Box, kein Vorfilter „Kurs ≥ 3 $ / Tagesplus / Börsenwert ≥ 300 Mio. $“, keine
+  15-Minuten-Bestätigung. Gescannt werden die 150 liquidesten Aktien (nach Handelsvolumen in $) — die Strategie
+  sucht ihr eigenes Setup in allen. Statt der 15-Min-Spalte steht dort die Richtung (LONG / SHORT).
+* **Bots:** kein Regime-Filter, keine 15-Min-Bestätigung, kein Mindest-Bestätigungsscore, kein Mindest-
+  Chance/Risiko — die Optionen erscheinen im Formular nur noch für die AI-Strategie. Bestehende Bots
+  ignorieren alte Einstellungen dazu automatisch.
+* **Backtest:** der Block „Confirmations“ (Wochentrend, ADX, Marktregime) ist weg.
+* Die Bestätigungs-Checks (Trend, Indikatoren, Formationen) bleiben als **reine Information** sichtbar.
+
+### Ichimoku: nur Gold, Silber, Öl und Bitcoin — Long **und** Short
+* **Short Term** zeigt eine feste Marktübersicht: Gold (GC=F), Silber (SI=F), Rohöl WTI (CL=F), Bitcoin
+  (BTC-USD). Jeder Markt steht immer in der Liste — ohne Signal mit dem Hinweis, wo der Kurs zur Wolke steht und
+  was er für Long bzw. Short bräuchte.
+* **Shorts überall:** Scan, Bots und Backtest — gespiegelte Regeln (Schluss unter der Wolke, Tenkan unter Kijun,
+  Chikou darunter, Ausstieg beim Schluss über dem Kijun; Kijun-Bounce auch short).
+* **Markt-Presets automatisch:** Gold/Silber 9/26/52 mit Wochen-Wolken-Regel (Long nur bei Wochenschluss über,
+  Short nur unter der Wochen-Wolke), Öl 9/26/52 mit ADX ≥ 20, Bitcoin mit wählbarer Variante 9/26/52 · 10/30/60 ·
+  20/60/120 (Standard 10/30/60). Diese Marktregeln sind jetzt **Teil der Ichimoku-Regeln selbst** (kein
+  allgemeiner Filter mehr) und im Backtest abschaltbar. Hinweis: Gold/Silber waren in deiner ursprünglichen
+  Vorgabe „nur long“ — jetzt handeln sie beide Richtungen; im Backtest kannst du „Long only“ wählen.
+* **Backtest:** Wahl der Ichimoku-Strategie setzt sofort das Gold-Preset inkl. Instrument; jedes Preset
+  wechselt das Instrument mit (GC=F, SI=F, CL=F, BTC-USD). Der Bitcoin-Varianten-Vergleich bleibt.
+
+### Neu: deine Variante als zweiter Ichimoku-Modus — „Staged Kumo entry“
+1. **Stufe 1 · in die Wolke:** Schluss wieder innerhalb der Wolke, nachdem der Kurs darunter geschlossen hatte
+   → **⅓ der Position** (Short: Eintritt in die Wolke von oben).
+2. **Stop für Stufe 1:** knapp unter der Wolkenunterkante (Short: über der Oberkante) — raus, wenn ein Schluss
+   wieder aus der Wolke fällt.
+3. **Stufe 2 · aus der Wolke:** Schluss über der Wolke (Short: darunter) → die **restlichen ⅔** (fehlte Stufe 1,
+   werden nur die ⅔ eröffnet).
+4. **Trailing:** Nach Stufe 2 laufen beide Teile mit dem Kijun — raus beim ersten Schluss auf der anderen Seite.
+Umschaltbar in Short Term, im Bot-Formular und im Backtest. Der Backtest führt beide Teile als eigene Trades
+(Seite „LONG · ⅓ / ⅔“), Ausstiegsgrund „Back out of the cloud“ bzw. „Close beyond Kijun“ — so siehst du direkt,
+ob deine Staffelung auf Gold, Silber, Öl und Bitcoin besser abschneidet als der klassische Kumo-Breakout.
+
+### Demo-Konto: Shorts, Futures, Bitcoin-Bruchteile
+* **Short-Positionen** (für den Ichimoku-Bot): Der Positionswert wird als Sicherheit reserviert, fällt der Kurs,
+  steigt der Gewinn. Stop liegt darüber und wird nur **nach unten** nachgezogen (Kijun bzw. Wolkenkante).
+  Positionen und Historie zeigen *SHORT* / *COVER*, „Cover all“ schließt eine Short-Position von Hand. Shorts
+  werden vom Bot verwaltet (das SL/TP-Formular gilt für Long-Positionen).
+* **Stufe 2 wird zur bestehenden Position nachgekauft**, der gemeinsame Stop geht nie zurück.
+* **Gold-, Silber- und Öl-Futures** sind handelbar (in Einheiten zum Futures-Preis — keine Kontraktgrößen oder
+  Hebel), **Bitcoin in Bruchteilen** (4 Nachkommastellen), damit der Bot bei hohen Kursen überhaupt kaufen kann.
+* Für die Wochen-Wolke laden Ichimoku-Bots jetzt 5 Jahre Tagesdaten (1 Jahr reichte dafür nicht).
+
+**Getestet:** Meine frühere Testumgebung war nach einer Pause weg — ich habe sie neu aufgebaut. Streamlit,
+Plotly und yfinance laufen dabei als Attrappen; die echte App wird pro Seite komplett durchlaufen (Markets,
+Short Term, Demo, Backtest). Geprüft u. a.: Movers-Sortierung strikt nach |%|, automatische Pre-Market-Ansicht,
+Markt-/Größen-/RVOL-Filter, Aussortieren von Varianten/Units/ETFs, Duplikate mit Pre-Market-Feld; Earnings mit
+M7/MEGA/★ und leerer Watchlist; Ichimoku-Übersicht mit vier Märkten in beiden Modi; Donchian ohne Regime vs. AI
+mit Regime; Bot-Formular je Strategie und Anlegen eines Ichimoku-Bots; Demo-Short mit Stufe-2-Nachkauf, Stop nur
+nach unten, Eindecken mit korrekter Abrechnung; Backtest beider Modi long/short/beide inkl. Stufen und
+Varianten-Vergleich. Ehrliche Grenzen: Die Yahoo-Abfragen sind gegen nachgebildete Antworten getestet (die
+Feldnamen gegen die yfinance-Dokumentation geprüft), nicht gegen Live-Daten — Netzwerk ist hier gesperrt. Kurse
+in den Tests sind synthetisch. Alle Module kompilieren auf Python 3.11.
+
+---
+
+## Neu in v5.2 (Deutsch)
+
+**Dateien:** alle hochladen — `app.py`, `engine.py`, `mock_data.py`, `chart.py`, `backend.py`,
+`pulse_chart/index.html`, **`pulse_list/index.html` (neu, 5.2)** — dann *Reboot app*. Keine neuen Secrets.
+Tipp: per *Add file → Upload files* (Drag & Drop) hochladen, nicht in den Web-Editor einfügen.
+
+### Watchlist-Sortierung per Drag & Drop: exakte Verschiebung statt Index-Tausch
+Gilt für **beide** sortierbaren Listen — die Watchlist (Markets) und die Demo-Watchlist.
+
+* **Exakte Array-Verschiebung (splice):** Beim Loslassen wird das gezogene Unternehmen an seinem alten
+  Index entfernt und genau am Ziel-Index eingefügt —
+  `const [moved] = list.splice(fromIndex, 1); list.splice(toIndex, 0, moved);`.
+  Steht AAPL unter NVDA und wird eine Position nach oben über NVDA gezogen, rutscht NVDA genau eine Position
+  nach unten. Von Platz 5 auf Platz 1 rücken die Plätze 1–4 um genau eine Stelle nach unten, alles danach
+  bleibt unverändert. Die ↑/↓-Pfeile und die Tastatur nutzen dieselbe Funktion.
+* **Was vorher falsch war:** Das Ziel wurde aus der *Mitte der gezogenen Zeile* berechnet, nicht aus der
+  Position des Zeigers. Wer eine Zeile am Rand anfasste, landete eine Position daneben; zusätzlich rutschten
+  die anderen Zeilen während des Ziehens weg, sodass die Zeile unter dem Zeiger nicht die Ziel-Zeile war.
+  Im Test: 5 → 1 landete auf Platz 2, 1 → 0 bewirkte nichts, 0 → 4 landete auf Platz 3.
+* **Jetzt gilt:** Ziel = die Zeile **unter dem Zeiger/Finger** — egal, wo man die Zeile angefasst hat. Die
+  anderen Zeilen bleiben beim Ziehen still stehen.
+* **Deutliche Drop-Zone-Vorschau:** Eine blaue Einfügelinie zeigt während des Ziehens exakt die Lücke, in die
+  das Unternehmen einsortiert wird (beim Hochziehen über der Ziel-Zeile, beim Runterziehen darunter), links
+  mit der **neuen Platznummer**. Die gezogene Zeile schwebt mit Schatten am Zeiger, ihr alter Platz bleibt
+  blass und gestrichelt sichtbar. Über dem eigenen Platz verschwindet die Linie (= keine Änderung).
+* **Abbrechen:** `Esc` während des Ziehens bricht ab, ebenso wenn der Browser die Geste übernimmt
+  (z. B. Scrollen auf dem iPad).
+* **Lange Listen:** Am oberen/unteren Rand scrollt die Liste von selbst weiter, auch wenn der Zeiger
+  stillsteht — gleich schnell auf jedem Gerät.
+* **Kein Zurückspringen:** Kommt direkt nach dem Verschieben noch eine verspätete Darstellung mit der alten
+  Reihenfolge an (z. B. von einem laufenden Kurs-Update), bleibt die neue Reihenfolge stehen; frische Kurse
+  werden trotzdem übernommen. Kurs-Updates, die *während* des Ziehens eintreffen, werden nach dem Loslassen
+  angewendet.
+* **Gespeichert wird ebenfalls exakt:** Die Verschiebung wird auch auf der gespeicherten Liste per ID
+  nachvollzogen. Wurde in der Zwischenzeit (z. B. in einem anderen Tab) ein Unternehmen hinzugefügt oder
+  entfernt, bleibt es an seinem Platz — früher wäre es ans Ende gerutscht.
+* **Upload-sicher:** Liegt im Repo noch eine ältere `pulse_list/index.html` (z. B. 5.0), nutzt die App
+  automatisch die in `chart.py` eingebettete neue Version. Die eingebettete Kopie steht weiterhin in kurzen
+  Zeilen (max. 124 Zeichen).
+
+**Getestet:** Im echten Browser alle 64 Start→Ziel-Kombinationen für beide Listen mit gemischten
+Zeilenhöhen (☀️/🌙-Zeile), zufälligen Greif- und Ablagepunkten (Rand/Mitte, Logo/Name/Griff) — jede
+Verschiebung exakt gleich splice; deine beiden Beispiele; Linie + Platznummer für jede Ziel-Zeile;
+Esc und Gesten-Abbruch; 16-Zeilen-Liste mit Auto-Scroll über den sichtbaren Bereich hinaus; Touch
+(Gedrückthalten + Ziehen); helles Design; verspätete Darstellungen. Dazu die bisherige Listen-Suite,
+66 Szenarien in 4 Modi (u. a. exakte Verschiebung für jede Listenlänge ≤ 7 und jedes Start/Ziel-Paar,
+gleichzeitiges Hinzufügen/Entfernen, Haupt- und Demo-Liste, alte Ordner-Datei) und 28 Chart-Schritte.
+Alle Module kompilieren auf Python 3.9 und 3.11.
+
+---
 
 ## Neu in v5.1 (Deutsch)
 
