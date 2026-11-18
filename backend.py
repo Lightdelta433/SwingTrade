@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.3"
+BACKEND_VERSION = "5.4"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -746,7 +746,8 @@ def demo_new(start=25000, ccy="USD", watch=None, bots=None, name="Main account",
     return {"v": 2, "id": acc_id or secrets.token_hex(4), "name": demo_clean_name(name) or "Main account",
             "start": start, "ccy": ccy if ccy in DEMO_CCYS else "USD", "cash": start, "pos": {},
             "trades": [], "eq": [[time.time(), start]], "watch": list(watch if watch is not None else DEMO_WATCH),
-            "bots": list(bots or []), "log": [], "seq": 0, "created": time.time(), "fx": None, "bot_slot": None}
+            "bots": list(bots or []), "log": [], "seq": 0, "created": time.time(), "fx": None, "bot_slot": None,
+            "guard": guard_default()}
 
 
 def demo_clean_name(name):
@@ -782,6 +783,7 @@ def _demo_user(raw):
         a.setdefault("bots", [])
         a.setdefault("log", [])
         a.setdefault("eq", [[time.time(), a.get("start", 25000)]])
+        a.setdefault("guard", guard_default())      # v5.4: her hesapta devre kesici (varsayılan 5.000)
     order = [i for i in (u.get("order") or []) if i in acc]
     order += [i for i in acc if i not in order]
     u["order"] = order
@@ -927,9 +929,11 @@ def demo_reset(email, start, ccy, keep=True, acc_id=None):
         bots = []
         for b in (acct.get("bots") or []) if keep else []:
             b = dict(b, on=False, last=None, cool={})
+            b.pop("guard_paused", None)
             bots.append(b)
         new = demo_new(start, ccy, acct.get("watch") if keep else None, bots, name=acct.get("name") or "Account",
                        acc_id=acct.get("id"))
+        new["guard"] = dict(guard_cfg(acct), breach=None)     # v5.4: limit ayarları kalır, kilit kalkar
         acct.clear()
         acct.update(new)
         return True
@@ -1125,6 +1129,201 @@ def demo_value(acct, quotes=None, eurusd=None):
     rows.sort(key=lambda r: -r["value"])
     return {"equity": eq, "cash": float(acct["cash"]), "invested": inv, "upl": upl, "rpl": rpl,
             "total": eq - float(acct["start"]), "total_pct": (eq / float(acct["start"]) - 1) * 100, "rows": rows}
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v5.4 — İstatistik, açık risk ve Prop-Firm devre kesici (haftalık / aylık zarar limiti, "ACCOUNT BREACHED")
+# ---------------------------------------------------------------------------------------------------------------
+GUARD_PERIODS = ("week", "month")
+GUARD_BASES = ("fixed", "pct")
+GUARD_LIMIT_DEFAULT = 5000.0         # her yeni hesapta hesabın para biriminde
+GUARD_PCT_DEFAULT = 5.0              # yüzde modunda: başlangıç bakiyesinin %'si
+GUARD_WARN, GUARD_RED = 0.70, 0.90   # çubuk: yeşil < %70 ≤ sarı / turuncu < %90 ≤ kırmızı
+
+
+def demo_stats(acct):
+    """Kapanmış işlemlerden (geçmişte sonucu olan her satış / kapama) isabet oranı ve ortalama kazanç : kayıp.
+    Döner: {'n','wins','losses','win_rate','avg_win','avg_loss','rr'} — rr: ort. kazanç / ort. kayıp (yoksa None)."""
+    pnl = [float(t["pnl"]) for t in acct.get("trades") or [] if t.get("pnl") is not None]
+    wins = [x for x in pnl if x > 0]
+    loss = [-x for x in pnl if x < 0]
+    aw = sum(wins) / len(wins) if wins else 0.0
+    al = sum(loss) / len(loss) if loss else 0.0
+    return {"n": len(pnl), "wins": len(wins), "losses": len(loss),
+            "win_rate": (len(wins) / len(pnl) * 100.0) if pnl else 0.0, "avg_win": aw, "avg_loss": al,
+            "rr": (aw / al) if al > 0 else (0.0 if not wins else None)}
+
+
+def demo_open_risk(val):
+    """Açık risk: her stop şimdiki fiyattan tetiklenirse özsermayenin ne kadar düşeceği (long: son − stop,
+    short: stop − son; kârı kilitlenmiş stop da "geri verilecek" tutar olarak sayılır). Stopsuz pozisyonlar ayrı.
+    Döner: {'risk','n','naked','naked_val','naked_syms'}."""
+    risk, n, naked, nval, nsyms = 0.0, 0, 0, 0.0, []
+    for r in (val or {}).get("rows") or []:
+        stop = float(r.get("stop") or 0) if r.get("orders") else 0.0
+        if stop <= 0:
+            naked += 1
+            nval += float(r.get("value") or 0)
+            nsyms.append(r["sym"])
+            continue
+        last, q, fxm = float(r["last"]), float(r["qty"]), float(r.get("fxm") or 1.0)
+        d = (stop - last) if r.get("side") == "short" else (last - stop)
+        risk += max(0.0, d) * q * fxm
+        n += 1
+    return {"risk": risk, "n": n, "naked": naked, "naked_val": nval, "naked_syms": nsyms}
+
+
+def guard_default():
+    return {"on": True, "period": "week", "basis": "fixed", "limit": GUARD_LIMIT_DEFAULT, "pct": GUARD_PCT_DEFAULT,
+            "breach": None}
+
+
+def guard_cfg(acct):
+    """Hesabın devre kesici ayarları (eksik / bozuk alanlar varsayılanla)."""
+    g = guard_default()
+    raw = acct.get("guard")
+    if isinstance(raw, dict):
+        g.update({k: raw[k] for k in g if k in raw})
+    g["on"] = bool(g["on"])
+    g["period"] = g["period"] if g["period"] in GUARD_PERIODS else "week"
+    g["basis"] = g["basis"] if g["basis"] in GUARD_BASES else "fixed"
+    try:
+        g["limit"] = max(0.0, float(g["limit"]))
+    except (TypeError, ValueError):
+        g["limit"] = GUARD_LIMIT_DEFAULT
+    try:
+        g["pct"] = min(100.0, max(0.0, float(g["pct"])))
+    except (TypeError, ValueError):
+        g["pct"] = GUARD_PCT_DEFAULT
+    if not isinstance(g.get("breach"), dict):
+        g["breach"] = None
+    return g
+
+
+def guard_limit(acct, g=None):
+    """Etkin limit hesabın para biriminde: sabit tutar ya da başlangıç bakiyesinin yüzdesi."""
+    g = g or guard_cfg(acct)
+    if g["basis"] == "pct":
+        return float(acct.get("start") or 0) * g["pct"] / 100.0
+    return float(g["limit"])
+
+
+def guard_period_start(period, now=None):
+    """Dönemin başlangıcı (Europe/Berlin): hafta → pazartesi 00:00, ay → ayın 1'i 00:00. Döner: unix zamanı."""
+    t = pd.Timestamp(float(now or time.time()), unit="s", tz="UTC").tz_convert(TZ)
+    d = t.replace(day=1) if period == "month" else t - pd.Timedelta(days=t.weekday())
+    return float(d.normalize().timestamp())
+
+
+def guard_status(acct, val=None, now=None):
+    """Dönem zararı = dönem içinde gerçekleşen K/Z + açık pozisyonların K/Z'si (zarar pozitif sayı).
+    level: off · ok · warn · red · breach. locked: limit aşıldı ve devre kesici açık."""
+    g = guard_cfg(acct)
+    now = float(now or time.time())
+    t0 = guard_period_start(g["period"], now)
+    realized = sum(float(t["pnl"]) for t in acct.get("trades") or []
+                   if t.get("pnl") is not None and float(t.get("ts") or 0) >= t0)
+    upl = float((val if val is not None else demo_value(acct, None, acct.get("fx")))["upl"])
+    pl = realized + upl
+    loss = max(0.0, -pl)
+    lim = guard_limit(acct, g)
+    ratio = (loss / lim) if lim > 0 else 0.0
+    locked = bool(g["on"] and g["breach"])
+    level = ("breach" if locked else "off" if not g["on"] else
+             "red" if ratio >= GUARD_RED else "warn" if ratio >= GUARD_WARN else "ok")
+    return {"on": g["on"], "period": g["period"], "basis": g["basis"], "limit": lim, "fixed": g["limit"],
+            "pct": g["pct"], "loss": loss, "realized": realized, "open": upl, "pl": pl, "ratio": ratio,
+            "level": level, "locked": locked, "breach": g["breach"], "t0": t0}
+
+
+def guard_locked(acct):
+    g = guard_cfg(acct)
+    return bool(g["on"] and g["breach"])
+
+
+def guard_eval(acct, val=None, now=None):
+    """Kilit İÇİNDE: dönem zararı limite ulaştıysa hesap kilitlenir (breach kaydı) ve hesabın TÜM botları hemen
+    durdurulur (guard_paused işaretiyle). Kilit kendiliğinden kalkmaz. Döner: (durum, yeni_kilit_mi)."""
+    s = guard_status(acct, val, now)
+    if not s["on"] or s["locked"] or s["limit"] <= 0 or s["loss"] < s["limit"] - 1e-9:
+        return s, False
+    now = float(now or time.time())
+    g = guard_cfg(acct)
+    g["breach"] = {"ts": round(now), "loss": round(s["loss"], 2), "limit": round(s["limit"], 2),
+                   "period": s["period"]}
+    acct["guard"] = g
+    paused = 0
+    for b in acct.get("bots") or []:
+        if b.get("on"):
+            b["on"] = False
+            b["guard_paused"] = True
+            paused += 1
+    per = "Weekly" if s["period"] == "week" else "Monthly"
+    acct.setdefault("log", []).append({"ts": round(now), "bot": "Circuit breaker", "sym": "",
+                                       "text": f"ACCOUNT BREACHED — {per.lower()} loss {s['loss']:.2f} reached the "
+                                               f"limit {s['limit']:.2f}; {paused} bot(s) paused, manual trading "
+                                               f"blocked"})
+    del acct["log"][:-200]
+    s = guard_status(acct, val, now)
+    s["paused"] = paused
+    return s, True
+
+
+def guard_check(email, acc_id, val, now=None):
+    """Arayüz için: durumu döndürür; limit yeni aşıldıysa hesabı kilit altında kilitler (yalnız o zaman yazar).
+    Döner: (durum, yeni_kilit_mi)."""
+    acct = demo_get(email, acc_id)
+    s = guard_status(acct, val, now)
+    if s["on"] and not s["locked"] and s["limit"] > 0 and s["loss"] >= s["limit"] - 1e-9:
+        return demo_edit(email, lambda a: guard_eval(a, val, now), acc_id)
+    return s, False
+
+
+def guard_set(email, acc_id=None, **chg):
+    """Devre kesici ayarlarını değiştirir: on, period ('week'|'month'), basis ('fixed'|'pct'), limit, pct.
+    Hesap kilitliyse: kapatmak kilidi kaldırır; limit / dönem / tür değişirse kilit kalkar ve yeni ayarla
+    yeniden değerlendirilir (zarar hâlâ limitin üstündeyse hesap kilitli kalır). Döner: (ok, mesaj)."""
+    def run(acct):
+        g = guard_cfg(acct)
+        old = dict(g)
+        if "on" in chg:
+            g["on"] = bool(chg["on"])
+        if chg.get("period") in GUARD_PERIODS:
+            g["period"] = chg["period"]
+        if chg.get("basis") in GUARD_BASES:
+            g["basis"] = chg["basis"]
+        if "limit" in chg:
+            try:
+                v = float(chg["limit"])
+            except (TypeError, ValueError):
+                return False, "The loss limit must be a number."
+            if not v > 0:
+                return False, "The loss limit must be above zero."
+            g["limit"] = round(v, 2)
+        if "pct" in chg:
+            try:
+                v = float(chg["pct"])
+            except (TypeError, ValueError):
+                return False, "The percentage must be a number."
+            if not 0 < v <= 100:
+                return False, "The percentage must be between 0 and 100."
+            g["pct"] = round(v, 2)
+        msg = "Circuit breaker " + ("on" if g["on"] else "off")
+        if g["breach"]:
+            if not g["on"]:
+                g["breach"] = None
+                msg = "Circuit breaker off — account unlocked"
+            elif any(g[k] != old[k] for k in ("period", "basis", "limit", "pct")):
+                g["breach"] = None
+                msg = "Limit changed — account re-checked"
+        elif any(g[k] != old[k] for k in ("period", "basis", "limit", "pct")):
+            msg = "Loss limit saved"
+        acct["guard"] = g
+        s, new = guard_eval(acct, chg.get("val"))
+        if new:
+            msg = "Still above the new limit — the account stays locked"
+        return True, msg
+    return demo_edit(email, run, acc_id)
 
 
 def _eq_point(acct, equity, now, gap=840):
@@ -1409,10 +1608,17 @@ def bots_apply(acct, data, now=None):
         return _bars15(data["i15"].get(p["sym"]), float(p.get("checked") or p.get("opened") or 0))
     ev_x, sells = apply_exits(acct, bars_of, eurusd, now, live=False, log=log)
     events += ev_x
+    # 1b) v5.4: devre kesici — dönem zararı limite ulaştıysa tüm botlar durur, yeni alım yapılmaz
+    gs, gnew = guard_eval(acct, demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()},
+                                           eurusd), now)
+    if gnew:
+        events.append({"kind": "breach", "sym": "", "qty": 0.0, "price": 0.0, "bot": "Circuit breaker",
+                       "reason": "ACCOUNT BREACHED", "pnl": None, "loss": gs["loss"], "limit": gs["limit"],
+                       "period": gs["period"], "paused": gs.get("paused", 0)})
     # 2) alımlar
     is_open = (not BOT_HOURS_ONLY) or us_session_open(now)
     for b in acct.get("bots") or []:
-        if not b.get("on"):
+        if not b.get("on") or gs["locked"]:
             continue
         bid, cfg = b["id"], en.bot_cfg(b.get("cfg"))
         buys, note = 0, ""
@@ -1716,13 +1922,20 @@ def _bots_tick_acct(md, email, acct, slot, now, force):
         _MON["err"] = f"bots_apply: {type(ex).__name__}: {ex}"[:200]
         return 0
     _MON["bots_last"] = now
-    n = len(events)
+    n = sum(1 for e in events if e["kind"] != "breach")
     if events:
         try:
             prefs = notify_prefs(profile_get(email))
             an = acct.get("name") or "Demo account"
             if prefs.get("on") and prefs.get("bot"):
                 for e in events:
+                    if e["kind"] == "breach":
+                        deliver(email, prefs, "bot", f'ACCOUNT BREACHED — demo account “{an}”',
+                                f'{"Weekly" if e["period"] == "week" else "Monthly"} loss {e["loss"]:.2f} reached the '
+                                f'limit {e["limit"]:.2f}. All bots are paused and manual trading is blocked until you '
+                                f'raise or switch off the limit, or reset the account.', tags=["rotating_light"],
+                                priority=4)
+                        continue
                     if e["kind"] == "buy":
                         title = f'{e["bot"]}: bought {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
                         body = (f'{e["reason"]}. Stop {e["stop"]:.2f} · '
