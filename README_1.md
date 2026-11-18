@@ -1,4 +1,65 @@
-# Pulse — Market Dashboard (Streamlit) · v5.3
+# Pulse — Market Dashboard (Streamlit) · v5.4
+
+## Neu in v5.4 (Deutsch)
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `engine.py`, `mock_data.py`, `chart.py`,
+`pulse_chart/index.html` (bei den letzten vier ändert sich nur die Versionsnummer, sie müssen aber zusammen
+mit den anderen auf 5.4 stehen) — dann *Reboot app*. `pulse_list/index.html` ist unverändert (5.2, steckt
+außerdem eingebettet in `chart.py`). Keine neuen Secrets.
+
+### Demo: Zahnrad bündig mit der Kontoauswahl
+* Das Zahnrad ist jetzt ein **17-px-Symbol** (gezeichnet statt Emoji, übernimmt die Themenfarbe) ohne
+  Innenabstand — es wird nicht mehr vom Rand abgeschnitten, der versteckte Aufklapp-Pfeil nimmt keinen Platz
+  mehr weg.
+* Box und Auswahlfeld „Main account · $25,000“ haben **dieselbe Höhe (44 px), dieselbe Rahmenstärke und
+  denselben Radius**; Ober- und Unterkante liegen exakt auf einer Linie.
+
+### Demo: 8 Kennzahlen im festen 4 × 2-Raster
+* Raster `repeat(4, 1fr)` mit 12 px Abstand — alle acht Kacheln gleich breit, hoch, gleicher Rahmen und Radius
+  (auf dem Handy 2 × 4).
+* **Win rate:** profitable geschlossene Trades ÷ alle geschlossenen Trades des Kontos (jeder Verkauf / jede
+  Short-Eindeckung mit Ergebnis in der Trade History; Teilverkäufe zählen einzeln). Grün ab 50 %, darunter rot,
+  0,0 % ohne Trades. Rechts klein „3 / 5“.
+* **Risk-reward:** `1 : X.XX` = durchschnittlicher Gewinner ÷ durchschnittlicher Verlierer (rechts klein
+  „Ø $110 / $75“). Ohne geschlossene Trades `1 : 0.00`, nur Gewinner bisher `1 : —`. Grün ab 1,0.
+* Beide Werte sind kontoabhängig und ändern sich sofort, wenn ein Trade von Hand, per Stop-Loss oder
+  Take-Profit geschlossen wird.
+
+### Demo: linke Spalte unter „Manage bots →“ (zwei Karten, 16 px Abstand)
+**Position size (Risiko- & Positionsrechner)**
+* Schalter **„Use order-ticket price & stop“** (Standard an): Einstieg = Live-Kurs des Symbols im Order
+  Ticket, Stop = dessen Stop-Loss (wenn eingeschaltet) — dann schreibgeschützt. Aus: beide Felder frei.
+  Einstieg und Stop stehen nebeneinander, damit die Spalte kurz bleibt.
+* **Max. Risiko pro Trade:** `% of equity` (Standard 1,0 %) oder fester Betrag in Kontowährung.
+* Ausgabe live: **Positionsgröße** (Stück; Krypto mit 4 Nachkommastellen), **Positionswert**, **Risikobetrag**
+  (+ % des Kontos) und Stop-Abstand. Reicht das freie Cash nicht, wird die Größe darauf begrenzt (mit Hinweis).
+  EUR-Konten rechnen US-Werte mit dem EUR/USD-Kurs um.
+* **„Use in order ticket →“** trägt Stückzahl, Seite *Buy* und den Stop-Loss (Schalter an) ins Order Ticket ein.
+
+**Risk & exposure**
+* **Open risk:** um wie viel das Konto fällt, wenn jeder Stop ab dem aktuellen Kurs ausgelöst wird (Betrag und
+  % des Kontos). Positionen ohne Stop werden gelb gesondert genannt („ungeschützt“).
+* **Buying power:** freies Cash plus Balken „gebunden vs. frei“ (Auslastung in %).
+
+**🚨 Prop-Firm Circuit Breaker (Verlustlimit)**
+* Pro Konto: Schalter an/aus, Zeitraum **Weekly** (ab Montag 00:00) oder **Monthly** (ab dem 1.), Limit als
+  **fester Betrag** oder **% des Startkapitals**. Jedes Konto — auch jedes neue — startet mit **5.000** in seiner
+  Währung, Schalter an.
+* **Periodenverlust = realisierte Ergebnisse im Zeitraum + offener P/L aller Positionen.** Fortschrittsbalken
+  „$1,240 / $5,000“: grün, ab 70 % gelb/orange, ab 90 % rot.
+* Wird das Limit erreicht → **ACCOUNT BREACHED – loss limit exceeded**: rotes Banner im Risk-Panel und über dem
+  Order Ticket, **alle Bots des Kontos sofort pausiert** (auch im Hintergrund beim nächsten 15-Minuten-Lauf;
+  im Bot-Bereich steht „by circuit breaker“), **Buy/Sell und „Place order“ deaktiviert**, Bots lassen sich nicht
+  wieder starten, neue Bots werden pausiert angelegt. Push-/E-Mail-Hinweis, falls Bot-Benachrichtigungen an sind.
+* Die Sperre bleibt, auch wenn sich der Kurs erholt — bis du das Limit **ausschaltest**, **erhöhst** (es wird
+  sofort neu geprüft) oder **„Account reset / start over“** drückst (Häkchen zur Bestätigung; löscht Positionen
+  und Historie, die Limit-Einstellungen bleiben, Bots bleiben pausiert).
+* Offene Positionen behalten ihre Stop-Loss-/Take-Profit-Orders und können in der Positionstabelle weiterhin
+  geschlossen werden (Risiko verringern bleibt erlaubt).
+
+### Hinweise
+* UI-Texte sind wie im Rest der App englisch („Use in order ticket →“, „Account reset / start over“).
+* Im Repo liegt die Anleitung derzeit als `README_1.md`; diese `README.md` kann sie ersetzen.
 
 ## Neu in v5.3 (Deutsch)
 
