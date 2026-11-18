@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "5.3"
+APP_VERSION = "5.4"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -753,7 +753,7 @@ def badge(text, fg, bg):
     return f'<span class="badge" style="color:{fg};background:{bg}">{esc(text)}</span>'
 
 
-def seg(label, options, key, default, fmt=None, on_change=None):
+def seg(label, options, key, default, fmt=None, on_change=None, disabled=False):
     """Tasarımdaki segment buton grubu (sayfa yenilemeden çalışır).
     Seçili seçeneğe tekrar tıklamak seçimi boşaltmasın diye son değer korunur."""
     options = list(options)
@@ -769,10 +769,10 @@ def seg(label, options, key, default, fmt=None, on_change=None):
 
     if hasattr(st, "segmented_control"):
         v = st.segmented_control(label, options, key=key, format_func=fmt or str, label_visibility="collapsed",
-                                 on_change=_cb)
+                                 on_change=_cb, disabled=disabled)
     else:
         v = st.radio(label, options, key=key, format_func=fmt or str, horizontal=True,
-                     label_visibility="collapsed", on_change=_cb)
+                     label_visibility="collapsed", on_change=_cb, disabled=disabled)
     v = v if v in options else default
     ss["_last_" + key] = v
     return v
@@ -1391,7 +1391,12 @@ table.bt .bsub{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-seri
 .al-d{width:9px;height:9px;border-radius:3px;flex:none}
 .al-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .al-p{font-size:11px;min-width:30px;text-align:right}
-.demo-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:6px}
+.demo-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:6px}
+.demo-tiles .tile{min-width:0;min-height:64px;justify-content:center;box-sizing:border-box}
+.demo-tiles .tile .k{display:flex;align-items:baseline;justify-content:space-between;gap:6px;white-space:nowrap}
+.demo-tiles .tile .k i{font-style:normal;font-size:10.5px;color:#6B7383;overflow:hidden;text-overflow:ellipsis}
+.demo-tiles .tile .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:640px){.demo-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .demo-eq{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-top:6px}
 .demo-kv{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-top:1px solid #1C1F25;color:#8D96A5}
 .demo-kv b{color:#ECEEF1}
@@ -1452,6 +1457,42 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .st-key-pg_bots .bp-k{margin:6px 0 8px 0}
 .st-key-pg_bots .blog{padding:7px 0}
 .st-key-pg_bots .alloc{margin-top:12px}
+/* v5.4 — sol sütun: pozisyon hesaplayıcı + risk & maruziyet + devre kesici */
+.st-key-pg_demo .st-key-demo_left{gap:16px !important}
+.st-key-rc_px [data-testid="stNumberInputStepUp"],.st-key-rc_px [data-testid="stNumberInputStepDown"]{display:none}
+.st-key-rc_px [data-testid="stNumberInputContainer"] input{padding-right:10px}
+.rk-sub{font-size:11.5px;line-height:1.45;color:#8D96A5;padding-bottom:2px}
+.rk-chip{font-size:11px;font-weight:700;font-family:ui-monospace,monospace;color:var(--acc);border-radius:999px;
+ padding:1px 9px;border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);
+ background:color-mix(in srgb,var(--acc) 10%,transparent);max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-lab{font-size:11.5px;font-weight:600;color:#8D96A5;padding:2px 0 0 0}
+.rk-out{border-radius:12px;padding:8px 12px;background:var(--panel2);
+ border:1px solid color-mix(in srgb,var(--acc) 22%,var(--border))}
+.rk-kv{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12.5px;color:#8D96A5;padding:5px 0}
+.rk-kv+.rk-kv{border-top:1px solid #1C1F25}
+.rk-kv b{color:#ECEEF1;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;text-align:right}
+.rk-kv b.big{font-size:17px}
+.rk-kv i{font-style:normal;font-size:11px;color:#6B7383}
+.rk-note{font-size:11px;line-height:1.45;color:#8D96A5}
+.rk-warn{font-size:11.5px;line-height:1.45;color:#F5B544}
+.rk-bar{height:8px;border-radius:999px;background:#1C1F25;overflow:hidden;margin:6px 0 4px 0}
+.rk-bar i{display:block;height:100%;border-radius:999px;transition:width .3s ease}
+.rk-row{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;color:#8D96A5}
+.rk-row b{font-family:ui-monospace,monospace;color:#ECEEF1}
+.rk-hr{height:1px;background:#22262D;margin:2px 0}
+.cb-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cb-t{font-size:12.5px;font-weight:800;color:#ECEEF1;display:flex;align-items:center;gap:6px}
+.cb-st{font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;border-radius:999px;padding:2px 8px}
+.cb-big{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-family:ui-monospace,monospace;
+ font-variant-numeric:tabular-nums}
+.cb-big b{font-size:16px;color:#ECEEF1}
+.cb-big span{font-size:11.5px;color:#8D96A5}
+.breach{border-radius:12px;padding:10px 12px;border:1px solid rgba(248,113,113,.65);color:#FECACA;
+ background:linear-gradient(135deg,rgba(248,113,113,.20),rgba(248,113,113,.08));box-shadow:0 0 0 3px rgba(248,113,113,.10)}
+.breach b.bt{display:block;font-size:13px;font-weight:900;letter-spacing:.04em;color:#F87171}
+.breach span{display:block;font-size:11.5px;line-height:1.5;color:#F3C2C2;margin-top:3px}
+.breach.wide{display:flex;align-items:center;gap:12px;padding:12px 16px}
+.breach.wide .bi{font-size:22px;line-height:1;flex:none}
 /* v4.7 — hesaplar: seçim, çark menüsü, yeni hesap formu */
 .acct-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .acct-chip{font-size:11.5px;font-weight:700;color:var(--acc);border-radius:999px;padding:2px 10px;max-width:60%;
@@ -1460,15 +1501,27 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .acct-meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:11.5px;color:#8D96A5;line-height:1.5;padding-top:2px}
 .acct-meta span{white-space:nowrap}
 .acct-form-t{font-size:13px;font-weight:700;color:#ECEEF1;padding:6px 0 0 0;border-top:1px solid #1C1F25;margin-top:4px}
-/* v5.0 — çark düğmesi: 44×44 kare, simge tam ortada, açılır menüyle aynı yükseklik */
-[class*="st-key-demo_accts"] [data-testid="stPopover"]{display:flex;justify-content:flex-end}
-[class*="st-key-demo_accts"] [data-testid="stPopover"] button{width:44px;min-width:44px;max-width:44px;height:44px;
- min-height:44px;padding:0;margin:0;display:inline-flex;align-items:center;justify-content:center;font-size:19px;
- line-height:1;border-radius:12px;flex:none}
-[class*="st-key-demo_accts"] [data-testid="stPopover"] button p{margin:0;padding:0;font-size:19px;line-height:1}
-[class*="st-key-demo_accts"] [data-testid="stPopover"] button [data-testid="stMarkdownContainer"]{margin:0}
-[class*="st-key-demo_accts"] [data-testid="stPopover"] button svg{display:none}
-[class*="st-key-demo_accts"] [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:44px}
+/* v5.4 — çark: seçim kutusuyla birebir aynı kutu (yükseklik, kenarlık, yarıçap, iç boşluk 0); simge 17px
+ (emoji yerine maske → tema rengini alır, kenara değip kırpılmaz); açılır ok gizli */
+[class*="st-key-demo_accts"]{--acct-h:44px}
+[class*="st-key-demo_accts"] [data-testid="stSelectbox"] div[data-baseweb="select"]>div{box-sizing:border-box;
+ height:var(--acct-h);min-height:var(--acct-h);max-height:var(--acct-h)}
+[class*="st-key-demo_accts"] [data-testid="stColumn"]:has([data-testid="stPopover"]){overflow:visible}
+[class*="st-key-demo_accts"] [data-testid="stPopover"]{display:flex;justify-content:flex-end;align-items:stretch;
+ height:var(--acct-h);min-height:var(--acct-h);margin:0 !important;padding:0 !important;line-height:0}
+[class*="st-key-demo_accts"] [data-testid="stPopover"]>div{display:flex;height:var(--acct-h);margin:0 !important;
+ padding:0 !important}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button{box-sizing:border-box;width:var(--acct-h);
+ min-width:var(--acct-h);max-width:var(--acct-h);height:var(--acct-h) !important;min-height:var(--acct-h) !important;
+ max-height:var(--acct-h);padding:0 !important;margin:0 !important;display:inline-flex;align-items:center;
+ justify-content:center;gap:0;line-height:1;border-width:1px;border-radius:12px !important;flex:none;
+ overflow:hidden;color:#A3ABB8}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button>*{display:none !important}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button::before{content:"";display:block;flex:none;
+ width:17px;height:17px;background-color:currentColor;
+ -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E") center/17px 17px no-repeat;
+ mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E") center/17px 17px no-repeat}
+[class*="st-key-demo_accts"] [data-testid="stPopover"] button:hover{color:#ECEEF1}
 [data-testid="stPopoverBody"]{min-width:320px;max-width:380px;padding:16px 18px !important}
 [data-testid="stPopoverBody"] [data-testid="stVerticalBlock"]{gap:.7rem !important}
 .mng-t{font-size:14px;font-weight:800;color:#ECEEF1;line-height:1.35;overflow-wrap:anywhere}
@@ -6159,10 +6212,14 @@ def demo_resolve(text):
     return sym, ((md.get_live_quotes([sym]).get(sym) or {}) if sym else {})
 
 
-def demo_order(sym, side, qty, owner="manual", stop=None, tp=None, mode="regular"):
+def demo_order(sym, side, qty, owner="manual", stop=None, tp=None, mode="regular", ticket=False):
     """Elle verilen demo emri: yalnızca canlı fiyattan dolar. Alımda isteğe bağlı Stop-Loss / Take-Profit.
-    Döner: (ok, mesaj)."""
+    v5.4: hesap devre kesiciyle kilitliyse emir biletinden hiçbir emir, başka yerden de alım / açığa satış yapılamaz
+    (pozisyon tablosundaki "Sell all / Cover all" riski azalttığı için açık kalır). Döner: (ok, mesaj)."""
     sym = str(sym or "").upper().strip()
+    if bk.guard_locked(bk.demo_get(_me())) and (ticket or side in ("buy", "short")):
+        return False, ("ACCOUNT BREACHED – loss limit exceeded. The order ticket is locked until you raise or switch "
+                       "off the limit, or reset the account.")
     inst = bk.inst_ccy(sym)
     if inst is None:
         return False, (f"{sym} cannot be traded in the demo account — only stocks, ETFs, crypto and the gold / "
@@ -6235,10 +6292,16 @@ def _demo_actions():
         def run(a):
             for b in a.get("bots") or []:
                 if b["id"] == tg:
+                    if not b.get("on") and bk.guard_locked(a):      # v5.4: kilitli hesapta bot başlamaz
+                        return dict(b, _blocked=True)
                     b["on"] = not b.get("on")
+                    b.pop("guard_paused", None)
                     return b
         b = bk.demo_edit(_me(), run)
-        if b:
+        if b and b.get("_blocked"):
+            st.toast(f'⚠️ ACCOUNT BREACHED — {b["name"]} stays paused until the loss limit is raised, switched off '
+                     f'or the account is reset')
+        elif b:
             st.toast(f'{b["name"]} is {"running" if b["on"] else "paused"}')
     if dl:
         def run2(a):
@@ -6403,8 +6466,13 @@ def render_bot_form(acct):
                                {"risk_pct": risk, "max_pos": maxp, "max_alloc": alloc, "min_rr": minrr,
                                 "trail_atr": trail, "max_days": days, "need_c15": bool(c15), "regime": bool(reg),
                                 "min_conf": float(mconf)}, flt, params=bot_params, ichi=bot_ichi)
+                locked_ = bk.guard_locked(bk.demo_get(_me()))
+                if locked_:                                  # v5.4: kilitli hesapta bot duraklatılmış başlar
+                    b["on"] = False
+                    b["guard_paused"] = True
                 bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b))
-                st.toast(f"{nm} is running — first check within 15 minutes")
+                st.toast(f"{nm} created but paused — the account is breached (loss limit)" if locked_ else
+                         f"{nm} is running — first check within 15 minutes")
                 st.rerun()
         H('<div class="muted" style="font-size:11px;margin-top:4px">Entry: the strategy must be fully met on the '
           'last closed 15-minute bar; size = account × risk % ÷ (entry − stop), capped by the position limit and '
@@ -6423,6 +6491,12 @@ def _bots_body():
     flush_toasts()
     acct, val, _eu = demo_state()
     cur = acct["ccy"]
+    try:                                      # v5.4: devre kesici burada da canlı değerle denetlenir
+        gs_, gnew_ = bk.guard_check(_me(), acct["id"], val)
+        if gnew_:
+            acct = bk.demo_get(_me())
+    except Exception:
+        gs_ = {"locked": False}
     bots = acct.get("bots") or []
     now = time.time()
     nxt = (int(now // bk.BOT_SLOT) + 1) * bk.BOT_SLOT + bk.BOT_LAG
@@ -6441,6 +6515,8 @@ def _bots_body():
               f'target="_self" href="{link(sec="Demo")}">“{esc(acct.get("name") or "Account")}”</a> '
               f'({money(val["equity"], cur, 0)}) · switch accounts in the Demo tab · checked every 15 minutes'
               f'{" · last check " + _bot_when(last) if last else ""}</div>')
+            if gs_.get("locked"):
+                H(breach_html(gs_, cur))
             if bots:
                 rows = ""
                 for b in bots:
@@ -6463,7 +6539,10 @@ def _bots_body():
                         f'{("hit rate " + tr(stt["win"], 0) + "%") if stt["win"] is not None else "no closed trade"}'
                         f'</div></td><td style="color:{col(stt["avg_day"])}">{"+" if stt["avg_day"] >= 0 else ""}'
                         f'{money(stt["avg_day"], cur)}</td><td style="white-space:nowrap"><span class="bstat '
-                        f'{"on" if on else "off"}">{"Active" if on else "Paused"}</span><div class="bsub" '
+                        f'{"on" if on else "off"}">{"Active" if on else "Paused"}</span>'
+                        + ('<div class="bsub" style="color:#F87171;margin-top:4px">by circuit breaker</div>'
+                           if (not on and b.get("guard_paused")) else "")
+                        + f'<div class="bsub" '
                         f'style="margin-top:6px"><a class="lnk" target="_self" href="{link(bot_tg=b["id"], f="bots")}">'
                         f'{"Pause" if on else "Resume"}</a> · <a class="lnk" style="color:{DOWN}" target="_self" '
                         f'href="{link(bot_del=b["id"], f="bots")}">Delete</a></div></td></tr>')
@@ -6831,18 +6910,273 @@ def _demo_manage(acct, n_accts):
                 st.warning("Tick the box first — deleting cannot be undone.")
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# v5.4 — Demo sol sütun: pozisyon büyüklüğü hesaplayıcı, risk & maruziyet, Prop-Firm devre kesici
+# ---------------------------------------------------------------------------------------------------------------
+GUARD_PER_LABEL = {"week": "Weekly", "month": "Monthly"}
+GUARD_LEVEL = {"off": ("Off", MUT, NEU_BG), "ok": ("Safe", UP, UP_BG), "warn": ("Warning", WARN, WARN_BG),
+               "red": ("Near limit", DOWN, DOWN_BG), "breach": ("Breached", "#0A0B0D", DOWN)}
+
+
+def _san(sym):
+    return re.sub(r"[^A-Za-z0-9]", "_", str(sym or ""))
+
+
+def _is_frac(sym):
+    """Kripto kesirli adetle işlem görür (BTC-USD …)."""
+    return str(sym or "").upper().endswith(("-USD", "-EUR"))
+
+
+def risk_size(equity, cash, entry, stop, fxm, mode, pct_, amt, frac=False):
+    """Pozisyon büyüklüğü = risk tutarı ÷ ((giriş − stop) × kur) — serbest nakitle sınırlı (long).
+    mode: '%' (özsermayenin yüzdesi) | 'amt' (hesap para biriminde sabit tutar). Döner: dict (hata varsa 'err')."""
+    entry, stop, fxm = float(entry or 0), float(stop or 0), float(fxm or 1.0)
+    risk = float(equity or 0) * float(pct_ or 0) / 100.0 if mode == "%" else float(amt or 0)
+    out = {"risk_target": risk, "qty": 0.0}
+    if entry <= 0 or stop <= 0:
+        return dict(out, err="Enter an entry price and a stop-loss price.")
+    if stop >= entry:
+        return dict(out, err="For a long trade the stop-loss must be below the entry price.")
+    if risk <= 0:
+        return dict(out, err="Set a risk above zero.")
+    per = (entry - stop) * fxm
+
+    def rnd(q):
+        return (int(q * 10000 + 1e-9) / 10000.0) if frac else float(int(q + 1e-9))
+    q_risk = rnd(risk / per)
+    q_cash = rnd(max(0.0, float(cash or 0)) / (entry * fxm))
+    q = min(q_risk, q_cash)
+    return dict(out, qty=q, q_risk=q_risk, capped=q_risk > q_cash, value=q * entry * fxm, risk=q * per,
+                dist=entry - stop, dist_pct=(entry - stop) / entry * 100.0)
+
+
+def render_risk_calc(acct, val, cur, eurusd, osym, qs, locked):
+    """Risk & Position Size Calculator — emir biletindeki fiyat / stopla canlı eşlenir ya da elle girilir."""
+    live = float(qs["last"]) if (osym and qs.get("src") == "real" and qs.get("last")) else None
+    inst = bk.inst_ccy(osym) if osym else None
+    fxm = (bk.fx_mult(cur, inst, eurusd) if inst else None) or 1.0
+    k_ = f"demo_{_san(osym)}" if osym else None
+    tsl = (float(ss.get(f"{k_}_sl") or 0) if (k_ and ss.get("demo_new_sl_on") and ss.get("demo_oside", "Buy") == "Buy")
+           else 0.0)
+    frac = _is_frac(osym)
+    unit = "units" if frac else "sh"
+    with st.container(border=True, key="demo_rcalc"):
+        H('<div class="hd acct-head"><span class="panel-title">Position size</span>'
+          + (f'<span class="rk-chip" title="Symbol in the order ticket">{esc(osym)}</span>' if osym else "")
+          + '</div><div class="hd rk-sub">How much to buy so that a hit stop costs no more than your risk per '
+            'trade.</div>')
+        ss.setdefault("rc_sync", True)
+        sync = toggle("Use order-ticket price & stop", "rc_sync",
+                      help="On: the entry follows the live price of the symbol in the order ticket, the stop follows "
+                           "its stop-loss (when switched on). Off: type both yourself.")
+        base = live or float(ss.get("rc_entry") or 0) or 100.0
+        step, fmt = px_step(base)
+        dec = 4 if fmt == "%.4f" else 2
+        if ss.get("rc_sym") != osym:                     # sembol değişti → stop yeni fiyata göre yeniden önerilir
+            ss["rc_sym"] = osym
+            if sync and live:
+                ss["rc_entry"] = round(live, dec)
+                ss["rc_stop"] = round(live * 0.97, dec)
+        e_lock, s_lock = bool(sync and live), bool(sync and tsl > 0)
+        if e_lock:
+            ss["rc_entry"] = round(live, dec)
+        if s_lock:
+            ss["rc_stop"] = round(tsl, dec)
+        if not ss.get("rc_entry"):
+            ss["rc_entry"] = round(base, dec)
+        if not ss.get("rc_stop"):
+            ss["rc_stop"] = round(float(ss["rc_entry"]) * 0.97, dec)
+        with st.container(key="rc_px"):              # giriş + stop yan yana (sütun daha kısa kalır)
+            c_e, c_s = st.columns(2, gap="small")
+            with c_e:
+                entry = st.number_input("Entry price", min_value=0.0, step=step, format=fmt, key="rc_entry",
+                                        disabled=e_lock, help="Live price of the order-ticket symbol" if e_lock else None)
+            with c_s:
+                stop = st.number_input("Stop loss", min_value=0.0, step=step, format=fmt, key="rc_stop",
+                                       disabled=s_lock, help="Stop-loss from the order ticket" if s_lock else None)
+        H('<div class="hd rk-lab">Max. risk per trade</div>')
+        mode = seg("Risk as", ["%", "amt"], "rc_mode", "%",
+                   fmt=lambda m: "% of equity" if m == "%" else f"Amount {CUR.get(cur, '')}") or "%"
+        rp = ra = 0.0
+        if mode == "%":
+            if not ss.get("rc_pct"):
+                ss["rc_pct"] = 1.0
+            rp = st.number_input("Risk in % of equity", min_value=0.05, max_value=100.0, step=0.25, format="%.2f",
+                                 key="rc_pct", label_visibility="collapsed")
+        else:
+            ka = f"rc_amt_{acct['id']}"
+            if not ss.get(ka):
+                ss[ka] = float(round(float(val["equity"]) * 0.01, 0))
+            ra = st.number_input(f"Risk amount in {cur}", min_value=0.0, step=50.0, format="%.2f", key=ka,
+                                 label_visibility="collapsed")
+        r = risk_size(val["equity"], val["cash"], entry, stop, fxm, mode, rp, ra, frac=frac)
+        eqv = max(float(val["equity"]), 1e-9)
+        if r.get("err"):
+            H(f'<div class="rk-out"><div class="rk-kv"><span>Risk budget</span><b>{money(r["risk_target"], cur)}</b>'
+              f'</div></div><div class="rk-note">{esc(r["err"])}</div>')
+        else:
+            H(f'<div class="rk-out">'
+              f'<div class="rk-kv"><span>Position size</span><b class="big">{r["qty"]:,.{4 if frac else 0}f} {unit}</b></div>'
+              f'<div class="rk-kv"><span>Position value</span><b>{money(r["value"], cur)}</b></div>'
+              f'<div class="rk-kv"><span>Risk amount</span><b style="color:{DOWN}">{money(r["risk"], cur)}'
+              f' <i>{tr(r["risk"] / eqv * 100, 2)}%</i></b></div>'
+              f'<div class="rk-kv"><span>Stop distance</span><b>{tr(r["dist"], dec)} <i>{tr(r["dist_pct"], 2)}%</i></b>'
+              f'</div></div>'
+              + (f'<div class="rk-warn">Capped by your free cash — the risk alone would allow '
+                 f'{r["q_risk"]:,.{4 if frac else 0}f} {unit}.</div>' if r.get("capped") else "")
+              + (f'<div class="rk-note">Converted at EUR/USD {tr(eurusd, 4)}.</div>'
+                 if (inst and inst != cur and eurusd) else ""))
+        go_ = button("Use in order ticket →", key="rc_apply", primary=True,
+                     disabled=bool(locked or not r.get("qty")))
+        if go_ and r.get("qty") and not locked:
+            upd = {"demo_oqty": float(r["qty"]), "demo_oside": "Buy"}
+            if osym:
+                upd.update({"demo_new_sl_on": True, f"demo_{_san(osym)}_sl": round(float(stop), dec)})
+                msg = f'Order ticket: buy {r["qty"]:g} {osym} · stop-loss {tr(stop, dec)}'
+            else:
+                msg = f'Order ticket: {r["qty"]:g} shares — choose a symbol there to add the stop-loss'
+            ss["_demo_set"] = dict(ss.get("_demo_set") or {}, **upd)
+            toast_later(msg)
+            st.rerun()
+
+
+def breach_html(gs, cur, wide=False):
+    """ACCOUNT BREACHED bandı (risk panelinde ve emir biletinin üstünde)."""
+    b = gs.get("breach") or {}
+    when = pd.Timestamp(float(b.get("ts") or time.time()), unit="s", tz="UTC").tz_convert(md.TZ).strftime("%d.%m. %H:%M")
+    per = GUARD_PER_LABEL.get(b.get("period") or gs.get("period"), "Weekly")
+    body = (f'{per} loss {money(b.get("loss"), cur)} reached the limit {money(b.get("limit"), cur)} on {when}. '
+            f'All bots of this account are paused and the order ticket is locked.'
+            + (' Open positions keep their stop-loss / take-profit and can still be closed in the table below.'
+               if wide else '')
+            + ' To trade again: raise or switch off the limit, or reset the account.')
+    if wide:
+        return (f'<div class="breach wide"><span class="bi">🚨</span><div><b class="bt">ACCOUNT BREACHED – loss limit '
+                f'exceeded</b><span>{body}</span></div></div>')
+    return f'<div class="breach"><b class="bt">🚨 ACCOUNT BREACHED – loss limit exceeded</b><span>{body}</span></div>'
+
+
+def _guard_keys(aid):
+    return {"on": f"g_on_{aid}", "period": f"g_per_{aid}", "basis": f"g_bas_{aid}", "limit": f"g_lim_{aid}",
+            "pct": f"g_pct_{aid}"}
+
+
+def _guard_cb(aid, field):
+    """Devre kesici ayarı değişti → hesaba yaz (canlı açık K/Z ile yeniden değerlendirilir)."""
+    v = ss.get(_guard_keys(aid)[field])
+    if v is None:
+        return
+    try:
+        _, val_, _ = demo_state()
+    except Exception:
+        val_ = None
+    ok, msg = bk.guard_set(_me(), aid, **{field: v, "val": val_})
+    toast_later(msg if ok else f"⚠️ {msg}")
+
+
+def render_risk_panel(acct, val, cur, gs):
+    """Risk & Exposure: açık risk, alım gücü / kullanım ve Prop-Firm devre kesici (haftalık / aylık zarar limiti)."""
+    aid = acct["id"]
+    eq = float(val["equity"])
+    eqd = max(eq, 1e-9)
+    orisk = bk.demo_open_risk(val)
+    util = min(100.0, max(0.0, float(val["invested"]) / eqd * 100.0)) if eq > 0 else 0.0
+    ucol = UP if util < 60 else WARN if util < 85 else DOWN
+    with st.container(border=True, key="demo_rpanel"):
+        H(f'<div class="hd acct-head"><span class="panel-title">Risk &amp; exposure</span>'
+          f'<span class="pos-n">{len(val["rows"])} open</span></div>')
+        if gs["locked"]:
+            H(breach_html(gs, cur))
+            sure = st.checkbox("Yes, delete positions and history", key=f"g_rsure_{aid}")
+            if button("Account reset / start over", key=f"g_reset_{aid}", primary=True):
+                if sure:
+                    bk.demo_reset(_me(), int(acct["start"]), acct["ccy"], acc_id=aid)
+                    ss["_demo_set"] = dict(ss.get("_demo_set") or {}, **{f"g_rsure_{aid}": False})
+                    toast_later(f'“{acct.get("name") or "Account"}” started over with {money(acct["start"], cur, 0)} '
+                                f'— circuit breaker re-armed, bots stay paused')
+                    st.rerun()
+                else:
+                    st.warning("Tick the box first — a reset cannot be undone.")
+        naked = ""
+        if orisk["naked"]:
+            naked = (f'<div class="rk-warn">{orisk["naked"]} position{"" if orisk["naked"] == 1 else "s"} without a '
+                     f'stop-loss ({money(orisk["naked_val"], cur, 0)} unprotected: '
+                     f'{esc(", ".join(orisk["naked_syms"][:4]))}{"…" if orisk["naked"] > 4 else ""}).</div>')
+        H(f'<div class="rk-out">'
+          f'<div class="rk-kv"><span>Open risk</span><b class="big" style="color:{DOWN if orisk["risk"] > 0 else TXT}">'
+          f'{money(orisk["risk"], cur)}</b></div>'
+          f'<div class="rk-row"><span><b>{tr(orisk["risk"] / eqd * 100, 2)}%</b> of equity</span>'
+          f'<span>if every stop is hit</span></div></div>' + naked
+          + f'<div class="rk-out">'
+            f'<div class="rk-kv"><span>Buying power</span><b class="big">{money(val["cash"], cur)}</b></div>'
+            f'<div class="rk-bar" title="Capital tied up in positions"><i style="width:{util:.1f}%;background:{ucol}">'
+            f'</i></div><div class="rk-row"><span>Tied up <b>{money(val["invested"], cur, 0)}</b></span>'
+            f'<span><b>{util:.0f}%</b> used · <b>{100 - util:.0f}%</b> free</span></div></div>')
+        # ---- devre kesici
+        g = bk.guard_cfg(acct)
+        keys = _guard_keys(aid)
+        sig = (g["on"], g["period"], g["basis"], g["limit"], g["pct"])
+        if ss.get(f"g_sig_{aid}") != sig:                 # kayıtlı ayar değişti (başka sekme / geri alınan hata)
+            ss[f"g_sig_{aid}"] = sig
+            ss[keys["on"]], ss[keys["period"]], ss[keys["basis"]] = g["on"], g["period"], g["basis"]
+            ss[keys["limit"]], ss[keys["pct"]] = float(g["limit"]), float(g["pct"])
+        lab, fg, bg = GUARD_LEVEL.get(gs["level"], GUARD_LEVEL["ok"])
+        H(f'<div class="rk-hr"></div><div class="hd cb-head"><span class="cb-t">🚨 Circuit breaker</span>'
+          f'<span class="cb-st" style="color:{fg};background:{bg}">{lab}</span></div>'
+          f'<div class="hd rk-sub">Prop-firm style loss limit for this account: when the period loss (realised + '
+          f'open) reaches it, all bots pause and the order ticket locks.</div>')
+        on = toggle("Loss limit active", keys["on"], on_change=_guard_cb, args=(aid, "on"))
+        seg("Period", list(bk.GUARD_PERIODS), keys["period"], "week", fmt=lambda x: GUARD_PER_LABEL[x],
+            on_change=lambda: _guard_cb(aid, "period"))
+        bas = seg("Limit as", list(bk.GUARD_BASES), keys["basis"], "fixed",
+                  fmt=lambda x: f"Amount {CUR.get(cur, '')}" if x == "fixed" else "% of start",
+                  on_change=lambda: _guard_cb(aid, "basis")) or "fixed"
+        if bas == "fixed":
+            st.number_input(f"Loss limit ({cur})", min_value=1.0, step=500.0, format="%.2f", key=keys["limit"],
+                            on_change=_guard_cb, args=(aid, "limit"))
+        else:
+            st.number_input(f"Loss limit (% of the {money(acct['start'], cur, 0)} start)", min_value=0.5,
+                            max_value=100.0, step=0.5, format="%.1f", key=keys["pct"],
+                            on_change=_guard_cb, args=(aid, "pct"))
+        ratio = min(1.0, gs["ratio"]) if gs["limit"] > 0 else 0.0
+        bcol = {"ok": UP, "warn": WARN, "red": DOWN, "breach": DOWN}.get(gs["level"], MUT)
+        t0 = pd.Timestamp(gs["t0"], unit="s", tz="UTC").tz_convert(md.TZ)
+        since = ("Mon " + t0.strftime("%d.%m.")) if gs["period"] == "week" else t0.strftime("%d.%m.")
+        H(f'<div class="cb-big"><b>{money(gs["loss"], cur)} / {money(gs["limit"], cur, 0)}</b>'
+          f'<span>{tr(gs["ratio"] * 100, 1)}%</span></div>'
+          f'<div class="rk-bar"><i style="width:{ratio * 100:.1f}%;background:{bcol}"></i></div>'
+          f'<div class="rk-row"><span>Realised since {since} <b style="color:{col(gs["realized"])}">'
+          f'{("+" if gs["realized"] >= 0 else "")}{money(gs["realized"], cur, 0)}</b></span>'
+          f'<span>Open <b style="color:{col(gs["open"])}">{("+" if gs["open"] >= 0 else "")}'
+          f'{money(gs["open"], cur, 0)}</b></span></div>'
+          + ('' if on else '<div class="rk-note">Switched off — no loss limit for this account.</div>'))
+
+
 def _render_demo_body():
     """Demo reiter: başlangıç tutarı, kendi izleme listesi, elle emir, pozisyonlar ve geçmiş."""
     acct, val, eurusd = demo_state()
     cur = acct["ccy"]
     for k_, v_ in (ss.pop("_demo_set", None) or {}).items():      # widget değerleri yalnızca çizilmeden önce değişir
         ss[k_] = v_
+    # v5.4: devre kesici — dönem zararı limite ulaştıysa hesap burada kilitlenir (botlar durur, emir bileti kapanır)
+    try:
+        gs, gnew = bk.guard_check(_me(), acct["id"], val)
+    except Exception:
+        gs, gnew = bk.guard_status(acct, val), False
+    if gnew:
+        acct = bk.demo_get(_me())
+        st.toast(f'🚨 ACCOUNT BREACHED — {GUARD_PER_LABEL.get(gs["period"], "Weekly").lower()} loss '
+                 f'{money(gs["loss"], cur)} reached the limit {money(gs["limit"], cur, 0)}. Bots paused, order ticket '
+                 f'locked.')
+    locked = bool(gs["locked"])
+    stats = bk.demo_stats(acct)
+    osym0, qs0 = demo_resolve(ss.get("demo_osym") or "")          # hesaplayıcı emir biletiyle eşlenir
     H(f'<div class="hd"><div class="page-title">Demo Account</div></div><div class="hd muted" style="padding-bottom:10px">'
       f'<span class="dot-live"></span>Paper trading with live prices — no real money. You are trading in '
       f'<b style="color:{TXT}">{esc(acct.get("name") or "Account")}</b>; every account keeps its own balance, '
       f'positions, orders, history, watchlist and bots.</div>')
     left, right = st.columns([1, 3.1], gap="medium")
-    with left:
+    with left, st.container(key="demo_left"):
         render_demo_accounts(acct)
         with st.container(border=True):
             H(f'<div class="hd acct-head"><span class="panel-title">Balance</span><span class="acct-chip">'
@@ -6858,15 +7192,36 @@ def _render_demo_body():
               + (f'<div class="demo-kv"><span>EUR / USD</span><b class="mono">{tr(eurusd, 4)}</b></div>'
                  if (cur == "EUR" and eurusd) else "")
               + f'<a class="lnk small" target="_self" href="{link(sec="Short Term", f="bots")}">Manage bots →</a>')
+        # v5.4: "Manage bots →" altında, alt alta (16 px): pozisyon hesaplayıcı + risk & maruziyet / devre kesici
+        render_risk_calc(acct, val, cur, eurusd, osym0, qs0, locked)
+        render_risk_panel(acct, val, cur, gs)
     with right:
-        tiles = [("Equity", money(val["equity"], cur), TXT), ("Cash", money(val["cash"], cur), TXT),
-                 ("Invested", money(val["invested"], cur), TXT),
-                 ("Open P/L", ("+" if val["upl"] >= 0 else "") + money(val["upl"], cur), col(val["upl"])),
-                 ("Realised P/L", ("+" if val["rpl"] >= 0 else "") + money(val["rpl"], cur), col(val["rpl"])),
-                 ("Return", pct(val["total_pct"]), col(val["total_pct"]))]
-        H('<div class="demo-tiles">' + "".join(
-            f'<div class="tile"><span class="k">{k}</span><span class="v mono" style="font-size:17px;color:{c}">{v}'
-            f'</span></div>' for k, v, c in tiles) + '</div>')
+        # v5.4: katı 4 × 2 ızgara — Win rate ve Risk-reward kapanmış işlemlerden (hesaba özel, her kapanışta güncel)
+        n_ = stats["n"]
+        wr_c = (UP if stats["win_rate"] >= 50 else DOWN) if n_ else TXT
+        if not n_:
+            rr_v, rr_c, rr_s = "1 : 0.00", TXT, ""
+        elif stats["rr"] is None:
+            rr_v, rr_c, rr_s = "1 : —", UP, "no loss yet"
+        else:
+            rr_v, rr_c = f'1 : {stats["rr"]:.2f}', (UP if stats["rr"] >= 1 else DOWN)
+            rr_s = f'Ø {money(stats["avg_win"], cur, 0)} / {money(stats["avg_loss"], cur, 0)}'
+        tiles = [("Equity", money(val["equity"], cur), TXT, "", ""), ("Cash", money(val["cash"], cur), TXT, "", ""),
+                 ("Invested", money(val["invested"], cur), TXT, "", ""),
+                 ("Open P/L", ("+" if val["upl"] >= 0 else "") + money(val["upl"], cur), col(val["upl"]), "", ""),
+                 ("Realised P/L", ("+" if val["rpl"] >= 0 else "") + money(val["rpl"], cur), col(val["rpl"]), "", ""),
+                 ("Return", pct(val["total_pct"]), col(val["total_pct"]), "", ""),
+                 ("Win rate", f'{stats["win_rate"]:.1f}%', wr_c, f'{stats["wins"]} / {n_}' if n_ else "",
+                  "Profitable closed trades ÷ all closed trades (every sale with a result in the trade history)"),
+                 ("Risk-reward", rr_v, rr_c, rr_s,
+                  "Average winning trade : average losing trade (closed trades, risk 1 : reward X)")]
+        th = ""
+        for k, v, c, sb, tt in tiles:                # Py3.11: iç içe f-string yok
+            t_attr = f' title="{esc(tt)}"' if tt else ""
+            s_html = f"<i>{esc(sb)}</i>" if sb else ""
+            th += (f'<div class="tile"{t_attr}><span class="k">{k}{s_html}</span>'
+                   f'<span class="v mono" style="font-size:17px;color:{c}">{v}</span></div>')
+        H(f'<div class="demo-tiles">{th}</div>')
         eq = acct.get("eq") or []
         if len(eq) >= 3:
             with st.container(border=True):
@@ -6953,6 +7308,8 @@ def _render_demo_body():
                 H('<div class="muted" style="padding:10px 0">The list is empty — add the companies you want to trade '
                   'or let your bots watch.</div>')
         # ---- emir
+        if locked:                       # v5.4: ACCOUNT BREACHED — bilet kilitli
+            H(breach_html(gs, cur, wide=True))
         with st.container(border=True):
             H('<div class="hd"><span class="panel-title">Order ticket</span><div class="muted small" '
               'style="margin-top:2px">Trade any company — type a ticker or a name. The watchlist is optional. Filled '
@@ -6961,11 +7318,13 @@ def _render_demo_body():
             with o1:
                 otxt = st.text_input("Symbol", key="demo_osym", placeholder="Ticker or company — e.g. TTD, Siemens")
             with o2:
-                side = seg("Side", ["Buy", "Sell"], "demo_oside", "Buy")
+                side = seg("Side", ["Buy", "Sell"], "demo_oside", "Buy", disabled=locked)
             with o3:
-                qty = st.number_input("Shares", min_value=0.0, value=1.0, step=1.0, key="demo_oqty")
+                if ss.get("demo_oqty") is None:          # değer yalnızca oturumdan (hesaplayıcı buraya yazar)
+                    ss["demo_oqty"] = 1.0
+                qty = st.number_input("Shares", min_value=0.0, step=1.0, key="demo_oqty", disabled=locked)
             with o4:
-                go_ = button("Place order", key="demo_place", primary=True)
+                go_ = button("Place order", key="demo_place", primary=True, disabled=locked)
             osym, qs = demo_resolve(otxt)
             picks = list(dict.fromkeys([r["sym"] for r in val["rows"]] + list(acct.get("watch") or [])))[:12]
             if picks:
@@ -7009,7 +7368,8 @@ def _render_demo_body():
                 if not osym:
                     st.warning("Enter a ticker or a company name first.")
                 else:
-                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty, stop=sl, tp=tp, mode=mode)
+                    ok, msg = demo_order(osym, "buy" if side == "Buy" else "sell", qty, stop=sl, tp=tp, mode=mode,
+                                         ticket=True)
                     if ok:
                         st.toast(msg)
                         st.rerun()
