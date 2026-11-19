@@ -1,2378 +1,953 @@
 """
 ========================================================================
- ARKA PLAN KATMANI  (backend.py)  —  v4.0
+ PULSE CHART  (chart.py)  —  v3
 ========================================================================
-Streamlit'ten bağımsız yardımcılar (hiçbiri `streamlit` içe aktarmaz; ayarları
-app.py `configure()` ile verir, böylece arka plan iş parçacığından çağrılabilir):
+TradingView tarzı grafik bileşeninin Python tarafı:
 
-  1) Kalıcı depo  — özel bir GitHub deposundaki JSON dosyaları (Contents API).
-     Streamlit Community Cloud'da disk her yeniden başlatmada silinir; girişler,
-     izleme listesi, alarmlar ve bildirim ayarları burada kalır. Ayar yoksa
-     yerel klasöre (.pulse_data) yazılır.
-  2) E-posta      — SMTP (Gmail: uygulama şifresiyle). Şifre sıfırlama kodu ve
-     isteğe bağlı bildirimler.
-  3) Push         — ntfy (telefon / masaüstü bildirimi; hesap gerekmez).
-  4) İzleyici     — arka planda fiyat alarmlarını, izleme listesindeki şirketlerin
-     bilançolarını ve ekonomik takvim verilerini kontrol edip bildirim yollar.
+  * `chart_data`   — seçilen zaman aralığı için gerçek OHLCV (gün içi / günlük)
+  * `build_payload`— indikatörleri gerçek veriyle hesaplar, JSON'a çevirir
+  * `render_chart` — bileşeni çizer ve kullanıcı olaylarını (çizim, alarm,
+                     indikatör ayarı, grafik türü) Python'a geri verir
+  * `check_alerts` — alarm koşullarını son barlara göre kontrol eder
+
+Arayüz kodu `pulse_chart/index.html` dosyasındadır; bu klasörün app.py ile
+aynı yerde olması gerekir.
 ========================================================================
 """
 
 import base64
-import copy
-import hashlib
-import hmac
 import json
 import os
 import re
-import secrets
-import smtplib
-import ssl
-import threading
-import time
-from email.message import EmailMessage
+import tempfile
 
+import numpy as np
 import pandas as pd
-
-try:
-    import requests
-except Exception:  # pragma: no cover
-    requests = None
-
-BACKEND_VERSION = "5.6"
-
-_LOCK = threading.RLock()
-CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
-DATA_DIR = os.environ.get("PULSE_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                           ".pulse_data")
-TZ = "Europe/Berlin"
-
-
-def configure(cfg):
-    """app.py, Streamlit Secrets'tan okuduğu ayarları buraya verir (her çalıştırmada çağrılabilir)."""
-    with _LOCK:
-        for k in ("store", "mail", "push"):
-            v = cfg.get(k) or {}
-            CFG[k] = {kk: vv for kk, vv in dict(v).items() if vv not in (None, "")}
-        CFG["app_url"] = str(cfg.get("app_url") or CFG.get("app_url") or "").rstrip("/")
-
-
-# ======================================================================
-# 1) Kalıcı depo
-# ======================================================================
-_KV = {}                  # ad → {"obj", "sha", "loaded", "dirty", "t"}
-_STATUS = {"err": "", "last_write": None, "last_read": None}
-
-
-def store_mode():
-    s = CFG["store"]
-    return "github" if (s.get("repo") and s.get("token") and requests is not None) else "local"
-
-
-def store_status():
-    """Arayüz için: {'mode', 'ok', 'err', 'last_write'}."""
-    return {"mode": store_mode(), "ok": not _STATUS["err"], "err": _STATUS["err"],
-            "last_write": _STATUS["last_write"], "repo": CFG["store"].get("repo", "")}
-
-
-def _gh(method, name, **kw):
-    s = CFG["store"]
-    d = str(s.get("dir") or "pulse").strip("/")
-    url = f"https://api.github.com/repos/{s['repo']}/contents/{d}/{name}.json"
-    headers = {"Authorization": f"Bearer {s['token']}", "Accept": "application/vnd.github+json",
-               "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "pulse-dashboard"}
-    if method == "GET" and s.get("branch"):
-        kw.setdefault("params", {})["ref"] = s["branch"]
-    return requests.request(method, url, headers=headers, timeout=12, **kw)
-
-
-def _local_path(name):
-    return os.path.join(DATA_DIR, name + ".json")
-
-
-def _local_read(name):
-    try:
-        with open(_local_path(name), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-
-def _local_write(name, obj):
-    try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        tmp = _local_path(name) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh)
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        os.replace(tmp, _local_path(name))
-        return True
-    except OSError:
-        return False
-
-
-def _kv_load(name):
-    e = {"obj": None, "sha": None, "loaded": True, "dirty": False, "t": time.time()}
-    if store_mode() == "github":
-        try:
-            r = _gh("GET", name)
-            if r.status_code == 200:
-                j = r.json()
-                e["obj"] = json.loads(base64.b64decode(j.get("content") or "").decode("utf-8") or "null")
-                e["sha"] = j.get("sha")
-                _STATUS["err"] = ""
-                _STATUS["last_read"] = time.time()
-            elif r.status_code == 404:
-                _STATUS["err"] = ""           # dosya henüz yok (ilk yazışta oluşur)
-            elif r.status_code in (401, 403):
-                e["loaded"] = False
-                _STATUS["err"] = f"GitHub refused the token (HTTP {r.status_code}) — check [pulse_store] in Secrets"
-            else:
-                e["loaded"] = False
-                _STATUS["err"] = f"GitHub answered HTTP {r.status_code}"
-        except Exception as ex:      # ağ / JSON
-            e["loaded"] = False
-            _STATUS["err"] = f"GitHub not reachable ({type(ex).__name__})"
-        if not e["loaded"] or e["obj"] is None:
-            loc = _local_read(name)
-            if loc is not None and e["obj"] is None:
-                e["obj"] = loc
-    else:
-        e["obj"] = _local_read(name)
-    _KV[name] = e
-    return e
-
-
-def kv_get(name, default=None):
-    """Depodaki nesnenin kopyası (yoksa default)."""
-    with _LOCK:
-        e = _KV.get(name)
-        if e is None or (not e["loaded"] and time.time() - e["t"] > 45):
-            e = _kv_load(name)
-        return copy.deepcopy(e["obj"]) if e["obj"] is not None else default
-
-
-def kv_loaded(name):
-    """GitHub deposundan okuma başarılı mı? (False: ağ / yetki hatası — içerik bilinmiyor)"""
-    with _LOCK:
-        e = _KV.get(name)
-        if e is None or (not e["loaded"] and time.time() - e["t"] > 45):
-            e = _kv_load(name)
-        return bool(e["loaded"])
-
-
-def _gh_put(name, obj, sha):
-    """Kilit tutulmadan çağrılır (ağ isteği). Döner: (ok, yeni_sha)."""
-    body = {"message": f"pulse: update {name}",
-            "content": base64.b64encode(json.dumps(obj, separators=(",", ":")).encode("utf-8")).decode()}
-    if CFG["store"].get("branch"):
-        body["branch"] = CFG["store"]["branch"]
-    for attempt in range(2):
-        if sha:
-            body["sha"] = sha
-        r = _gh("PUT", name, json=body)
-        if r.status_code in (200, 201):
-            _STATUS["err"] = ""
-            _STATUS["last_write"] = time.time()
-            return True, ((r.json() or {}).get("content") or {}).get("sha")
-        if r.status_code in (409, 422) and attempt == 0:      # sha eskimiş → güncel sha ile yeniden
-            g = _gh("GET", name)
-            sha = g.json().get("sha") if g.status_code == 200 else None
-            body.pop("sha", None)
-            continue
-        _STATUS["err"] = (f"GitHub refused the write (HTTP {r.status_code}) — the token needs 'Contents: read and "
-                          f"write' on the data repository" if r.status_code in (401, 403, 404)
-                          else f"GitHub write failed (HTTP {r.status_code})")
-        return False, sha
-    return False, sha
-
-
-def _push_one(name):
-    with _LOCK:
-        e = _KV.get(name)
-        if not e or not e.get("dirty"):
-            return True
-        obj, sha, stamp = copy.deepcopy(e["obj"]), e.get("sha"), e["t"]
-    try:
-        ok, new_sha = _gh_put(name, obj, sha)
-    except Exception as ex:
-        _STATUS["err"] = f"GitHub not reachable ({type(ex).__name__})"
-        return False
-    with _LOCK:
-        e = _KV.get(name)
-        if e is not None:
-            e["sha"] = new_sha
-            if ok and e["t"] == stamp:          # yazım sırasında değişmediyse temiz
-                e["dirty"] = False
-    return ok
-
-
-def kv_put(name, obj, sync=True):
-    """Nesneyi kaydeder. sync=True: hemen GitHub'a (şifre değişikliği gibi kritik yazımlar);
-    sync=False: bellekte + yerelde, GitHub'a arka planda (bkz. kv_flush).
-    Döner: 'github' | 'queued' | 'local' | 'memory' (hiçbir yere yazılamadıysa)."""
-    with _LOCK:
-        e = _KV.get(name) or {"obj": None, "sha": None, "loaded": True, "dirty": False, "t": time.time()}
-        e["obj"] = copy.deepcopy(obj)
-        e["t"] = time.time()
-        _KV[name] = e
-        loc = _local_write(name, e["obj"])
-        gh = store_mode() == "github"
-        if gh:
-            e["dirty"] = True
-    if gh:
-        if not sync:
-            return "queued"
-        if _push_one(name):
-            return "github"
-    return "local" if loc else "memory"
-
-
-_FLUSH = {"t": 0.0}
-
-
-def kv_flush():
-    """Bekleyen (dirty) nesneleri GitHub'a yazar."""
-    if store_mode() != "github":
-        return
-    with _LOCK:
-        names = [n for n, e in _KV.items() if e.get("dirty")]
-    for n in names:
-        _push_one(n)
-
-
-def kv_flush_async(min_gap=30):
-    """Arayüz iş parçacığını bekletmeden yaz (en fazla min_gap saniyede bir)."""
-    if store_mode() != "github" or time.time() - _FLUSH["t"] < min_gap:
-        return
-    with _LOCK:
-        if not any(e.get("dirty") for e in _KV.values()):
-            return
-    _FLUSH["t"] = time.time()
-    threading.Thread(target=kv_flush, name="pulse-flush", daemon=True).start()
-
-
-# ======================================================================
-# 2) E-posta (SMTP · Gmail uygulama şifresi)
-# ======================================================================
-def mail_ready():
-    m = CFG["mail"]
-    return bool(m.get("user") and m.get("app_password"))
-
-
-def send_mail(to, subject, text, html=None):
-    """(ok, hata). Gmail: [pulse_mail] user = "…@gmail.com", app_password = "16 haneli uygulama şifresi"."""
-    if not mail_ready():
-        return False, "Email sending is not set up"
-    m = CFG["mail"]
-    msg = EmailMessage()
-    msg["From"] = f'{m.get("name") or "Pulse"} <{m["user"]}>'
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(text)
-    if html:
-        msg.add_alternative(html, subtype="html")
-    host, port = str(m.get("host") or "smtp.gmail.com"), int(m.get("port") or 465)
-    pw = str(m["app_password"]).replace(" ", "")
-    try:
-        ctx = ssl.create_default_context()
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=15, context=ctx) as s:
-                s.login(m["user"], pw)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=15) as s:
-                s.starttls(context=ctx)
-                s.login(m["user"], pw)
-                s.send_message(msg)
-        return True, ""
-    except smtplib.SMTPAuthenticationError:
-        return False, "The mail server rejected the login — check the Gmail app password in Secrets"
-    except Exception as ex:
-        return False, f"Email could not be sent ({type(ex).__name__})"
-
-
-# ---- tek kullanımlık kodlar (şifre sıfırlama) --------------------------
-_OTP = {}
-OTP_TTL = 15 * 60
-
-
-def otp_issue(email):
-    """6 haneli kod üretir. Döner (kod, '') ya da (None, 'wait:<sn>') — aynı adrese 60 sn'de bir."""
-    now = time.time()
-    with _LOCK:
-        for k in [k for k, v in _OTP.items() if v["exp"] < now]:
-            _OTP.pop(k, None)
-        cur = _OTP.get(email)
-        if cur and now - cur["sent"] < 60:
-            return None, f"wait:{int(60 - (now - cur['sent']))}"
-        code = f"{secrets.randbelow(10 ** 6):06d}"
-        salt = secrets.token_hex(8)
-        _OTP[email] = {"h": hashlib.sha256((salt + code).encode()).hexdigest(), "salt": salt,
-                       "exp": now + OTP_TTL, "tries": 0, "sent": now}
-        return code, ""
-
-
-def otp_cancel(email):
-    with _LOCK:
-        _OTP.pop(email, None)
-
-
-def otp_check(email, code):
-    """'ok' | 'bad' | 'expired' | 'locked' (5 yanlış denemeden sonra kod geçersiz)."""
-    code = "".join(ch for ch in str(code or "") if ch.isdigit())
-    with _LOCK:
-        e = _OTP.get(email)
-        if not e or e["exp"] < time.time():
-            _OTP.pop(email, None)
-            return "expired"
-        if e["tries"] >= 5:
-            _OTP.pop(email, None)
-            return "locked"
-        if hmac.compare_digest(hashlib.sha256((e["salt"] + code).encode()).hexdigest(), e["h"]):
-            _OTP.pop(email, None)
-            return "ok"
-        e["tries"] += 1
-        return "bad"
-
-
-# ======================================================================
-# 3) Push (ntfy)
-# ======================================================================
-def new_topic():
-    return "pulse-" + secrets.token_urlsafe(12).replace("_", "").replace("-", "")[:16]
-
-
-def push_server():
-    return str(CFG["push"].get("server") or "https://ntfy.sh").rstrip("/")
-
-
-def send_push(topic, title, body, url=None, tags=None, priority=3):
-    """ntfy'ye JSON ile yayınlar (başlıkta Unicode sorun çıkarmaz). (ok, hata)."""
-    if requests is None or not topic:
-        return False, "Push is not available"
-    payload = {"topic": str(topic), "title": str(title)[:180], "message": str(body)[:3500],
-               "priority": int(priority)}
-    if tags:
-        payload["tags"] = list(tags)
-    if url:
-        payload["click"] = url
-    headers = {}
-    if CFG["push"].get("token"):
-        headers["Authorization"] = "Bearer " + str(CFG["push"]["token"])
-    try:
-        r = requests.post(push_server(), json=payload, headers=headers, timeout=10)
-        return (r.status_code < 300), ("" if r.status_code < 300 else f"ntfy answered HTTP {r.status_code}")
-    except Exception as ex:
-        return False, f"ntfy not reachable ({type(ex).__name__})"
-
-
-# ======================================================================
-# Kullanıcı profilleri (izleme listesi, alarmlar, bildirim ayarları …)
-# ======================================================================
-NOTIFY_DEFAULT = {"on": True, "push": False, "topic": "", "email": False, "browser": True,
-                  "price": True, "earn_up": True, "earn_res": True, "macro": True, "macro_impact": "High",
-                  "ai": True, "hype": True, "bot": True}
-
-
-def notify_prefs(prof):
-    n = dict(NOTIFY_DEFAULT)
-    n.update({k: v for k, v in ((prof or {}).get("notify") or {}).items() if k in NOTIFY_DEFAULT})
-    return n
-
-
-def profiles():
-    return (kv_get("profiles") or {}).get("users") or {}
-
-
-def profile_get(email):
-    return profiles().get(str(email or "").lower()) or {}
-
-
-def profile_put(email, prof, sync=False):
-    """Profili kaydeder (bellek + yerel hemen; GitHub'a arka planda, sync=True ise hemen)."""
-    email = str(email or "").lower()
-    if not email:
-        return
-    with _LOCK:
-        allp = kv_get("profiles") or {"v": 1, "users": {}}
-        allp.setdefault("users", {})[email] = prof
-    return kv_put("profiles", allp, sync=sync)
-
-
-def profile_remove(email):
-    with _LOCK:
-        allp = kv_get("profiles") or {"v": 1, "users": {}}
-        if allp.get("users", {}).pop(str(email or "").lower(), None) is not None:
-            kv_put("profiles", allp, sync=False)
-
-
-# ======================================================================
-# Bildirim kutusu + gönderim
-# ======================================================================
-_INBOX = {}               # e-posta → [{id, ts, kind, sym, title, body}]
-_SEQ = [int(time.time() * 1000)]
-
-
-def _state():
-    s = kv_get("state") or {}
-    s.setdefault("sent", {})
-    s.setdefault("earn_seen", {})
-    s.setdefault("earn_est", {})
-    return s
-
-
-def _state_save(s):
-    now = time.time()
-    s["sent"] = {k: v for k, v in s["sent"].items() if now - float(v) < 45 * 86400}
-    kv_put("state", s, sync=False)
-
-
-def inbox_since(email, last_id=0):
-    with _LOCK:
-        return [dict(x) for x in _INBOX.get(str(email or "").lower(), []) if x["id"] > int(last_id or 0)]
-
-
-def deliver(email, prefs, kind, title, body, sym=None, tags=None, priority=3):
-    """Kutusuna koyar; ayara göre push ve e-posta yollar. Döner: kullanılan kanallar.
-    prefs['_inbox'] = False: olay sayfaya zaten eklendi, yalnızca push / e-posta gönder."""
-    email = str(email or "").lower()
-    used = []
-    if prefs.get("_inbox", True):
-        used.append("inbox")
-        with _LOCK:
-            _SEQ[0] += 1
-            item = {"id": _SEQ[0], "ts": time.time(), "kind": kind, "sym": sym or "", "title": title, "body": body}
-            box = _INBOX.setdefault(email, [])
-            box.append(item)
-            del box[:-100]
-    url = CFG.get("app_url") or None
-    if url and sym:
-        url = f"{url}/?sec=Markets&sym={sym}"
-    if prefs.get("push") and prefs.get("topic"):
-        ok, _ = send_push(prefs["topic"], title, body, url=url, tags=tags, priority=priority)
-        if ok:
-            used.append("push")
-    if prefs.get("email") and mail_ready():
-        ok, _ = send_mail(email, f"Pulse · {title}", body + (f"\n\nOpen Pulse: {url}" if url else ""))
-        if ok:
-            used.append("email")
-    return used
-
-
-def notify_once(state, key, email, prefs, kind, title, body, **kw):
-    """Aynı olay (key) için yalnızca bir kez bildirim."""
-    if key in state["sent"]:
-        return False
-    state["sent"][key] = time.time()
-    state["_dirty"] = True
-    deliver(email, prefs, kind, title, body, **kw)
-    return True
-
-
-# ======================================================================
-# 4) İzleyici
-# ======================================================================
-_LASTPX = {}
-_MON = {"thread": None, "ticks": 0, "last": None, "err": ""}
-TICK_SEC = 120
-
-
-def _fmt(x, d=2):
-    try:
-        return f"{float(x):,.{d}f}"
-    except (TypeError, ValueError):
-        return "—"
-
-
-def _money(x):
-    try:
-        x = float(x)
-    except (TypeError, ValueError):
-        return "—"
-    for div, s in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
-        if abs(x) >= div:
-            return f"{x / div:,.2f}{s}"
-    return f"{x:,.0f}"
-
-
-COND_TXT = {"above": "is above", "below": "is below", "cross_up": "crossed above", "cross_dn": "crossed below",
-            "cross": "crossed"}
-
-
-def alert_hit(a, last, prev):
-    """Alarm koşulu: last = son fiyat, prev = önceki gözlem (yoksa önceki kapanış)."""
-    try:
-        p = float(a.get("price"))
-        last, prev = float(last), float(prev)
-    except (TypeError, ValueError):
-        return False
-    if p != p or last != last or prev != prev:
-        return False
-    cond = a.get("cond", "cross")
-    if cond == "above":
-        return last >= p
-    if cond == "below":
-        return last <= p
-    if cond == "cross_up":
-        return prev < p <= last
-    if cond == "cross_dn":
-        return prev > p >= last
-    return (prev < p <= last) or (prev > p >= last)
-
-
-def check_prices(md, state, email, prof, prefs):
-    alerts = prof.get("alerts") or {}
-    syms = [s for s, lst in alerts.items() if any(not a.get("triggered") for a in (lst or []))]
-    if not syms or not prefs.get("price"):
-        return 0
-    quotes = md.get_quotes(syms[:60])
-    n = 0
-    for s in syms[:60]:
-        q = quotes.get(s)
-        if not q or q.get("src") != "real":        # örnek (mock) fiyatla alarm çalmaz
-            continue
-        last = q["last"]
-        prev = _LASTPX.get((email, s), q.get("prev"))
-        _LASTPX[(email, s)] = last
-        for a in alerts.get(s) or []:
-            if a.get("triggered"):
+import streamlit as st
+import streamlit.components.v1 as components
+
+import engine as en
+import mock_data as md
+
+CHART_VERSION = "5.6"
+_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
+_INDEX = os.path.join(_DIR, "index.html")
+
+# ----------------------------------------------------------------------
+# Mum aralıkları — küçükten büyüğe sıralı (TradingView düzeni)
+#   src : (yfinance periyodu, yfinance aralığı) · None = günlük geçmişten türet
+#   agg : 0 yok · N saatlik barı N'erli topla · "W" haftalık · "M" aylık
+#   bars: açılışta görünen mum sayısı
+# ----------------------------------------------------------------------
+INTERVALS = {
+    "1m":  {"name": "1 minute", "adj": "1-minute",   "short": "1m",  "src": ("5d", "1m"),    "agg": 0,   "bars": 180},
+    "5m":  {"name": "5 minutes", "adj": "5-minute",  "short": "5m",  "src": ("1mo", "5m"),   "agg": 0,   "bars": 160},
+    "15m": {"name": "15 minutes", "adj": "15-minute", "short": "15m", "src": ("1mo", "15m"),  "agg": 0,   "bars": 130},
+    "30m": {"name": "30 minutes", "adj": "30-minute", "short": "30m", "src": ("1mo", "30m"),  "agg": 0,   "bars": 120},
+    "1h":  {"name": "1 hour", "adj": "1-hour",     "short": "1H",  "src": ("6mo", "1h"),   "agg": 0,   "bars": 120},
+    "4h":  {"name": "4 hours", "adj": "4-hour",    "short": "4H",  "src": ("1y", "1h"),    "agg": 4,   "bars": 90},
+    "1d":  {"name": "Daily", "adj": "daily",      "short": "1D",  "src": None,            "agg": 0,   "bars": 150},
+    "1wk": {"name": "Weekly", "adj": "weekly",     "short": "1W",  "src": None,            "agg": "W", "bars": 160},
+    "1mo": {"name": "Monthly", "adj": "monthly",    "short": "1M",  "src": None,            "agg": "M", "bars": 120},
+}
+INTERVAL_ORDER = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
+DEFAULT_INTERVAL = "1d"
+# Eski sürümlerden gelen zaman aralığı kodları
+LEGACY_TF = {"1G": "5m", "1H": "30m", "4S": "4h", "1A": "1d", "3A": "1d", "1Y": "1d",
+             "5Y": "1wk", "Hf": "1wk"}
+
+
+def norm_tf(tf):
+    """Geçersiz ya da eski kodları geçerli bir aralığa çevirir."""
+    if tf in INTERVALS:
+        return tf
+    return LEGACY_TF.get(tf, DEFAULT_INTERVAL)
+
+
+def tf_name(tf):
+    return INTERVALS[norm_tf(tf)]["name"]
+
+
+def tf_short(tf):
+    return INTERVALS[norm_tf(tf)]["short"]
+
+
+def is_intraday(tf):
+    return bool(INTERVALS[norm_tf(tf)]["src"])
+
+
+def interval_list():
+    """Bileşene gönderilecek liste: [anahtar, tam ad, kısa ad]."""
+    return [[k, INTERVALS[k]["name"], INTERVALS[k]["short"]] for k in INTERVAL_ORDER]
+
+# İndikatör varsayılanları — TradingView standartları, arayüzden değiştirilebilir
+DEFAULT_CFG = {
+    "sma": {"on": True, "ps": [20, 50, 100, 200],
+            "cols": ["#5B8CFF", "#F5B544", "#C4B5FD", "#EF5350", "#22D3EE", "#F472B6"]},
+    "nw": {"on": False, "h": 8.0, "mult": 3.0, "c": "#22D3EE"},
+    "boll": {"on": False, "n": 20, "k": 2.0, "c": "#9AA4B2"},
+    "sup": {"on": False, "n": 10, "mult": 3.0, "cu": "#26A69A", "cd": "#EF5350"},
+    "vidya": {"on": False, "len": 10, "mom": 20, "mult": 2.0, "cu": "#26A69A", "cd": "#EF5350"},
+    "vstop": {"on": False, "n": 20, "mult": 2.0, "cu": "#26A69A", "cd": "#EF5350"},
+    # v4.0: yalnızca en önemli 3–4 bölge (uzak / ikincil seviyeler çizilmez)
+    "zones": {"on": True, "lookback": 300, "left": 8, "right": 8, "merge": 0.6, "max": 4,
+              "cs": "#26A69A", "cr": "#EF5350"},
+    "gaps": {"on": True, "lookback": 260, "min": 0.25, "max": 2, "cs": "#26A69A", "cr": "#EF5350"},
+    "legend": {"on": False},
+    "vol": {"on": True, "cu": "#26A69A", "cd": "#EF5350"},
+    "rsi": {"on": True, "len": 14, "ob": 70, "os": 30, "c": "#C4B5FD"},
+    "macd": {"on": False, "f": 12, "s": 26, "sig": 9, "c": "#5B8CFF", "cs": "#F5B544"},
+    "wt": {"on": False, "n1": 10, "n2": 21, "ob": 60, "os": -60, "c": "#22D3EE", "cs": "#F5B544"},
+    "stoch": {"on": False, "k": 14, "d": 3, "smooth": 3, "ob": 80, "os": 20,
+              "c": "#5B8CFF", "cs": "#F5B544"},
+    "atr": {"on": False, "n": 14, "c": "#F5B544"},
+    "div": {"on": False, "src": "rsi", "left": 5, "right": 5, "hidden": True},
+}
+CONDS = {"cross": "crosses", "above": "rises above", "below": "falls below",
+         "cross_up": "crosses above", "cross_dn": "crosses below"}
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _color(v, fallback):
+    v = str(v or "")
+    return v if _HEX.match(v) else fallback
+
+
+def merge_cfg(user):
+    """Kullanıcı ayarlarını varsayılanlarla birleştirir ve sınırlar içinde tutar."""
+    out = {}
+    for k, d in DEFAULT_CFG.items():
+        cur = dict(d)
+        u = (user or {}).get(k) or {}
+        for f, v in u.items():
+            if f not in cur:
                 continue
-            if alert_hit(a, last, prev):
-                key = f"px:{email}:{s}:{a.get('id') or ''}:{a.get('cond')}:{a.get('price')}"
-                if notify_once(state, key, email, prefs, "price",
-                               f"{s}: price {COND_TXT.get(a.get('cond'), 'crossed')} {_fmt(a.get('price'))}",
-                               f"{s} is at {_fmt(last)} ({q.get('change_pct', 0):+.2f}% today). "
-                               f"Your alert: price {COND_TXT.get(a.get('cond'), 'crosses')} {_fmt(a.get('price'))}.",
-                               sym=s, tags=["bell"], priority=4):
-                    n += 1
-    return n
-
-
-WHEN_TXT = {"bmo": "before the market opens", "amc": "after the market closes", "": "time not announced"}
-
-
-def earnings_summary(sym, last):
-    """Bilanço açıklandıktan sonra tek paragraflık özet (bildirim ve arayüz için)."""
-    if not last:
-        return ""
-    bits = []
-    v = last.get("verdict")
-    if last.get("eps") is not None:
-        s = f"EPS {_fmt(last['eps'])}"
-        if last.get("eps_est") is not None:
-            s += f" vs {_fmt(last['eps_est'])} expected"
-            if last.get("surprise_pct") is not None:
-                s += f" ({last['surprise_pct']:+.1f}%)"
-        if last.get("eps_yoy") is not None:
-            s += f", {last['eps_yoy']:+.0f}% YoY"
-        bits.append(s)
-    if last.get("rev") is not None:
-        s = f"Revenue {_money(last['rev'])}"
-        if last.get("rev_est") is not None and last["rev_est"]:
-            s += f" vs {_money(last['rev_est'])} expected ({(last['rev'] / last['rev_est'] - 1) * 100:+.1f}%)"
-        if last.get("rev_yoy") is not None:
-            s += f", {last['rev_yoy']:+.0f}% YoY"
-        bits.append(s)
-    if last.get("ni_adj") is not None and last.get("ni_est") is not None:
-        bits.append(f"Net income {_money(last['ni_adj'])} vs {_money(last['ni_est'])} expected")
-    elif last.get("ni") is not None:
-        bits.append(f"Net income {_money(last['ni'])}")
-    if last.get("reaction_pct") is not None:
-        bits.append(f"Stock {last['reaction_pct']:+.1f}% since the report")
-    head = {"Beat": "BEAT — results above expectations", "Miss": "MISS — results below expectations",
-            "In line": "IN LINE with expectations"}.get(v, "Results published")
-    return head + ". " + " · ".join(bits) + ("." if bits else "")
-
-
-def check_earnings(md, state, email, prof, prefs):
-    wl = [s for s in (prof.get("watchlist") or []) if s and not any(c in s for c in "=^") and
-          not s.endswith("-USD")][:40]
-    if not wl or not (prefs.get("earn_up") or prefs.get("earn_res")):
-        return 0
-    n = 0
-    today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
-    for s in wl:
-        try:
-            info = md.get_earnings_info(s)
-        except Exception:
-            continue
-        if not info or info.get("src") != "real":
-            continue
-        nx, last = info.get("next"), info.get("last")
-        if nx and nx.get("date") and prefs.get("earn_up"):
-            days = (pd.Timestamp(nx["date"]) - today).days
-            est = []
-            if nx.get("eps_est") is not None:
-                est.append(f"EPS expected {_fmt(nx['eps_est'])}"
-                           + (f" ({nx['n']} analysts)" if nx.get("n") else ""))
-            if nx.get("ni_est") is not None:
-                est.append(f"net income expected {_money(nx['ni_est'])}")
-            if nx.get("rev_est") is not None:
-                est.append(f"revenue expected {_money(nx['rev_est'])}")
-            when = WHEN_TXT.get(nx.get("when") or "", "")
-            dtxt = pd.Timestamp(nx["date"]).strftime("%a, %b %d")
-            body = (f"{s} reports {nx.get('period') or 'quarterly results'} on {dtxt}, {when}"
-                    + ("" if nx.get("confirmed") else " (date not confirmed by the company yet)") + ". "
-                    + ("; ".join(est).capitalize() + "." if est else ""))
-            if days == 0:
-                if notify_once(state, f"eu0:{email}:{s}:{nx['date']}", email, prefs, "earn_up",
-                               f"{s} reports earnings today", body, sym=s, tags=["calendar"], priority=4):
-                    n += 1
-            elif 0 < days <= 5:
-                if notify_once(state, f"eu5:{email}:{s}:{nx['date']}", email, prefs, "earn_up",
-                               f"{s} reports earnings in {days} day{'s' if days != 1 else ''}", body, sym=s,
-                               tags=["calendar"]):
-                    n += 1
-            if 0 <= days <= 7:        # açıklanmadan önceki beklentiler saklanır → sonuçla karşılaştırılır
-                snap = {k: nx.get(k) for k in ("eps_est", "rev_est", "ni_est", "n", "date", "period_end")}
-                if state["earn_est"].get(s) != snap:
-                    state["earn_est"][s] = snap
-                    state["_dirty"] = True
-        if last and last.get("period_end") and last.get("eps") is not None:
-            pe = str(last["period_end"])
-            seen = state["earn_seen"].get(s)
-            fresh = False
-            if seen is None:
-                rd = last.get("date")
-                fresh = bool(rd) and 0 <= (today - pd.Timestamp(rd)).days <= 2
-            elif pe > seen:
-                fresh = True
-            if seen != pe and (seen is None or pe > seen):
-                state["earn_seen"][s] = pe
-                state["_dirty"] = True
-            if fresh and prefs.get("earn_res"):
-                snap = state["earn_est"].get(s) or {}
-                l2 = dict(last)
-                for k in ("rev_est", "ni_est"):
-                    if l2.get(k) is None and snap.get(k) is not None:
-                        l2[k] = snap[k]
-                v = l2.get("verdict") or "Results"
-                tag = {"Beat": ["white_check_mark"], "Miss": ["x"]}.get(v, ["bar_chart"])
-                if notify_once(state, f"er:{email}:{s}:{pe}", email, prefs, "earn_res",
-                               f"{s} earnings: {v.upper()}", earnings_summary(s, l2), sym=s, tags=tag, priority=4):
-                    n += 1
-    return n
-
-
-def check_macro(md, state, email, prof, prefs):
-    if not prefs.get("macro"):
-        return 0
-    ccys = prof.get("cal_ccy")
-    try:
-        rows = md.get_calendar_rows("Today", prefs.get("macro_impact") or "High", ccys if ccys else None)
-    except Exception:
-        return 0
-    now = pd.Timestamp.now(tz=md.TZ)
-    n = 0
-    for r in rows:
-        if r.get("src") != "real" or r.get("state") != "released":
-            continue
-        if (now - r["dt"]) > pd.Timedelta(hours=3) or r["dt"] > now:
-            continue
-        ev = r.get("eval")
-        word = {"better": "better than forecast", "worse": "worse than forecast", "inline": "in line with forecast"}.get(ev, "")
-        body = (f"{r.get('cur', '')} {r['event']}: actual {r.get('actual')}"
-                + (f" vs forecast {r.get('forecast')}" if r.get("forecast") not in (None, "", "—") else "")
-                + (f", previous {r.get('previous')}" if r.get("previous") not in (None, "", "—") else "")
-                + (f" — {word}" if word else "") + ".")
-        key = f"mc:{email}:{r['dt'].strftime('%Y-%m-%d %H:%M')}:{r.get('cur')}:{r['event']}"
-        if notify_once(state, key, email, prefs, "macro", f"{r.get('cur', '')} {r['event']}: {r.get('actual')}",
-                       body, tags=["chart_with_upwards_trend"]):
-            n += 1
-    return n
-
-
-# ======================================================================
-# v4.3 — Demo hesabı (kâğıt üzerinde işlem, gerçek fiyatlarla) + otomatik işlem botları
-#   · Hesap "demo" deposunda tutulur (profilden ayrı: arka plandaki bot ile açık sayfa birbirini ezmez).
-#   · Botlar 15 dakikalık her mum kapanışından sonra bir kez çalışır: önce açık pozisyonlar (stop / TP / iz süren
-#     stop / süre), sonra yeni alımlar. Veri çekme kilidin dışında, hesap değişikliği kilidin içinde yapılır.
-#   · Örnek (mock) fiyatla hiçbir zaman işlem yapılmaz.
-# ======================================================================
-DEMO_STARTS = (10000, 25000, 50000, 100000, 500000)
-DEMO_CCYS = ("USD", "EUR")
-DEMO_WATCH = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD"]
-DEMO_WATCH_MAX = 40
-BOT_SLOT = 900               # botların kontrol aralığı: 15 dakika
-BOT_LAG = 75                 # mum kapandıktan sonra verinin gelmesi için bekleme (sn)
-BOT_HOURS_ONLY = True        # yalnızca ABD seansı açıkken alım (09:30–16:00 New York, hafta içi)
-BOT_BAR_MAX_AGE = 45 * 60    # alım için son 15 dk mumunun en fazla yaşı
-BOT_MAX = 8
-_EUR_SFX = (".DE", ".F", ".PA", ".AS", ".MI", ".MC", ".BR", ".VI", ".HE", ".LS", ".IR")
-_DLOCK = threading.RLock()
-
-
-def _engine():
-    import engine
-    return engine
-
-
-def inst_ccy(sym):
-    """Enstrümanın işlem para birimi: USD / EUR; desteklenmiyorsa None (FX çiftleri, endeksler, diğer borsalar)."""
-    s = str(sym or "").upper().strip()
-    if s.endswith("=F") and len(s) > 2:       # v5.3: emtia vadelileri (altın, gümüş, petrol) — USD, birim fiyatı
-        return "USD"
-    if not s or "=" in s or s.startswith("^"):
-        return None
-    if s.endswith("-USD"):
-        return "USD"
-    if s.endswith(_EUR_SFX):
-        return "EUR"
-    if "." in s:
-        return None
-    return "USD"
-
-
-def fx_mult(acct_ccy, inst, eurusd):
-    """Enstrüman para birimi → hesap para birimi çarpanı (EURUSD = 1 EUR kaç USD)."""
-    if inst is None:
-        return None
-    if inst == acct_ccy:
-        return 1.0
-    if not eurusd or eurusd <= 0:
-        return None
-    return (1.0 / eurusd) if (inst == "USD" and acct_ccy == "EUR") else float(eurusd)
-
-
-DEMO_MAX_ACCTS = 12          # kullanıcı başına en fazla demo hesabı
-DEMO_NAME_MAX = 32
-
-
-def demo_new(start=25000, ccy="USD", watch=None, bots=None, name="Main account", acc_id=None):
-    start = float(start if start in DEMO_STARTS else 25000)
-    return {"v": 2, "id": acc_id or secrets.token_hex(4), "name": demo_clean_name(name) or "Main account",
-            "start": start, "ccy": ccy if ccy in DEMO_CCYS else "USD", "cash": start, "pos": {},
-            "trades": [], "eq": [[time.time(), start]], "watch": list(watch if watch is not None else DEMO_WATCH),
-            "bots": list(bots or []), "log": [], "seq": 0, "created": time.time(), "fx": None, "bot_slot": None,
-            "guard": guard_default(), "pend": []}
-
-
-def demo_clean_name(name):
-    """Hesap adı: boşluklar sadeleşir, kontrol karakterleri atılır, en fazla 32 karakter."""
-    s_ = re.sub(r"[\x00-\x1f\x7f]", "", str(name or ""))
-    return re.sub(r"\s+", " ", s_).strip()[:DEMO_NAME_MAX]
-
-
-def _demo_all():
-    d = kv_get("demo")
-    return d if isinstance(d, dict) and isinstance(d.get("users"), dict) else {"v": 2, "users": {}}
-
-
-def _demo_user(raw):
-    """Kullanıcı kaydı (v2): {'active': id, 'order': [id…], 'accounts': {id: hesap}}.
-    v1'deki tek hesap ('cash' alanı doğrudan kayıtta) kayıpsız olarak "Main account" adıyla taşınır."""
-    if isinstance(raw, dict) and isinstance(raw.get("accounts"), dict) and raw["accounts"]:
-        u = raw
-    elif isinstance(raw, dict) and "cash" in raw:
-        a = dict(raw)
-        a.setdefault("id", "main")            # sabit kimlik: kayıt yazılmadan önceki okumalar da aynı hesabı görür
-        a.setdefault("name", "Main account")
-        a["v"] = 2
-        u = {"active": a["id"], "order": [a["id"]], "accounts": {a["id"]: a}}
-    else:
-        a = demo_new(acc_id="main")
-        u = {"active": a["id"], "order": [a["id"]], "accounts": {a["id"]: a}}
-    acc = u["accounts"]
-    for k, a in list(acc.items()):            # eksik alanları tamamla (eski kayıtlar)
-        a.setdefault("id", k)
-        a.setdefault("name", "Account")
-        a.setdefault("watch", list(DEMO_WATCH))
-        a.setdefault("bots", [])
-        a.setdefault("log", [])
-        a.setdefault("eq", [[time.time(), a.get("start", 25000)]])
-        a.setdefault("guard", guard_default())      # v5.4: her hesapta devre kesici (varsayılan 5.000)
-        a.setdefault("pend", [])                    # v5.5: bekleyen limit emirleri
-    order = [i for i in (u.get("order") or []) if i in acc]
-    order += [i for i in acc if i not in order]
-    u["order"] = order
-    if u.get("active") not in acc:
-        u["active"] = order[0]
-    return u
-
-
-def demo_user(email):
-    """Kullanıcının tüm demo hesapları (kopya)."""
-    return _demo_user(_demo_all()["users"].get(str(email or "").lower()))
-
-
-def demo_accounts(email):
-    """Seçim listesi için: [{'id','name','ccy','start','equity','active','bots'}] (sıralı)."""
-    u = demo_user(email)
-    out = []
-    for i in u["order"]:
-        a = u["accounts"][i]
-        eq = float((a.get("eq") or [[0, a.get("start", 0)]])[-1][1])
-        out.append({"id": i, "name": a.get("name") or "Account", "ccy": a.get("ccy", "USD"),
-                    "start": float(a.get("start", 0)), "equity": eq, "active": i == u["active"],
-                    "bots": sum(1 for b in a.get("bots") or [] if b.get("on")),
-                    "positions": len(a.get("pos") or {})})
+            if f == "ps":
+                try:
+                    v = [int(x) for x in v if 1 < int(x) < 1000][:6] or d["ps"]
+                except (TypeError, ValueError):
+                    v = d["ps"]
+            elif f == "cols":
+                try:
+                    v = [_color(x, d["cols"][i % len(d["cols"])]) for i, x in enumerate(list(v)[:6])] or d["cols"]
+                except TypeError:
+                    v = d["cols"]
+            elif isinstance(d[f], str) and d[f].startswith("#"):
+                v = _color(v, d[f])
+            elif isinstance(d[f], bool):
+                v = bool(v)
+            elif isinstance(d[f], (int, float)):
+                try:
+                    v = type(d[f])(v)
+                except (TypeError, ValueError):
+                    v = d[f]
+            cur[f] = v
+        cur["on"] = bool(cur.get("on"))
+        out[k] = cur
+    if out["div"]["src"] not in ("rsi", "macd", "wt"):
+        out["div"]["src"] = "rsi"
+    out["rsi"]["len"] = int(min(100, max(2, out["rsi"]["len"])))
+    out["macd"]["s"] = int(max(out["macd"]["f"] + 1, out["macd"]["s"]))
+    out["zones"]["lookback"] = int(min(1200, max(60, out["zones"]["lookback"])))
+    out["zones"]["max"] = int(min(4, max(2, out["zones"]["max"])))
+    out["gaps"]["lookback"] = int(min(2000, max(20, out["gaps"]["lookback"])))
+    out["gaps"]["min"] = float(min(10.0, max(0.05, out["gaps"]["min"])))
+    out["gaps"]["max"] = int(min(3, max(1, out["gaps"]["max"])))
+    out["nw"]["h"] = float(min(100.0, max(1.0, out["nw"]["h"])))
+    out["boll"]["n"] = int(min(200, max(2, out["boll"]["n"])))
+    out["stoch"]["k"] = int(min(100, max(2, out["stoch"]["k"])))
+    out["atr"]["n"] = int(min(100, max(2, out["atr"]["n"])))
+    out["sup"]["n"] = int(min(100, max(2, out["sup"]["n"])))
+    out["vstop"]["n"] = int(min(100, max(2, out["vstop"]["n"])))
+    out["vidya"]["len"] = int(min(100, max(2, out["vidya"]["len"])))
+    out["vidya"]["mom"] = int(min(200, max(2, out["vidya"]["mom"])))
     return out
 
 
-def _demo_save_user(email, u, sync=False):
-    email = str(email or "").lower()
-    if not email:
-        return False
-    allp = _demo_all()
-    allp["v"] = 2
-    allp["users"][email] = u
-    return kv_put("demo", allp, sync=sync)
-
-
-def demo_get(email, acc_id=None):
-    """Hesabın kopyası — verilmezse kullanıcının etkin hesabı; hiç yoksa varsayılan (25.000 $) hesap."""
-    u = demo_user(email)
-    return u["accounts"].get(acc_id or u["active"]) or u["accounts"][u["active"]]
-
-
-def demo_put(email, acct, sync=False):
-    """Hesabı kendi kimliğiyle (acct['id']) kaydeder; diğer hesaplara dokunmaz."""
-    email = str(email or "").lower()
-    if not email:
-        return False
-    with _DLOCK:
-        u = demo_user(email)
-        aid = acct.get("id") or u["active"]
-        acct["id"] = aid
-        u["accounts"][aid] = acct
-        if aid not in u["order"]:
-            u["order"].append(aid)
-        return _demo_save_user(email, u, sync=sync)
-
-
-def demo_edit(email, fn, acc_id=None):
-    """Hesabı (verilmezse etkin hesap) kilit altında okur, fn(acct) ile değiştirir, kaydeder."""
-    with _DLOCK:
-        acct = demo_get(email, acc_id)
-        res = fn(acct)
-        demo_put(email, acct)
-        return res
-
-
-def _name_taken(u, name, skip=None):
-    n = name.casefold()
-    return any((a.get("name") or "").casefold() == n for i, a in u["accounts"].items() if i != skip)
-
-
-def demo_create(email, name, start, ccy, watch=None):
-    """Yeni demo hesabı açar ve etkin yapar. Döner: (ok, mesaj, hesap kimliği)."""
-    name = demo_clean_name(name)
-    if not name:
-        return False, "Give the account a name.", None
-    if start not in DEMO_STARTS or ccy not in DEMO_CCYS:
-        return False, "Choose a currency and a starting balance.", None
-    with _DLOCK:
-        u = demo_user(email)
-        if len(u["accounts"]) >= DEMO_MAX_ACCTS:
-            return False, f"You can keep up to {DEMO_MAX_ACCTS} demo accounts. Delete one first.", None
-        if _name_taken(u, name):
-            return False, f"An account called “{name}” already exists.", None
-        a = demo_new(start, ccy, watch, name=name)
-        u["accounts"][a["id"]] = a
-        u["order"].append(a["id"])
-        u["active"] = a["id"]
-        _demo_save_user(email, u, sync=True)
-        return True, f"“{name}” created", a["id"]
-
-
-def demo_switch(email, acc_id):
-    """Etkin hesabı değiştirir — hiçbir hesabın verisine dokunmaz."""
-    with _DLOCK:
-        u = demo_user(email)
-        if acc_id not in u["accounts"]:
-            return False
-        if u["active"] != acc_id:
-            u["active"] = acc_id
-            _demo_save_user(email, u, sync=True)
-        return True
-
-
-def demo_rename(email, acc_id, name):
-    name = demo_clean_name(name)
-    if not name:
-        return False, "The name cannot be empty."
-    with _DLOCK:
-        u = demo_user(email)
-        if acc_id not in u["accounts"]:
-            return False, "Account not found."
-        if _name_taken(u, name, skip=acc_id):
-            return False, f"An account called “{name}” already exists."
-        u["accounts"][acc_id]["name"] = name
-        _demo_save_user(email, u, sync=True)
-        return True, f"Renamed to “{name}”"
-
-
-def demo_delete(email, acc_id):
-    """Hesabı kalıcı olarak siler (en az bir hesap kalır). Silinen etkin hesapsa sıradaki etkin olur."""
-    with _DLOCK:
-        u = demo_user(email)
-        if acc_id not in u["accounts"]:
-            return False, "Account not found."
-        if len(u["accounts"]) <= 1:
-            return False, "This is your only demo account — reset it instead of deleting it."
-        name = u["accounts"][acc_id].get("name") or "Account"
-        u["accounts"].pop(acc_id)
-        idx = u["order"].index(acc_id) if acc_id in u["order"] else 0
-        u["order"] = [i for i in u["order"] if i != acc_id]
-        if u["active"] == acc_id:
-            u["active"] = u["order"][min(idx, len(u["order"]) - 1)]
-        _demo_save_user(email, u, sync=True)
-        return True, f"“{name}” deleted"
-
-
-def demo_reset(email, start, ccy, keep=True, acc_id=None):
-    """Hesabı yeni başlangıç tutarı / para birimiyle sıfırlar. Adı, kimliği, izleme listesi ve botları
-    (kapalı olarak) kalır; pozisyonlar, emirler ve geçmiş silinir. Diğer hesaplar etkilenmez."""
-    def run(acct):
-        bots = []
-        for b in (acct.get("bots") or []) if keep else []:
-            b = dict(b, on=False, last=None, cool={})
-            b.pop("guard_paused", None)
-            bots.append(b)
-        new = demo_new(start, ccy, acct.get("watch") if keep else None, bots, name=acct.get("name") or "Account",
-                       acc_id=acct.get("id"))
-        new["guard"] = dict(guard_cfg(acct), breach=None)     # v5.4: limit ayarları kalır, kilit kalkar
-        new["pend"] = []                                      # v5.5: bekleyen emirler silinir
-        acct.clear()
-        acct.update(new)
-        return True
-    return demo_edit(email, run, acc_id)
-
-
-_KEEP = object()
-
-
-def pos_orders(p):
-    """Pozisyonun bekleyen emirleri: {'stop','tp','mode','trail'} (0 = yok)."""
-    tp = float(p.get("tp2") or 0) or (float(p.get("tp1") or 0) if not p.get("tp1_done") else 0.0)
-    return {"stop": float(p.get("stop") or 0) if has_orders(p) else 0.0, "tp": tp if has_orders(p) else 0.0,
-            "mode": "trailing" if p.get("trail") else "regular", "trail": float(p.get("trail") or 0)}
-
-
-def demo_set_orders(email, key, stop=_KEEP, tp=_KEEP, mode=_KEEP, acc_id=None, last=None):
-    """Bir pozisyonun Stop-Loss / Take-Profit emrini ayarlar ya da kapatır (0 / None = kapalı; verilmeyen taraf
-    aynen kalır). mode: 'regular' (sabit fiyat) | 'trailing' (en yüksek fiyatın, ayar anındaki mesafe kadar altı).
-    Bot pozisyonunda kendi emirlerin botun çıkış planının yerine geçer. Döner: (ok, mesaj)."""
-    def run(acct):
-        p = acct["pos"].get(key)
-        if not p:
-            return False, "Position not found."
-        lp = float(last) if last else float(p.get("last") or p["entry"])     # canlı fiyat (arayüzden) öncelikli
-        cur = pos_orders(p)
-        short = p.get("side") == "short"
-        st_ = cur["stop"] if stop is _KEEP else float(stop or 0)
-        tp_ = cur["tp"] if tp is _KEEP else float(tp or 0)
-        md_ = cur["mode"] if mode is _KEEP else ("trailing" if str(mode or "").lower().startswith("trail") else "regular")
-        if short:                                  # v5.3: short pozisyonda stop yukarıda, hedef aşağıda
-            if stop is not _KEEP and st_ and st_ <= lp:
-                return False, f"For a short the stop-loss must be above the current price ({lp:.2f})."
-            if tp is not _KEEP and tp_ and tp_ >= lp:
-                return False, f"For a short the take-profit must be below the current price ({lp:.2f})."
-        if not short and stop is not _KEEP and st_ and st_ >= lp:
-            return False, f"The stop-loss must be below the current price ({lp:.2f})."
-        if not short and tp is not _KEEP and tp_ and tp_ <= lp:
-            return False, f"The take-profit must be above the current price ({lp:.2f})."
-        if st_ < 0 or tp_ < 0:
-            return False, "Prices cannot be negative."
-        changed = (st_ != cur["stop"]) or (tp_ != cur["tp"]) or (md_ != cur["mode"])
-        if not st_ and not tp_:
-            if p["owner"] == "manual":
-                for k_ in ("stop", "tp1", "tp2", "atr", "manual_orders", "checked", "hi", "tp1_done", "trail"):
-                    p.pop(k_, None)
-            else:                     # bot pozisyonu: botun planı da kapanır (kullanıcı istedi)
-                p.update({"stop": 0.0, "tp1": 0.0, "tp2": 0.0, "atr": 0.0, "tp1_done": True, "manual_orders": True})
-                p.pop("trail", None)
-            return True, "Stop-loss and take-profit cancelled"
-        p.update({"stop": st_, "tp1": 0.0, "tp2": tp_, "atr": 0.0, "tp1_done": True, "manual_orders": True})
-        if short:
-            p["lo"] = min(float(p.get("lo") or lp), lp)
-        else:
-            p["hi"] = max(float(p.get("hi") or 0), lp)
-        if md_ == "trailing" and st_:
-            if stop is not _KEEP or mode is not _KEEP or not p.get("trail"):
-                p["trail"] = round(abs(lp - st_), 6)
-                if short:
-                    p["lo"] = lp
-                else:
-                    p["hi"] = lp
-        else:
-            p.pop("trail", None)
-        if changed:                   # yeni emir geçmiş mumlara karşı denenmez
-            p["checked"] = max(float(p.get("checked") or 0), time.time())
-        parts = []
-        if st_:
-            parts.append(("trailing stop " if p.get("trail") else "stop-loss ") + f"{st_:.2f}")
-        if tp_:
-            parts.append(f"take-profit {tp_:.2f}")
-        return True, "Orders saved: " + " · ".join(parts)
-    return demo_edit(email, run, acc_id)
-
-
-def _apply_plan(pos, plan, price, ts, owner):
-    """Bot / elle verilen planı pozisyona yazar (stop, hedefler, izleme türü). v5.3: yön, aşama, bulut izi."""
-    pos.update({k: plan[k] for k in ("stop", "tp1", "tp2", "atr", "why", "cfg", "trail", "strat",
-                                     "trail_n", "trail_kj", "trail_cloud", "no_time", "stage") if k in plan})
-    if int(plan.get("stage") or 0) == 2:          # aşama 2 eklendi: artık Kijun izliyor, bulut izi biter
-        pos.pop("trail_cloud", None)
-    if pos.get("side") == "short":
-        pos["lo"] = min(price, float(pos.get("lo") or price))
-    else:
-        pos["hi"] = max(price, float(pos.get("hi") or 0))
-    pos.update({"tp1_done": bool(plan.get("tp1_done", False)), "checked": plan.get("checked") or ts})
-    if owner == "manual":
-        pos["manual_orders"] = True
-
-
-def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan=None, ts=None, bot=""):
-    """Bir emri hesaba işler (anında, verilen fiyattan). Döner: (ok, mesaj, işlem kaydı)."""
-    try:
-        qty, price, fxm = float(qty), float(price), float(fxm)
-    except (TypeError, ValueError):
-        return False, "Quantity and price must be numbers.", None
-    if not (qty > 0 and price > 0 and fxm > 0):
-        return False, "Quantity and price must be positive.", None
-    ts = float(ts or time.time())
-    key = f"{sym}|{owner}"
-    pos = acct["pos"].get(key)
-    amt = qty * price * fxm
-    pnl = None
-    psh = bool(pos and pos.get("side") == "short")
-    if side in ("buy", "sell") and psh:
-        return False, "This is a short position — use cover to close it.", None
-    if side in ("short", "cover") and pos and not psh:
-        return False, "Close the long position first.", None
-    if side == "buy":
-        if amt > pend_free(acct) + 1e-6:         # v5.6: bekleyen açılış emirlerinin ayırdığı sermaye hariç
-            return False, "Not enough cash for this order.", None
-        if pos:
-            pos["entry"] = (pos["entry"] * pos["qty"] + price * qty) / (pos["qty"] + qty)
-            pos["qty"] += qty
-            pos["cost"] += amt
-        else:
-            pos = {"sym": sym, "owner": owner, "bot": bot, "qty": qty, "entry": price, "cost": amt, "opened": ts,
-                   "last": price}
-            acct["pos"][key] = pos
-        if plan:
-            _apply_plan(pos, plan, price, ts, owner)
-        acct["cash"] -= amt
-    elif side == "short":               # v5.3: açığa satış — teminat kadar nakit ayrılır, K/Z ters yönde
-        if amt > pend_free(acct) + 1e-6:
-            return False, "Not enough cash (margin) for this short.", None
-        if pos:
-            pos["entry"] = (pos["entry"] * pos["qty"] + price * qty) / (pos["qty"] + qty)
-            pos["qty"] += qty
-            pos["cost"] += amt
-        else:
-            pos = {"sym": sym, "owner": owner, "bot": bot, "qty": qty, "entry": price, "cost": amt, "opened": ts,
-                   "last": price, "side": "short", "lo": price}
-            acct["pos"][key] = pos
-        if plan:
-            _apply_plan(pos, plan, price, ts, owner)
-        acct["cash"] -= amt
-    elif side == "cover":
-        if not pos or qty > pos["qty"] + 1e-9:
-            return False, "There is no short position of that size.", None
-        part = pos["cost"] * qty / pos["qty"]
-        pnl = part - amt
-        pos["qty"] -= qty
-        pos["cost"] -= part
-        acct["cash"] += part + pnl
-        if pos["qty"] <= 1e-9:
-            acct["pos"].pop(key, None)
-    elif side == "sell":
-        if not pos or qty > pos["qty"] + 1e-9:
-            return False, "You do not hold that many shares.", None
-        part = pos["cost"] * qty / pos["qty"]
-        pnl = amt - part
-        pos["qty"] -= qty
-        pos["cost"] -= part
-        acct["cash"] += amt
-        if pos["qty"] <= 1e-9:
-            acct["pos"].pop(key, None)
-    else:
-        return False, "Unknown order side.", None
-    acct["seq"] = int(acct.get("seq") or 0) + 1
-    tr = {"id": acct["seq"], "ts": ts, "sym": sym, "side": side, "qty": qty, "px": price, "fx": fxm,
-          "amt": round(amt, 2), "owner": owner, "bot": bot, "reason": reason,
-          "pnl": (round(pnl, 2) if pnl is not None else None)}
-    acct["trades"].append(tr)
-    del acct["trades"][:-400]
-    return True, "", tr
-
-
-def demo_value(acct, quotes=None, eurusd=None):
-    """Hesap değeri: nakit + pozisyonlar (son fiyatla). quotes: {sym: {'last', 'src'}}."""
-    quotes = quotes or {}
-    rows, inv, upl = [], 0.0, 0.0
-    for key, p in (acct.get("pos") or {}).items():
-        q = quotes.get(p["sym"]) or {}
-        last = float(q["last"]) if (q.get("src") == "real" and q.get("last")) else float(p.get("last") or p["entry"])
-        fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd or acct.get("fx")) or (p["cost"] / max(p["qty"] * p["entry"], 1e-9))
-        short = p.get("side") == "short"
-        mkt = p["qty"] * last * fxm
-        pl = (p["cost"] - mkt) if short else (mkt - p["cost"])     # v5.3: short'ta fiyat düşerse kâr
-        val = p["cost"] + pl
-        inv += val
-        upl += pl
-        rows.append({"key": key, "sym": p["sym"], "owner": p["owner"], "bot": p.get("bot") or "", "qty": p["qty"],
-                     "entry": p["entry"], "last": last, "value": val, "pnl": pl,
-                     "pnl_pct": (pl / p["cost"] * 100) if p["cost"] else 0.0, "stop": p.get("stop"),
-                     "tp1": p.get("tp1"), "tp2": p.get("tp2"), "tp1_done": p.get("tp1_done"),
-                     "trail": p.get("trail"), "orders": has_orders(p), "manual_orders": bool(p.get("manual_orders")),
-                     "strat": p.get("strat"), "trail_n": p.get("trail_n"), "trail_kj": p.get("trail_kj"),
-                     "trail_cloud": p.get("trail_cloud"), "side": "short" if short else "long",
-                     "stage": p.get("stage"), "fxm": fxm,
-                     "opened": p.get("opened"), "why": p.get("why") or "", "live": q.get("src") == "real"})
-    rpl = sum(t["pnl"] for t in acct.get("trades") or [] if t.get("pnl") is not None)
-    eq = float(acct["cash"]) + inv
-    rows.sort(key=lambda r: -r["value"])
-    res = pend_reserved(acct)
-    return {"equity": eq, "cash": float(acct["cash"]), "invested": inv, "upl": upl, "rpl": rpl,
-            "reserved": res, "free": float(acct["cash"]) - res,      # v5.6: açılış emirleri için ayrılan sermaye
-            "total": eq - float(acct["start"]), "total_pct": (eq / float(acct["start"]) - 1) * 100, "rows": rows}
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# v5.4 — İstatistik, açık risk ve Prop-Firm devre kesici (haftalık / aylık zarar limiti, "ACCOUNT BREACHED")
-# ---------------------------------------------------------------------------------------------------------------
-GUARD_PERIODS = ("week", "month")
-GUARD_BASES = ("fixed", "pct")
-GUARD_LIMIT_DEFAULT = 5000.0         # her yeni hesapta hesabın para biriminde
-GUARD_PCT_DEFAULT = 5.0              # yüzde modunda: başlangıç bakiyesinin %'si
-# v5.5: kalan "account health" = %100 − harcanan limit yüzdesi; çubuk 4 kademe
-# health 100–75 koyu yeşil · 75–50 açık yeşil · 50–25 sarı/amber · 25–0 kırmızı
-GUARD_STEPS = (0.25, 0.50, 0.75)     # harcanan limit oranının kademe sınırları
-GUARD_WARN, GUARD_RED = GUARD_STEPS[1], GUARD_STEPS[2]
-
-
-def demo_stats(acct):
-    """Kapanmış işlemlerden (geçmişte sonucu olan her satış / kapama) isabet oranı ve ortalama kazanç : kayıp.
-    Döner: {'n','wins','losses','win_rate','avg_win','avg_loss','rr'} — rr: ort. kazanç / ort. kayıp (yoksa None)."""
-    pnl = [float(t["pnl"]) for t in acct.get("trades") or [] if t.get("pnl") is not None]
-    wins = [x for x in pnl if x > 0]
-    loss = [-x for x in pnl if x < 0]
-    aw = sum(wins) / len(wins) if wins else 0.0
-    al = sum(loss) / len(loss) if loss else 0.0
-    return {"n": len(pnl), "wins": len(wins), "losses": len(loss),
-            "win_rate": (len(wins) / len(pnl) * 100.0) if pnl else 0.0, "avg_win": aw, "avg_loss": al,
-            "rr": (aw / al) if al > 0 else (0.0 if not wins else None)}
-
-
-def demo_open_risk(val):
-    """Açık risk: her stop şimdiki fiyattan tetiklenirse özsermayenin ne kadar düşeceği (long: son − stop,
-    short: stop − son; kârı kilitlenmiş stop da "geri verilecek" tutar olarak sayılır). Stopsuz pozisyonlar ayrı.
-    Döner: {'risk','n','naked','naked_val','naked_syms'}."""
-    risk, n, naked, nval, nsyms = 0.0, 0, 0, 0.0, []
-    for r in (val or {}).get("rows") or []:
-        stop = float(r.get("stop") or 0) if r.get("orders") else 0.0
-        if stop <= 0:
-            naked += 1
-            nval += float(r.get("value") or 0)
-            nsyms.append(r["sym"])
-            continue
-        last, q, fxm = float(r["last"]), float(r["qty"]), float(r.get("fxm") or 1.0)
-        d = (stop - last) if r.get("side") == "short" else (last - stop)
-        risk += max(0.0, d) * q * fxm
-        n += 1
-    return {"risk": risk, "n": n, "naked": naked, "naked_val": nval, "naked_syms": nsyms}
-
-
-def guard_default():
-    return {"on": True, "period": "week", "basis": "fixed", "limit": GUARD_LIMIT_DEFAULT, "pct": GUARD_PCT_DEFAULT,
-            "breach": None}
-
-
-def guard_cfg(acct):
-    """Hesabın devre kesici ayarları (eksik / bozuk alanlar varsayılanla)."""
-    g = guard_default()
-    raw = acct.get("guard")
-    if isinstance(raw, dict):
-        g.update({k: raw[k] for k in g if k in raw})
-    g["on"] = bool(g["on"])
-    g["period"] = g["period"] if g["period"] in GUARD_PERIODS else "week"
-    g["basis"] = g["basis"] if g["basis"] in GUARD_BASES else "fixed"
-    try:
-        g["limit"] = max(0.0, float(g["limit"]))
-    except (TypeError, ValueError):
-        g["limit"] = GUARD_LIMIT_DEFAULT
-    try:
-        g["pct"] = min(100.0, max(0.0, float(g["pct"])))
-    except (TypeError, ValueError):
-        g["pct"] = GUARD_PCT_DEFAULT
-    if not isinstance(g.get("breach"), dict):
-        g["breach"] = None
-    return g
-
-
-def guard_limit(acct, g=None):
-    """Etkin limit hesabın para biriminde: sabit tutar ya da başlangıç bakiyesinin yüzdesi."""
-    g = g or guard_cfg(acct)
-    if g["basis"] == "pct":
-        return float(acct.get("start") or 0) * g["pct"] / 100.0
-    return float(g["limit"])
-
-
-def guard_period_start(period, now=None):
-    """Dönemin başlangıcı (Europe/Berlin): hafta → pazartesi 00:00, ay → ayın 1'i 00:00. Döner: unix zamanı."""
-    t = pd.Timestamp(float(now or time.time()), unit="s", tz="UTC").tz_convert(TZ)
-    d = t.replace(day=1) if period == "month" else t - pd.Timedelta(days=t.weekday())
-    return float(d.normalize().timestamp())
-
-
-def guard_status(acct, val=None, now=None):
-    """Dönem zararı = dönem içinde gerçekleşen K/Z + açık pozisyonların K/Z'si (zarar pozitif sayı).
-    level: off · ok · warn · red · breach. locked: limit aşıldı ve devre kesici açık."""
-    g = guard_cfg(acct)
-    now = float(now or time.time())
-    t0 = guard_period_start(g["period"], now)
-    realized = sum(float(t["pnl"]) for t in acct.get("trades") or []
-                   if t.get("pnl") is not None and float(t.get("ts") or 0) >= t0)
-    upl = float((val if val is not None else demo_value(acct, None, acct.get("fx")))["upl"])
-    pl = realized + upl
-    loss = max(0.0, -pl)
-    lim = guard_limit(acct, g)
-    ratio = (loss / lim) if lim > 0 else 0.0
-    locked = bool(g["on"] and g["breach"])
-    s1, s2, s3 = GUARD_STEPS
-    level = ("breach" if locked else "off" if not g["on"] else
-             "red" if ratio >= s3 else "warn" if ratio >= s2 else "good" if ratio >= s1 else "ok")
-    return {"on": g["on"], "period": g["period"], "basis": g["basis"], "limit": lim, "fixed": g["limit"],
-            "pct": g["pct"], "loss": loss, "realized": realized, "open": upl, "pl": pl, "ratio": ratio,
-            "health": max(0.0, (1.0 - ratio) * 100.0), "level": level, "locked": locked, "breach": g["breach"],
-            "t0": t0}
-
-
-def guard_locked(acct):
-    g = guard_cfg(acct)
-    return bool(g["on"] and g["breach"])
-
-
-def guard_eval(acct, val=None, now=None):
-    """Kilit İÇİNDE: dönem zararı limite ulaştıysa hesap kilitlenir (breach kaydı) ve hesabın TÜM botları hemen
-    durdurulur (guard_paused işaretiyle). Kilit kendiliğinden kalkmaz. Döner: (durum, yeni_kilit_mi)."""
-    s = guard_status(acct, val, now)
-    if not s["on"] or s["locked"] or s["limit"] <= 0 or s["loss"] < s["limit"] - 1e-9:
-        return s, False
-    now = float(now or time.time())
-    g = guard_cfg(acct)
-    g["breach"] = {"ts": round(now), "loss": round(s["loss"], 2), "limit": round(s["limit"], 2),
-                   "period": s["period"]}
-    acct["guard"] = g
-    paused = 0
-    for b in acct.get("bots") or []:
-        if b.get("on"):
-            b["on"] = False
-            b["guard_paused"] = True
-            paused += 1
-    per = "Weekly" if s["period"] == "week" else "Monthly"
-    acct.setdefault("log", []).append({"ts": round(now), "bot": "Circuit breaker", "sym": "",
-                                       "text": f"ACCOUNT BREACHED — {per.lower()} loss {s['loss']:.2f} reached the "
-                                               f"limit {s['limit']:.2f}; {paused} bot(s) paused, manual trading "
-                                               f"blocked"})
-    del acct["log"][:-200]
-    s = guard_status(acct, val, now)
-    s["paused"] = paused
-    return s, True
-
-
-def guard_check(email, acc_id, val, now=None):
-    """Arayüz için: durumu döndürür; limit yeni aşıldıysa hesabı kilit altında kilitler (yalnız o zaman yazar).
-    Döner: (durum, yeni_kilit_mi)."""
-    acct = demo_get(email, acc_id)
-    s = guard_status(acct, val, now)
-    if s["on"] and not s["locked"] and s["limit"] > 0 and s["loss"] >= s["limit"] - 1e-9:
-        return demo_edit(email, lambda a: guard_eval(a, val, now), acc_id)
-    return s, False
-
-
-def guard_set(email, acc_id=None, **chg):
-    """Devre kesici ayarlarını değiştirir: on, period ('week'|'month'), basis ('fixed'|'pct'), limit, pct.
-    Hesap kilitliyse: kapatmak kilidi kaldırır; limit / dönem / tür değişirse kilit kalkar ve yeni ayarla
-    yeniden değerlendirilir (zarar hâlâ limitin üstündeyse hesap kilitli kalır). Döner: (ok, mesaj)."""
-    def run(acct):
-        g = guard_cfg(acct)
-        old = dict(g)
-        if "on" in chg:
-            g["on"] = bool(chg["on"])
-        if chg.get("period") in GUARD_PERIODS:
-            g["period"] = chg["period"]
-        if chg.get("basis") in GUARD_BASES:
-            g["basis"] = chg["basis"]
-        if "limit" in chg:
-            try:
-                v = float(chg["limit"])
-            except (TypeError, ValueError):
-                return False, "The loss limit must be a number."
-            if not v > 0:
-                return False, "The loss limit must be above zero."
-            g["limit"] = round(v, 2)
-        if "pct" in chg:
-            try:
-                v = float(chg["pct"])
-            except (TypeError, ValueError):
-                return False, "The percentage must be a number."
-            if not 0 < v <= 100:
-                return False, "The percentage must be between 0 and 100."
-            g["pct"] = round(v, 2)
-        msg = "Circuit breaker " + ("on" if g["on"] else "off")
-        if g["breach"]:
-            if not g["on"]:
-                g["breach"] = None
-                msg = "Circuit breaker off — account unlocked"
-            elif any(g[k] != old[k] for k in ("period", "basis", "limit", "pct")):
-                g["breach"] = None
-                msg = "Limit changed — account re-checked"
-        elif any(g[k] != old[k] for k in ("period", "basis", "limit", "pct")):
-            msg = "Loss limit saved"
-        acct["guard"] = g
-        s, new = guard_eval(acct, chg.get("val"))
-        if new:
-            msg = "Still above the new limit — the account stays locked"
-        return True, msg
-    return demo_edit(email, run, acc_id)
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# v5.5 — Bekleyen limit emirleri ("Pending orders"): kurs istenen seviyeye gelince kendiliğinden dolar
-# ---------------------------------------------------------------------------------------------------------------
-PEND_MAX = 20                 # hesap başına en fazla bekleyen emir
-
-
-def pend_list(acct):
-    return list(acct.get("pend") or [])
-
-
-def pend_syms(acct):
-    return sorted({o["sym"] for o in acct.get("pend") or []})
-
-
-def pend_add(acct, sym, side, qty, limit, stop=0.0, tp=0.0, mode="regular", ts=None, kind="limit", est=0.0,
-             fxm=1.0):
-    """Kilit İÇİNDE: bekleyen emir ekler.
-    kind='limit': buy kurs ≤ limit · sell kurs ≥ limit · kind='open' (v5.6): borsa kapalıyken verilen emir,
-    açılışta piyasa fiyatından dolar (est = o anki referans fiyat, planlanan tutar için). Döner: (ok, mesaj, emir)."""
-    sym = str(sym or "").upper().strip()
-    side = "buy" if str(side).lower().startswith("b") else "sell"
-    kind = "open" if str(kind) == "open" else "limit"
-    try:
-        qty, limit = float(qty), float(limit or 0)
-        stop, tp = float(stop or 0), float(tp or 0)
-        est, fxm = float(est or 0), float(fxm or 1.0)
-    except (TypeError, ValueError):
-        return False, "Quantity and price must be numbers.", None
-    if inst_ccy(sym) is None:
-        return False, f"{sym} cannot be traded in the demo account.", None
-    if not qty > 0:
-        return False, "Enter a quantity above zero.", None
-    if kind == "limit" and not limit > 0:
-        return False, "Enter a limit price above zero.", None
-    if len(acct.get("pend") or []) >= PEND_MAX:
-        return False, f"An account holds up to {PEND_MAX} pending orders — cancel one first.", None
-    ref = limit if kind == "limit" else est
-    if side == "sell":
-        stop = tp = 0.0
-        have = sum(p["qty"] for p in acct["pos"].values()
-                   if p["sym"] == sym and p["owner"] == "manual" and p.get("side") != "short")
-        held = have - sum(float(x["qty"]) for x in acct.get("pend") or []
-                          if x["side"] == "sell" and x["sym"] == sym)        # aynı adet iki kez satılmasın
-        if held < qty - 1e-9:
-            return False, (f"You only hold {max(0.0, held):g} {sym} by hand that is not already in a pending "
-                           f"order."), None
-    else:
-        if stop and ref and stop >= ref:
-            return False, f"The stop-loss ({stop:g}) must be below the order price ({ref:g}).", None
-        if tp and ref and tp <= ref:
-            return False, f"The take-profit ({tp:g}) must be above the order price ({ref:g}).", None
-        if kind == "open" and ref > 0:          # açılışa kadar ayrılacak sermaye (serbest nakitle sınırlı)
-            need = qty * ref * fxm
-            if need > pend_free(acct) + 1e-6:
-                return False, (f"Not enough free cash for this order — {need:.2f} needed, "
-                               f"{pend_free(acct):.2f} available (pending orders already reserve "
-                               f"{pend_reserved(acct):.2f})."), None
-    acct["seq"] = int(acct.get("seq") or 0) + 1
-    o = {"id": f'p{acct["seq"]}', "sym": sym, "side": side, "qty": qty, "limit": limit, "stop": stop, "tp": tp,
-         "mode": "trailing" if str(mode).lower().startswith("trail") else "regular", "ts": round(float(ts or time.time())),
-         "err": None, "kind": kind, "est": est, "amt": (qty * ref * fxm) if ref else 0.0, "fxm": fxm}
-    acct.setdefault("pend", []).append(o)
-    if kind == "open":
-        st_ = market_status(sym, ts)
-        return True, (f'Order queued: {side} {qty:g} {sym} at the market open — {st_["label"]} is closed'
-                      + (f', it opens at {st_["txt"]}' if st_["txt"] else "") + '.'), o
-    return True, (f'Limit order placed: {"buy" if side == "buy" else "sell"} {qty:g} {sym} at {limit:g} — it fills as '
-                  f'soon as the price {"falls to" if side == "buy" else "rises to"} {limit:g}.'), o
-
-
-def pend_reserved(acct):
-    """v5.6: açılışta dolacak ALIŞ emirleri için ayrılan sermaye (hesabın para biriminde)."""
-    return sum(float(o.get("amt") or 0) for o in acct.get("pend") or []
-               if o.get("kind") == "open" and o["side"] == "buy")
-
-
-def pend_free(acct):
-    """Serbest nakit = nakit − ayrılan sermaye."""
-    return float(acct.get("cash") or 0) - pend_reserved(acct)
-
-
-def pend_cancel(email, oid, acc_id=None):
-    """Bekleyen emri iptal eder. Döner: (ok, mesaj)."""
-    def run(a):
-        keep = [o for o in a.get("pend") or [] if o["id"] != oid]
-        if len(keep) == len(a.get("pend") or []):
-            return False, "This order is no longer pending."
-        gone = [o for o in a.get("pend") or [] if o["id"] == oid][0]
-        a["pend"] = keep
-        return True, f'Limit order cancelled: {gone["side"]} {gone["qty"]:g} {gone["sym"]} at {gone["limit"]:g}'
-    return demo_edit(email, run, acc_id)
-
-
-def pend_hit(o, px, now=None):
-    """Emir tetiklendi mi? (kilitsiz ön kontrol) — limit: fiyat seviyeye geldi · open: borsa açıldı.
-    Her iki tür de yalnızca normal seansta dolar."""
-    if px is None or not o or not market_open(o["sym"], now):
-        return False
-    if o.get("kind") == "open":
-        return True
-    return (px <= float(o["limit"]) + 1e-12) if o["side"] == "buy" else (px >= float(o["limit"]) - 1e-12)
-
-
-def pend_check(acct, live, eurusd, now=None, log=None):
-    """Kilit İÇİNDE: tetiklenen limit emirlerini doldurur. Dolum fiyatı kursla limitin iyisi (alışta düşük olan).
-    Hesap devre kesiciyle kilitliyse ALIŞ emirleri beklemede kalır, satışlar (risk azaltma) dolar.
-    Döner: olay listesi."""
-    now = float(now or time.time())
-    out = []
-    locked = guard_locked(acct)
-    for o in list(acct.get("pend") or []):
-        px = live.get(o["sym"])
-        if not pend_hit(o, px, now):
-            continue
-        if locked and o["side"] == "buy":
-            o["err"] = "Blocked — account breached"
-            continue
-        fxm = fx_mult(acct["ccy"], inst_ccy(o["sym"]), eurusd)
-        if fxm is None:
-            continue
-        px = float(px)
-        if o.get("kind") == "open":                 # açılış emri: piyasa fiyatından
-            fill = px
-        else:
-            fill = min(px, float(o["limit"])) if o["side"] == "buy" else max(px, float(o["limit"]))
-        stop, tp = float(o.get("stop") or 0), float(o.get("tp") or 0)
-        trail = round(fill - stop, 6) if (stop and o.get("mode") == "trailing") else 0.0
-        plan = ({"stop": stop, "tp1": 0.0, "tp2": tp, "atr": 0.0, "tp1_done": True, "checked": now, "trail": trail}
-                if (stop or tp) and o["side"] == "buy" else None)
-        why = ((f'Queued at {market_label(o["sym"])} open' if o.get("kind") == "open"
-                else f'Limit order at {o["limit"]:g}')
-               + ((f' · trailing SL {stop:g}' if trail else f' · SL {stop:g}') if stop else "")
-               + (f' · TP {tp:g}' if tp else ""))
-        rest = [x for x in acct.get("pend") or [] if x["id"] != o["id"]]
-        acct["pend"] = rest                         # ayrılan sermaye bu emir için serbest bırakılır
-        ok, msg, tr = demo_trade(acct, o["sym"], o["side"], float(o["qty"]), fill, fxm, "manual", why, plan=plan,
-                                 ts=now)
-        if not ok:                       # ör. nakit yetmiyor / pozisyon satılmış → emir hatasıyla beklemede kalır
-            o["err"] = msg
-            acct["pend"] = rest + [o]
-            continue
-        kind_ = "open" if o.get("kind") == "open" else "limit"
-        out.append({"kind": "limit", "otype": kind_, "side": o["side"], "sym": o["sym"], "qty": float(o["qty"]),
-                    "price": fill, "limit": float(o["limit"] or 0), "bot": "Limit order", "reason": why,
-                    "pnl": tr["pnl"] if tr else None})
-        if log:
-            log("Limit order", o["sym"], f'{o["side"].upper()} {o["qty"]:g} @ {fill:.2f} — '
-                                        + (f'{market_label(o["sym"])} open' if kind_ == "open"
-                                           else f'limit {o["limit"]:g}'))
-    return out
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# v5.6 — Borsa saatleri: emir, enstrümanın kendi borsası kapalıyken açılışa kadar bekletilir
-# ---------------------------------------------------------------------------------------------------------------
-# kural: (saat dilimi, açılış dk, kapanış dk) — yerel borsa saatiyle
-MKT_RULES = {"us": ("America/New_York", 9 * 60 + 30, 16 * 60), "eu": (TZ, 9 * 60, 17 * 60 + 30)}
-MKT_SFX = {".DE": ("eu", "XETRA"), ".F": ("eu", "Börse Frankfurt"), ".PA": ("eu", "Euronext Paris"),
-           ".AS": ("eu", "Euronext Amsterdam"), ".BR": ("eu", "Euronext Brussels"), ".LS": ("eu", "Euronext Lisbon"),
-           ".IR": ("eu", "Euronext Dublin"), ".MI": ("eu", "Borsa Italiana"), ".MC": ("eu", "BME Madrid"),
-           ".VI": ("eu", "Wiener Börse"), ".HE": ("eu", "Nasdaq Helsinki")}
-# NYSE / NASDAQ ve Avrupa borsalarının tatilleri (2026–2027). Sonraki yıllarda yalnızca hafta sonu + saatler geçerli.
-MKT_HOL = {
-    "us": {"2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
-           "2026-09-07", "2026-11-26", "2026-12-25",
-           "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05",
-           "2027-09-06", "2027-11-25", "2027-12-24"},
-    "eu": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01", "2026-12-24", "2026-12-25", "2026-12-31",
-           "2027-01-01", "2027-03-26", "2027-03-29", "2027-12-24", "2027-12-31"}}
-MKT_HALF = {"us": {"2026-11-27": 13 * 60, "2026-12-24": 13 * 60, "2027-11-26": 13 * 60},
-            "eu": {}}
-MKT_YEARS = (2026, 2027)              # tatil listesinin kapsadığı yıllar
-
-
-def sym_market(sym):
-    """Enstrümanın borsası. Döner: (kural, ad) — kural: 'us' | 'eu' | 'crypto' | 'fut'."""
-    s_ = str(sym or "").upper().strip()
-    if s_.endswith(("-USD", "-EUR")):
-        return "crypto", "Crypto (24/7)"
-    if s_.endswith("=F"):
-        return "fut", "CME Globex"
-    for sfx, v in MKT_SFX.items():
-        if s_.endswith(sfx):
-            return v
-    return "us", "NYSE / NASDAQ"
-
-
-def market_label(sym):
-    return sym_market(sym)[1]
-
-
-def _fut_open(t):
-    """CME: pazar 18:00 ET → cuma 17:00 ET, her gün 17:00–18:00 ET arası kapalı."""
-    hm, wd = t.hour * 60 + t.minute, t.weekday()
-    if 17 * 60 <= hm < 18 * 60:
-        return False
-    if wd == 5:                                   # cumartesi
-        return False
-    if wd == 6 and hm < 18 * 60:                  # pazar akşamı açılır
-        return False
-    if wd == 4 and hm >= 17 * 60:                 # cuma akşamı kapanır
-        return False
-    return True
-
-
-def _day_hours(rule, t):
-    """O günün seans saatleri (yerel borsa dakikası) ya da None (hafta sonu / tatil)."""
-    tzn, o, c = MKT_RULES[rule]
-    if t.weekday() >= 5:
-        return None
-    day = t.strftime("%Y-%m-%d")
-    if day in MKT_HOL.get(rule, ()):
-        return None
-    half = MKT_HALF.get(rule, {}).get(day)
-    return (o, half) if half else (o, c)
-
-
-def market_open(sym, now=None):
-    """Enstrümanın borsası şu an normal seansta mı? (kripto her zaman açık)"""
-    rule, _ = sym_market(sym)
-    if rule == "crypto":
-        return True
-    t = pd.Timestamp(float(now or time.time()), unit="s", tz="UTC")
-    if rule == "fut":
-        return _fut_open(t.tz_convert("America/New_York"))
-    t = t.tz_convert(MKT_RULES[rule][0])
-    h = _day_hours(rule, t)
-    return bool(h and h[0] <= t.hour * 60 + t.minute < h[1])
-
-
-def market_next_open(sym, now=None):
-    """Bir sonraki normal açılışın zamanı (unix) — zaten açıksa None."""
-    rule, _ = sym_market(sym)
-    now = float(now or time.time())
-    if rule == "crypto" or market_open(sym, now):
-        return None
-    t0 = pd.Timestamp(now, unit="s", tz="UTC")
-    if rule == "fut":                                  # en fazla 3 gün ileriye bak (saatlik adım yeterli)
-        for i in range(1, 72 * 60, 5):
-            t = t0 + pd.Timedelta(minutes=i)
-            if _fut_open(t.tz_convert("America/New_York")):
-                return float(t.timestamp())
-        return None
-    tzn, _, _ = MKT_RULES[rule]
-    t = t0.tz_convert(tzn)
-    for i in range(0, 12):
-        d = (t + pd.Timedelta(days=i)).normalize()
-        h = _day_hours(rule, d)
-        if not h:
-            continue
-        op = d + pd.Timedelta(minutes=h[0])
-        if op.timestamp() > now:
-            return float(op.timestamp())
-    return None
-
-
-def market_status(sym, now=None, tz=None):
-    """Arayüz için: {'open','label','rule','next','txt'} — txt: kullanıcının saatiyle açılış ('15:30 CET')."""
-    rule, lab = sym_market(sym)
-    now = float(now or time.time())
-    op = market_open(sym, now)
-    nx = None if op else market_next_open(sym, now)
-    txt = ""
-    if nx:
-        t = pd.Timestamp(nx, unit="s", tz="UTC").tz_convert(tz or TZ)
-        same = t.strftime("%Y-%m-%d") == pd.Timestamp(now, unit="s", tz="UTC").tz_convert(tz or TZ).strftime("%Y-%m-%d")
-        txt = (t.strftime("%H:%M %Z") if same else t.strftime("%a %H:%M %Z"))
-    return {"open": op, "label": lab, "rule": rule, "next": nx, "txt": txt,
-            "known": pd.Timestamp(now, unit="s", tz="UTC").year in MKT_YEARS}
-
-
-def _eq_point(acct, equity, now, gap=840):
-    eq = acct.setdefault("eq", [])
-    if not eq or now - eq[-1][0] >= gap:
-        eq.append([round(now), round(equity, 2)])
-        del eq[:-1500]
-    else:
-        eq[-1][1] = round(equity, 2)
-
-
-def bot_new(name, src, universe, cfg=None, flt=None, params=None, ichi=None):
-    """src: 'ai' (formasyon kırılımı) · 'filter' (kendi filtren) · v4.9: 'donchian2' · 'flag' (hazır stratejiler).
-    v5.3: Ichimoku botu yalnızca seçilen piyasalarda (altın, gümüş, petrol, Bitcoin) long + short işlem yapar;
-    ichi = {'mkts': [...], 'btc': 'btc1030'} — her piyasa kendi ön ayarıyla."""
-    en = _engine()
-    src = src if (src == "filter" or src in en.STRAT_PARAMS) else "ai"
-    b = {"id": secrets.token_hex(4), "name": str(name or "Bot").strip()[:40] or "Bot",
-         "on": True, "src": src,
-         "universe": "scan" if universe == "scan" else "demo", "cfg": en.bot_cfg(cfg),
-         "flt": flt if (src == "filter" and isinstance(flt, dict)) else None,
-         "params": en.strat_params(src, params) if src in en.STRAT_PARAMS else None,
-         "created": time.time(), "last": None, "cool": {}}
-    if src == "ichimoku":
-        ok_ = [m[0] for m in en.ICHI_MARKETS]
-        mk = [s_ for s_ in ((ichi or {}).get("mkts") or ok_) if s_ in ok_] or ok_
-        btc = (ichi or {}).get("btc")
-        b["ichi"] = {"mkts": mk, "btc": btc if btc in en.ICHI_BTC else "btc1030"}
-        b["universe"] = "ichi"
-    return b
-
-
-def bot_stats(acct, bot_id, val=None):
-    """Botun toplam sonucu: gerçekleşen + açık kâr/zarar, işlem sayısı, isabet oranı, günlük ortalama."""
-    sells = [t for t in acct.get("trades") or [] if t.get("owner") == bot_id and t.get("pnl") is not None]
-    rpl = sum(t["pnl"] for t in sells)
-    rows = [r for r in (val or {}).get("rows", []) if r["owner"] == bot_id]
-    upl = sum(r["pnl"] for r in rows)
-    b = next((x for x in acct.get("bots") or [] if x["id"] == bot_id), None)
-    days = max(1.0, (time.time() - float((b or {}).get("created") or time.time())) / 86400.0)
-    wins = sum(1 for t in sells if t["pnl"] > 0)
-    return {"rpl": rpl, "upl": upl, "pnl": rpl + upl, "open": len(rows), "value": sum(r["value"] for r in rows),
-            "closed": len(sells), "win": (wins / len(sells) * 100) if sells else None,
-            "avg_day": (rpl + upl) / days}
-
-
-def us_session_open(now=None):
-    t = pd.Timestamp(now or time.time(), unit="s", tz="UTC").tz_convert("America/New_York")
-    return t.weekday() < 5 and (9 * 60 + 30) <= t.hour * 60 + t.minute < 16 * 60
-
-
-def _bars15(df, after=0.0):
-    """15 dk DataFrame → [(epoch, o, h, l, c)], yalnızca `after` sonrasında KAPANMIŞ mumlar."""
-    if df is None or not len(df):
-        return []
-    idx = df.index
-    try:
-        idx = idx.tz_localize("America/New_York") if idx.tz is None else idx
-        ep = [ts.timestamp() for ts in idx]            # çözünürlükten (ns / s) bağımsız
-    except Exception:
-        return []
-    out = []
-    now = time.time()
+_OHLC_AGG = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+
+
+def _to_4h(df, k=4):
+    """Saatlik barları gün içinde k'şarlı gruplayıp 4 saatlik mum üretir (TradingView gibi
+    seans başından sayar; yarım kalan son grup kendi mumu olur)."""
+    if df is None or df.empty:
+        return df
+    idx = pd.DatetimeIndex(df.index)
+    day = idx.normalize().to_numpy()
+    gid = np.zeros(len(df), dtype=np.int64)
+    g, cnt = 0, 0
     for i in range(len(df)):
-        end = float(ep[i]) + 900.0                     # mumun kapanış anı
-        if end <= after or end > now + 5:
-            continue
-        r = df.iloc[i]
-        o, h, l, c = float(r["Open"]), float(r["High"]), float(r["Low"]), float(r["Close"])
-        if not (o == o and h == h and l == l and c == c):
-            continue
-        out.append((end, o, h, l, c))
+        if i and (day[i] != day[i - 1] or cnt >= k):
+            g += 1
+            cnt = 0
+        gid[i] = g
+        cnt += 1
+    out = df.groupby(gid).agg(**{c: (c, f) for c, f in _OHLC_AGG.items()})
+    out.index = pd.DatetimeIndex(idx[np.searchsorted(gid, out.index.to_numpy())], name="Date")
+    out.attrs["src"] = df.attrs.get("src", "real")
     return out
 
 
-def _real(df):
-    return df is not None and len(df) > 0 and df.attrs.get("src", "real") == "real"
+def _resample(df, rule):
+    """Günlük barları haftalığa / aylığa çevirir."""
+    if df is None or df.empty:
+        return df
+    out = df.resample(rule).agg(_OHLC_AGG).dropna(subset=["Close"])
+    out.attrs["src"] = df.attrs.get("src", "real")
+    return out
 
 
-def bots_collect(md, acct):
-    """Kilidin DIŞINDA: botların ihtiyacı olan tüm veriyi çeker ve sinyalleri hesaplar."""
-    en = _engine()
-    bots = [b for b in acct.get("bots") or [] if b.get("on")]
-    held = sorted({p["sym"] for p in acct["pos"].values() if has_orders(p)})
-    watch = [s for s in acct.get("watch") or [] if inst_ccy(s)]
-    data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "eurusd": None, "err": {},
-            "chan": {}}
-    # v4.9/5.1/5.3: izleyen stoplu pozisyonlar — Donchian: N günlük dip · Ichimoku: Kijun · kademeli aşama 1: bulut
-    chan = {}
-    for p in acct["pos"].values():
-        if p.get("manual_orders"):
-            continue
-        spec = trail_spec(p)
-        if spec:
-            chan[(p["sym"], spec)] = spec
-    if chan:
-        try:
-            dd = md.get_daily_batch(tuple(sorted({t for t, _ in chan})), period="5y")
-            for (t, spec) in chan:
-                if not _real(dd.get(t)):
-                    continue
-                if spec[0] == "n":
-                    v_ = en.channel_stop(dd[t], int(spec[1:]))
-                elif spec[0] == "k":
-                    v_ = en.kijun_stop(dd[t], int(spec[1:]))
-                else:                                        # 'c9-26-52l' / 'c9-26-52s'
-                    v_ = en.cloud_stop(dd[t], spec[1:-1], "short" if spec.endswith("s") else "long")
-                if v_:
-                    data["chan"][f"{t}|{spec}"] = v_
-        except Exception:
-            pass
+def _to_weekly(df):
+    return _resample(df, "W-FRI")
+
+
+def _to_monthly(df):
     try:
-        q = md.get_quotes(["EURUSD=X"]).get("EURUSD=X") or {}
-        if q.get("src") == "real" and q.get("last"):
-            data["eurusd"] = float(q["last"])
-    except Exception:
-        pass
-    if bots:
-        try:
-            data["regime_ok"] = bool(en.ai_regime(md.get_daily_batch(("SPY", "QQQ")), 50).get("ok"))
-        except Exception:
-            data["regime_ok"] = False
-    need15, evals = set(held), {}
-    for b in bots:
-        try:
-            if b["src"] == "ai":
-                meta = {}
-                if b["universe"] == "scan":
-                    cand, _ = en.ai_prefilter(md.get_market_snapshot(), None)
-                    syms = [t for t in list(cand["ticker"].head(40)) if inst_ccy(t)] if len(cand) else []
-                    meta = cand.set_index("ticker").to_dict("index") if len(cand) else {}
-                else:
-                    syms = list(watch)
-                daily = md.get_daily_batch(tuple(syms)) if syms else {}
-                rs = []
-                for t in syms:
-                    df = daily.get(t)
-                    if not _real(df):
-                        continue
-                    r = en.ai_evaluate(t, df, meta=meta.get(t))
-                    if r:
-                        rs.append(r)
-                        bb = r.get("best")
-                        if bb and r.get("ema_ok") and bb.get("state") in ("breakout", "retest"):
-                            need15.add(t)
-                evals[b["id"]] = ("ai", rs)
-                data["n"][b["id"]] = len(rs)
-            elif b["src"] == "ichimoku":                           # v5.3: yalnızca altın / gümüş / petrol / Bitcoin
-                ich = b.get("ichi") or {}
-                syms = [s_ for s_ in (ich.get("mkts") or [m[0] for m in en.ICHI_MARKETS]) if inst_ccy(s_)]
-                daily = md.get_daily_batch(tuple(syms), period="5y") if syms else {}
-                bp = b.get("params") or {}
-                rs, n_ok = [], 0
-                for t in syms:
-                    df = daily.get(t)
-                    if not _real(df):
-                        continue
-                    n_ok += 1
-                    P = en.ichi_market_params(t, ich.get("btc") or "btc1030", int(bp.get("mode") or 0),
-                                              int(bp.get("bounce", 1)), float(bp.get("max_atr") or 2.0))
-                    r = en.strat_evaluate("ichimoku", t, df, meta={"name": en.ichi_market_name(t)}, params=P)
-                    if r:
-                        rs.append(r)
-                        if r["best"]["state"] in ("breakout", "retest", "cloud_in"):
-                            need15.add(t)
-                evals[b["id"]] = ("strat", rs)
-                data["n"][b["id"]] = n_ok
-            elif b["src"] in en.STRAT_PARAMS:                      # hazır strateji — v5.3: filtresiz evren
-                meta = {}
-                if b["universe"] == "scan":
-                    cand, _ = en.strat_universe(md.get_market_snapshot(), 60)
-                    syms = [t for t in list(cand["ticker"]) if inst_ccy(t)] if cand is not None and len(cand) else []
-                    meta = cand.set_index("ticker").to_dict("index") if cand is not None and len(cand) else {}
-                else:
-                    syms = list(watch)
-                daily = md.get_daily_batch(tuple(syms)) if syms else {}
-                rs, n_ok = [], 0
-                for t in syms:
-                    df = daily.get(t)
-                    if not _real(df):
-                        continue
-                    n_ok += 1
-                    r = en.strat_evaluate(b["src"], t, df, meta=meta.get(t), params=b.get("params"))
-                    if r:
-                        rs.append(r)
-                        if r["best"]["state"] in ("breakout", "retest"):
-                            need15.add(t)
-                evals[b["id"]] = ("strat", rs)
-                data["n"][b["id"]] = n_ok
-            else:
-                f = b.get("flt") or {}
-                if b["universe"] == "scan":
-                    hist = md.get_universe_history()["hist"]
-                else:
-                    hist = md.get_daily_batch(tuple(watch)) if watch else {}
-                hist = {t: df for t, df in hist.items() if _real(df) and inst_ccy(t)}
-                spy = (md.get_daily_batch(("SPY",)) or {}).get("SPY")
-                rows = en.scan(hist, f.get("rows") or [], f.get("logic") or "AND", f.get("min"),
-                               spy["Close"] if spy is not None else None, None, getattr(md, "NAMES", None))
-                evals[b["id"]] = ("filter", rows)
-                data["n"][b["id"]] = len(hist)
-                need15.update(o["ticker"] for o in rows[:25])
-        except Exception as ex:
-            data["err"][b["id"]] = f"{type(ex).__name__}: {ex}"[:160]
-    if need15:
-        try:
-            i15 = md.get_intraday_batch(tuple(sorted(need15)))
-            data["i15"] = {t: df for t, df in i15.items() if _real(df)}
-        except Exception:
-            data["i15"] = {}
-    for t, df in data["i15"].items():
-        try:
-            data["px"][t] = float(df["Close"].iloc[-1])
-        except Exception:
-            pass
-    for b in bots:
-        kind, rows = evals.get(b["id"], (None, []))
-        sig, skip = [], []
-        for r in rows:
-            t = r["ticker"]
-            if kind == "ai":
-                bb = r.get("best")
-                if bb and t in data["i15"]:
-                    en.ai_apply_15m(r, en.confirm_15m(data["i15"][t], bb["level"], bb["kind"]))
-                s, why = en.bot_signal_ai(r, b["cfg"], data["regime_ok"])
-            elif kind == "strat":                     # v5.3: 15 dk teyidi / rejim yok — yalnızca stratejinin kuralı
-                s, why = en.bot_signal_strat(r, b["cfg"])
-            else:
-                s, why = en.bot_signal_filter(r, b["cfg"])
-            if s and t in data["px"]:
-                s["entry"] = data["px"][t]            # alım fiyatı: son kapanmış 15 dk mumu
-                if s.get("side") == "short":
-                    bad_ = s["entry"] >= s["stop"] or (s["tp1"] and s["entry"] <= s["tp1"])
-                else:
-                    bad_ = s["entry"] <= s["stop"] or (s["tp1"] and s["entry"] >= s["tp1"])
-                if bad_:
-                    skip.append((t, "price moved out of the plan"))
-                    continue
-            if s and t not in data["i15"]:
-                skip.append((t, "no live 15-minute data"))
-                continue
-            (sig.append((t, s)) if s else skip.append((t, why)))
-        data["sig"][b["id"]] = sig
-        data["skip"][b["id"]] = skip[:12]
-    return data
+        return _resample(df, "ME")
+    except ValueError:          # eski pandas
+        return _resample(df, "M")
 
 
-def bots_apply(acct, data, now=None):
-    """Kilidin İÇİNDE: açık pozisyonları yönetir, yeni alımları yapar. Döner: olay listesi."""
-    en = _engine()
-    now = float(now or time.time())
-    events = []
-    if data.get("eurusd"):
-        acct["fx"] = data["eurusd"]
-    eurusd = data.get("eurusd") or acct.get("fx")
-    names = {b["id"]: b["name"] for b in acct.get("bots") or []}
-
-    def log(bot, sym, text):
-        acct.setdefault("log", []).append({"ts": round(now), "bot": bot, "sym": sym, "text": text})
-        del acct["log"][:-200]
-
-    # 0) v4.9/5.1/5.3: izleyen stop — long'ta yalnızca yükselir, short'ta yalnızca iner (asla geri gitmez)
-    for p in acct["pos"].values():
-        if p.get("manual_orders"):
-            continue
-        spec = trail_spec(p)
-        if not spec:
-            continue
-        new = (data.get("chan") or {}).get(f'{p["sym"]}|{spec}')
-        short = p.get("side") == "short"
-        cur = float(p.get("stop") or 0)
-        if new and ((short and (cur <= 0 or new < cur - 1e-9)) or (not short and new > cur + 1e-9)):
-            p["stop"] = float(new)
-            what = (f'new {int(p["trail_n"])}-day low' if spec[0] == "n" else
-                    f'the Kijun ({int(p["trail_kj"])}) moved {"down" if short else "up"}' if spec[0] == "k" else
-                    f'the cloud {"top" if short else "bottom"} moved {"down" if short else "up"}')
-            log(names.get(p["owner"]) or p.get("bot") or "Bot", p["sym"],
-                f'stop {"lowered" if short else "raised"} to {new:.2f} — {what}')
-
-    # 1) çıkışlar (kapanmış 15 dk mumlarıyla)
-    def bars_of(p):
-        return _bars15(data["i15"].get(p["sym"]), float(p.get("checked") or p.get("opened") or 0))
-    ev_x, sells = apply_exits(acct, bars_of, eurusd, now, live=False, log=log)
-    events += ev_x
-    # 1a) v5.5: bekleyen limit emirleri — 15 dakikalık turda da kontrol edilir
-    events += pend_check(acct, {k: float(v) for k, v in data["px"].items() if v}, eurusd, now, log=log)
-    # 1b) v5.4: devre kesici — dönem zararı limite ulaştıysa tüm botlar durur, yeni alım yapılmaz
-    gs, gnew = guard_eval(acct, demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()},
-                                           eurusd), now)
-    if gnew:
-        events.append({"kind": "breach", "sym": "", "qty": 0.0, "price": 0.0, "bot": "Circuit breaker",
-                       "reason": "ACCOUNT BREACHED", "pnl": None, "loss": gs["loss"], "limit": gs["limit"],
-                       "period": gs["period"], "paused": gs.get("paused", 0)})
-    # 2) alımlar — v5.6: her sembol kendi borsasına göre (kripto / vadeli US seansı dışında da işlem görür)
-    hours = bool(BOT_HOURS_ONLY)
-    for b in acct.get("bots") or []:
-        if not b.get("on") or gs["locked"]:
-            continue
-        bid, cfg = b["id"], en.bot_cfg(b.get("cfg"))
-        buys, note = 0, ""
-        sigs = data["sig"].get(bid, [])
-        if bid in (data.get("err") or {}):
-            note = "data error: " + data["err"][bid]
-        elif hours and not us_session_open(now) and not any(market_open(sym, now) for sym, _ in sigs):
-            note = "markets closed — open positions are still watched"
-        else:
-            cool = b.setdefault("cool", {})
-            for t in [t for t, ts_ in cool.items() if now - ts_ > cfg["cooldown_days"] * 86400]:
-                cool.pop(t, None)
-            for sym, s in sigs:
-                if hours and not market_open(sym, now):
-                    note = note or f"{market_label(sym)} closed"
-                    continue
-                cur_p = acct["pos"].get(f"{sym}|{bid}")
-                add = bool(cur_p and int(s.get("stage") or 0) == 2 and int(cur_p.get("stage") or 0) == 1
-                           and cur_p.get("side", "long") == s.get("side", "long"))      # v5.3: aşama 2 ekleme
-                have = sum(1 for p in acct["pos"].values() if p["owner"] == bid)
-                if have >= cfg["max_pos"] and not add:
-                    note = note or f"position limit reached ({cfg['max_pos']})"
-                    break
-                if (cur_p and not add) or (sym in cool and not add):
-                    continue
-                df = data["i15"].get(sym)
-                bars = _bars15(df, 0.0)
-                if not bars or (BOT_HOURS_ONLY and now - bars[-1][0] > BOT_BAR_MAX_AGE):
-                    log(b["name"], sym, "skipped — no fresh 15-minute bar")
-                    continue
-                fxm = fx_mult(acct["ccy"], inst_ccy(sym), eurusd)
-                if fxm is None:
-                    log(b["name"], sym, "skipped — EUR/USD rate not available")
-                    continue
-                eq = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)["equity"]
-                frac = str(sym).upper().endswith("-USD")             # kripto: kesirli adet
-                short = s.get("side") == "short"
-                qty = en.bot_size(eq, pend_free(acct), s["entry"], s["stop"], fxm, cfg, frac=frac)
-                if s.get("size_frac"):                               # kademeli mod: ⅓ / ⅔
-                    q_ = float(qty) * float(s["size_frac"])
-                    qty = (int(q_ * 10000 + 1e-9) / 10000.0) if frac else int(q_ + 1e-9)
-                if qty < (0.0001 if frac else 1):
-                    log(b["name"], sym, "skipped — not enough cash for one unit at this risk")
-                    continue
-                plan = dict(s, cfg={k: cfg[k] for k in ("trail_atr", "max_days", "tp1_part")}, checked=bars[-1][0])
-                if add:                                              # birleşik pozisyonun stopu geri gitmez
-                    old = float(cur_p.get("stop") or 0)
-                    if old > 0:
-                        plan["stop"] = min(old, s["stop"]) if short else max(old, s["stop"])
-                ok, msg, tr = demo_trade(acct, sym, "short" if short else "buy", qty, s["entry"], fxm, bid, s["why"],
-                                         plan=plan, ts=now, bot=b["name"])
-                if ok:
-                    buys += 1
-                    events.append({"kind": "short" if short else "buy", "sym": sym, "qty": float(qty),
-                                   "price": float(s["entry"]), "bot": b["name"], "reason": s["why"], "pnl": None,
-                                   "stop": plan["stop"], "tp1": s["tp1"], "side": "short" if short else "long"})
-                    verb = ("ADD (stage 2) " if add else "") + ("SHORT" if short else "BUY")
-                    tail = (f'TP1 {s["tp1"]:.2f}' if s["tp1"] else
-                            ('no target, stop trails the Kijun (%d)' % int(s["trail_kj"]) if s.get("trail_kj") else
-                             ('stage 1 (⅓) — stop just outside the cloud' if s.get("trail_cloud") else
-                              f'no target, stop trails the {int(s.get("trail_n") or 20)}-day low')))
-                    log(b["name"], sym, f'{verb} {qty:g} @ {s["entry"]:.2f} — {s["why"]} · stop {plan["stop"]:.2f} · '
-                                        + tail)
-            if not buys and not note:
-                sk = data["skip"].get(bid) or []
-                note = ("no setup passed — e.g. " + "; ".join(f"{t}: {w}" for t, w in sk[:2])) if sk else \
-                    "no setup passed the filter"
-        b["last"] = {"ts": round(now), "checked": int(data["n"].get(bid, 0)), "buys": buys,
-                     "sells": int(sells.get(bid, 0)), "note": note}
-    val = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)
-    _eq_point(acct, val["equity"], now)
-    return events
+# ----------------------------------------------------------------------
+# Lookback (geriye bakış) — mum aralığından bağımsız: "son 1 ay, 4 saatlik mumlarla"
+#   days: takvim günü · sess: son N işlem günü · None = tüm geçmiş
+# ----------------------------------------------------------------------
+LOOKBACKS = {
+    "1D":  {"name": "1 day",    "sess": 1},
+    "5D":  {"name": "5 days",   "sess": 5},
+    "1M":  {"name": "1 month",  "days": 31},
+    "3M":  {"name": "3 months", "days": 92},
+    "6M":  {"name": "6 months", "days": 183},
+    "YTD": {"name": "Year to date", "ytd": True},
+    "1Y":  {"name": "1 year",   "days": 366},
+    "2Y":  {"name": "2 years",  "days": 731},
+    "5Y":  {"name": "5 years",  "days": 1827},
+    "MAX": {"name": "All data"},
+}
+LOOKBACK_ORDER = list(LOOKBACKS)
+DEFAULT_LOOKBACK = "6M"
+# yfinance'in gün içi veriyi geriye ne kadar verdiği (gün)
+INTRADAY_LIMIT = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730, "4h": 730}
+MAX_KEEP = 6000
 
 
-EXIT_WHY = {"stop": "Stop Loss triggered", "trail": "Trailing Stop triggered", "be": "Break-even Stop triggered",
-            "tp1": "Take Profit 1 hit — partial exit, stop moved to entry", "tp": "Take Profit hit"}
+def norm_lb(lb):
+    return lb if lb in LOOKBACKS else DEFAULT_LOOKBACK
 
 
-def _exit_reason(raw, manual, p):
-    """bot_manage gerekçesi → İşlem geçmişindeki "Why" metni (Take Profit hit / Stop Loss triggered …)."""
-    r = str(raw or "").lower()
-    if r.startswith("time exit"):
-        return raw
-    if r.startswith("tp1"):
-        return EXIT_WHY["tp1"]
-    if r.startswith("tp2") or "take" in r:
-        return EXIT_WHY["tp"]
-    if manual:
-        return EXIT_WHY["trail"] if p.get("trail") else EXIT_WHY["stop"]
-    if p.get("trail_n") or p.get("trail_kj") or p.get("trail_cloud"):  # Donchian / Ichimoku — iz süren çizgi
-        return EXIT_WHY["trail"]
-    if r.startswith("trailing"):
-        return EXIT_WHY["trail"]
-    if r.startswith("break-even"):
-        return EXIT_WHY["be"]
-    return EXIT_WHY["stop"]
+def lb_days(lb):
+    """Lookback'in yaklaşık takvim günü karşılığı (veri çekme periyodu seçmek için)."""
+    spec = LOOKBACKS[norm_lb(lb)]
+    if "sess" in spec:
+        return spec["sess"] * 1.5 + 2
+    if spec.get("ytd"):
+        return (pd.Timestamp.today() - pd.Timestamp(year=pd.Timestamp.today().year, month=1, day=1)).days + 1
+    return spec.get("days") or 1e9
 
 
-def trail_spec(p):
-    """İzleyen stop türü: 'n20' (Donchian dip) · 'k26' (Kijun) · 'c9-26-52l' / 'c9-26-52s' (bulut kenarı) · None."""
-    if p.get("trail_n"):
-        return f'n{int(p["trail_n"])}'
-    if p.get("trail_kj"):
-        return f'k{int(p["trail_kj"])}'
-    if p.get("trail_cloud"):
-        return f'c{p["trail_cloud"]}{"s" if p.get("side") == "short" else "l"}'
+def _intraday_period(tf, lb):
+    """Gün içi aralık için yfinance periyodu: lookback + gösterge ısınması, sınırı aşmadan."""
+    need = lb_days(lb)
+    if tf == "1m":
+        return "7d"
+    if tf in ("5m", "15m", "30m"):
+        return "1mo" if need <= 12 else "60d"
+    return "3mo" if need <= 35 else "1y" if need <= 200 else "730d"
+
+
+def lookback_start(idx, lb):
+    """Görünür aralığın başlangıç zamanı (None = hepsi)."""
+    if idx is None or len(idx) == 0:
+        return None
+    spec = LOOKBACKS[norm_lb(lb)]
+    last = pd.Timestamp(idx[-1])
+    if "sess" in spec:
+        days = pd.DatetimeIndex(idx).normalize().unique()
+        return days[-min(len(days), spec["sess"])]
+    if spec.get("ytd"):
+        return pd.Timestamp(year=last.year, month=1, day=1, tz=last.tz)
+    if spec.get("days"):
+        return last - pd.Timedelta(days=spec["days"])
     return None
 
 
-def has_orders(p):
-    """Pozisyonun bekleyen Stop-Loss / Take-Profit emri var mı? (bot pozisyonlarında her zaman stop vardır)"""
-    if p["owner"] == "manual" and not p.get("manual_orders"):
-        return False
-    return bool(p.get("stop") or p.get("tp2") or (p.get("tp1") and not p.get("tp1_done")))
+def visible_bars(full, lb):
+    """Lookback penceresine düşen mum sayısı (en az 1)."""
+    if full is None or full.empty:
+        return 0
+    start = lookback_start(full.index, lb)
+    if start is None:
+        return len(full)
+    try:
+        n = int((full.index >= start).sum())
+    except TypeError:
+        n = int((full.index.tz_localize(None) >= start.tz_localize(None)).sum())
+    return max(1, n)
 
 
-def apply_exits(acct, bars_of, eurusd, now, live=False, log=None):
-    """Kilit İÇİNDE: emirli tüm pozisyonları verilen mumlarla yönetir (stop, TP1 kısmi, TP / TP2, iz süren stop,
-    bot pozisyonlarında süre sınırı). live=True: canlı fiyatla tek "mum" — 'checked' ilerletilmez, süre çıkışı yok.
-    Döner: (olaylar, {sahip: satış sayısı})."""
-    en = _engine()
-    names = {b["id"]: b["name"] for b in acct.get("bots") or []}
-    events, sells = [], {}
-    for key, p in list(acct["pos"].items()):
-        if not has_orders(p):
-            continue
-        bars = bars_of(p)
-        if not bars:
-            continue
-        p["last"] = bars[-1][4]
-        fxm = fx_mult(acct["ccy"], inst_ccy(p["sym"]), eurusd)
-        if fxm is None:
-            continue
-        manual = bool(p.get("manual_orders"))
-        if manual:     # kullanıcının emirleri: stop (sabit / iz süren) + hedef; kısmi satış ve süre sınırı yok
-            evs, upd = en.bot_manage(dict(p, tp1=0.0, atr=0.0, tp1_done=True), bars, {"trail_atr": 6.0}, None)
-        else:
-            evs, upd = en.bot_manage(p, bars, p.get("cfg"), None if live else now)
-        bname = ("Manual" if p["owner"] == "manual" else (names.get(p["owner"]) or p.get("bot") or "Bot"))
-        short = p.get("side") == "short"
-        for e in evs:
-            why = _exit_reason(e["reason"], manual, p)
-            ok, _, tr = demo_trade(acct, p["sym"], "cover" if short else "sell", float(e["qty"]), float(e["price"]),
-                                   fxm, p["owner"], why, ts=e["ts"], bot=bname)
-            if not ok:
-                continue
-            events.append({"kind": "cover" if short else "sell", "sym": p["sym"], "qty": float(e["qty"]),
-                           "price": float(e["price"]), "bot": bname, "reason": why, "pnl": tr["pnl"],
-                           "manual": p["owner"] == "manual", "side": "short" if short else "long"})
-            if log:
-                log(bname, p["sym"], f'{"COVER" if short else "SELL"} {e["qty"]:g} @ {e["price"]:.2f} — {why} '
-                                     f'({tr["pnl"]:+.2f})')
-            sells[p["owner"]] = sells.get(p["owner"], 0) + 1
-            if p["owner"] != "manual" and not manual and "stop" in why.lower() and tr["pnl"] < 0:
-                for b in acct.get("bots") or []:
-                    if b["id"] == p["owner"]:
-                        b.setdefault("cool", {})[p["sym"]] = now
-        if key in acct["pos"]:
-            keys = ("stop", "hi", "lo", "tp1_done") if live else ("stop", "hi", "lo", "tp1_done", "checked")
-            acct["pos"][key].update({k: upd[k] for k in keys if k in upd})
-    return events, sells
+def chart_data(sym, tf, lb=None):
+    """(veri, gösterilecek mum sayısı, gün içi mi). `lb` verilirse görünür mum sayısı
+    lookback penceresinden hesaplanır; verilmezse aralığın varsayılan mum sayısı kullanılır."""
+    spec = INTERVALS[norm_tf(tf)]
+    tfn = norm_tf(tf)
+    if spec["src"]:
+        period, interval = spec["src"]
+        if lb is not None:
+            period = _intraday_period(tfn, lb)
+        full = md.get_intraday(sym, period, interval)
+        if len(full) > 10:
+            if spec["agg"]:
+                full = _to_4h(full, int(spec["agg"]))
+            n = visible_bars(full, lb) if lb is not None else min(len(full), spec["bars"])
+            return full, n, True
+        daily = md.get_history(sym)          # gün içi veri yoksa günlüğe düş
+        n = visible_bars(daily, lb) if lb is not None else min(len(daily) or 150, INTERVALS["1d"]["bars"])
+        return daily, n, False
+    daily = md.get_history_max(sym) if (lb is not None and norm_lb(lb) == "MAX") else md.get_history(sym)
+    if daily.empty:
+        return daily, spec["bars"], False
+    out = _to_weekly(daily) if spec["agg"] == "W" else \
+        _to_monthly(daily) if spec["agg"] == "M" else daily
+    n = visible_bars(out, lb) if lb is not None else min(len(out), spec["bars"])
+    return out, n, False
 
 
-_ORD_LAST = {}
-ORD_GAP = 20.0               # aynı hesap için canlı fiyat kontrolleri arası en az (sn)
+def lookback_note(full, tf, lb, bars, intraday):
+    """Seçilen lookback + mum aralığı tam karşılanamıyorsa kısa açıklama (yoksa "")."""
+    if full is None or full.empty:
+        return ""
+    tfn, lbn = norm_tf(tf), norm_lb(lb)
+    if is_intraday(tfn) and not intraday:
+        return "No intraday data for this symbol — showing daily candles."
+    start = lookback_start(full.index, lbn)
+    if start is not None and pd.Timestamp(full.index[0]) > start and tfn in INTRADAY_LIMIT:
+        return (f"{INTERVALS[tfn]['adj'].capitalize()} candles only go back about {INTRADAY_LIMIT[tfn]} days — "
+                f"showing all available data. Pick a larger candle interval to see the full "
+                f"{LOOKBACKS[lbn]['name']}.")
+    if bars > MAX_KEEP:
+        return f"Showing the last {MAX_KEEP:,} candles — pick a larger candle interval for the full range."
+    if bars < 3:
+        return (f"Only {bars} candle{'s' if bars != 1 else ''} in this period — "
+                f"pick a smaller candle interval.")
+    return ""
 
 
-def _live_hit(p, px):
-    """Canlı fiyat bir emri tetikliyor ya da iz süren stopu yukarı taşıyor mu? (kilitsiz ön kontrol)"""
-    if px is None or not has_orders(p):
-        return False
-    stop = float(p.get("stop") or 0)
-    if p.get("side") == "short":                  # v5.3: short — her şey aynalı
-        if stop and px >= stop:
-            return True
-        tp1 = float(p.get("tp1") or 0) if not p.get("tp1_done") else 0.0
-        tp2 = float(p.get("tp2") or 0)
-        if (tp1 and px <= tp1) or (tp2 and px <= tp2):
-            return True
-        tr_ = float(p.get("trail") or 0)
-        if tr_ and stop and px + tr_ < stop - 1e-9:
-            return True
-        a, done = float(p.get("atr") or 0), bool(p.get("tp1_done"))
-        if not p.get("manual_orders") and done and a > 0 and stop:
-            mult = float((p.get("cfg") or {}).get("trail_atr") or 2.0)
-            return px + mult * a < stop - 1e-9
-        return False
-    if stop and px <= stop:
-        return True
-    tp1 = float(p.get("tp1") or 0) if not p.get("tp1_done") else 0.0
-    tp2 = float(p.get("tp2") or 0)
-    if (tp1 and px >= tp1) or (tp2 and px >= tp2):
-        return True
-    tr_ = float(p.get("trail") or 0)
-    if tr_ and px - tr_ > stop + 1e-9:
-        return True
-    a, done = float(p.get("atr") or 0), bool(p.get("tp1_done"))
-    if not p.get("manual_orders") and done and a > 0:
-        mult = float((p.get("cfg") or {}).get("trail_atr") or 2.0)
-        return px - mult * a > stop + 1e-9
-    return False
-
-
-def orders_tick(md, only=None, gap=ORD_GAP, now=None):
-    """v4.8: Stop-Loss / Take-Profit emirlerini CANLI fiyatla kontrol eder (izleyici her turda, sayfa her açılışta).
-    Tetiklenen pozisyon anında kapanır, nakit ve gerçekleşen K/Z güncellenir, işlem geçmişine "Why" ile yazılır.
-    Döner: olay listesi [{'email','account','kind','sym','qty','price','reason','pnl', ...}]."""
-    now = float(now or time.time())
+def _ser(s, dec=6):
     out = []
-    for email in list(_demo_all()["users"].keys()):
-        if only and email != str(only).lower():
+    for v in s:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            out.append(None)
             continue
-        for acct in list(demo_user(email)["accounts"].values()):
-            cand = [p for p in acct["pos"].values() if has_orders(p)]
-            pend = pend_list(acct)                       # v5.5: bekleyen limit emirleri
-            if not cand and not pend:
-                continue
-            k = (email, acct["id"])
-            if now - _ORD_LAST.get(k, 0) < gap:
-                continue
-            _ORD_LAST[k] = now
-            syms = sorted({p["sym"] for p in cand} | {o["sym"] for o in pend})
-            try:
-                q = (getattr(md, "get_live_quotes", None) or md.get_quotes)(syms + ["EURUSD=X"])
-            except Exception:
-                continue
-            live = {s_: float(q[s_]["last"]) for s_ in syms
-                    if (q.get(s_) or {}).get("src") == "real" and (q.get(s_) or {}).get("last")}
-            e_ = q.get("EURUSD=X") or {}
-            eurusd = float(e_["last"]) if (e_.get("src") == "real" and e_.get("last")) else acct.get("fx")
-            if not (any(_live_hit(p, live.get(p["sym"])) for p in cand)
-                    or any(pend_hit(o, live.get(o["sym"]), now) for o in pend)):
-                continue
-            aid, an = acct["id"], acct.get("name") or "Demo account"
-
-            def run(a, live=live, eurusd=eurusd):
-                def log(bot, sym, text):
-                    a.setdefault("log", []).append({"ts": round(now), "bot": bot, "sym": sym, "text": text})
-                    del a["log"][:-200]
-                evs, _ = apply_exits(a, lambda p: ([(now, live[p["sym"]], live[p["sym"]], live[p["sym"]], live[p["sym"]])]
-                                                   if p["sym"] in live else []), eurusd, now, live=True, log=log)
-                evs = evs + pend_check(a, live, eurusd, now, log=log)        # v5.5: limit emirleri
-                if evs:
-                    val = demo_value(a, {s_: {"last": v, "src": "real"} for s_, v in live.items()}, eurusd)
-                    _eq_point(a, val["equity"], now)
-                return evs
-            try:
-                if aid not in demo_user(email)["accounts"]:
-                    continue
-                evs = demo_edit(email, run, aid)
-            except Exception as ex:
-                _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
-                continue
-            for e in evs:
-                out.append(dict(e, email=email, account=an, acc_id=aid))
-            if evs:
-                try:
-                    prefs = notify_prefs(profile_get(email))
-                    if prefs.get("on") and prefs.get("bot"):
-                        for e in evs:
-                            if e["kind"] == "limit":
-                                deliver(email, prefs, "bot",
-                                        f'Limit order filled: {e["side"]} {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}',
-                                        f'Your limit of {e["limit"]:g} was reached. Demo account “{an}”.',
-                                        sym=e["sym"], tags=["white_check_mark"], priority=3)
-                                continue
-                            deliver(email, prefs, "bot", f'{e["reason"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}',
-                                    f'{e["bot"]} position closed. Result {e["pnl"]:+.2f}. Demo account “{an}”.',
-                                    sym=e["sym"], tags=["chart_with_downwards_trend" if e["pnl"] < 0 else "moneybag"],
-                                    priority=3)
-                except Exception as ex:
-                    _MON["err"] = f"orders notify: {type(ex).__name__}: {ex}"[:200]
+        out.append(None if f != f else round(f, dec))
     return out
 
 
-def bots_tick(md, only=None, force=False):
-    """Tüm (ya da tek) kullanıcının botlarını çalıştırır — 15 dakikalık dilim başına bir kez. Döner: işlem sayısı."""
-    now = time.time()
-    slot = int(now // BOT_SLOT)
-    if not force and now % BOT_SLOT < BOT_LAG:
-        return 0
-    n = 0
-    for email in list(_demo_all()["users"].keys()):
-        if only and email != str(only).lower():
-            continue
-        for acct in list(demo_user(email)["accounts"].values()):
-            n += _bots_tick_acct(md, email, acct, slot, now, force)
-    return n
+@st.cache_data(ttl=900, show_spinner=False)
+def build_payload(sym, tf, cfg_json, data_token, max_bars=900, lb=None):
+    """Grafiğin ihtiyaç duyduğu her şeyi tek bir JSON'a toplar (hepsi gerçek veriden)."""
+    cfg = merge_cfg(json.loads(cfg_json))
+    full, bars_n, intraday = chart_data(sym, tf, lb)
+    if full.empty:
+        return {"ok": False, "sym": sym}
+    bars_n = int(min(bars_n, MAX_KEEP))
+    # Görünür aralıktan biraz fazlasını gönder: kullanıcı geriye kaydırabilsin
+    keep = int(min(len(full), MAX_KEEP, max(max_bars, bars_n + max(300, bars_n // 2))))
+    df = full.tail(keep)
+    ind = {}
+    if cfg["sma"]["on"]:
+        for p in cfg["sma"]["ps"]:
+            ind["sma%d" % p] = _ser(en.sma(full["Close"], p).tail(keep))
+    if cfg["nw"]["on"]:
+        up, lo, mid = en.nadaraya_watson(df["Close"], cfg["nw"]["h"], cfg["nw"]["mult"])
+        ind["nw_up"], ind["nw_lo"], ind["nw_mid"] = _ser(up), _ser(lo), _ser(mid)
+    if cfg["boll"]["on"]:
+        bu, bm, bl = en.bollinger(full["Close"], cfg["boll"]["n"], cfg["boll"]["k"])
+        ind["bb_up"], ind["bb_mid"], ind["bb_lo"] = _ser(bu.tail(keep)), _ser(bm.tail(keep)), _ser(bl.tail(keep))
+    if cfg["sup"]["on"]:
+        sl, sd = en.supertrend(full, cfg["sup"]["n"], cfg["sup"]["mult"])
+        ind["sup"], ind["sup_dir"] = _ser(sl.tail(keep)), _ser(sd.tail(keep), 0)
+    if cfg["vidya"]["on"]:
+        vv, vu, vl, vd, flips = en.vidya(full, cfg["vidya"]["len"], cfg["vidya"]["mom"], cfg["vidya"]["mult"])
+        ind["vid"], ind["vid_up"], ind["vid_lo"] = _ser(vv.tail(keep)), _ser(vu.tail(keep)), _ser(vl.tail(keep))
+        ind["vid_dir"] = _ser(vd.tail(keep), 0)
+        off = len(full) - keep
+        ind["vid_flips"] = [[f["i"] - off, f["dir"], round(f["p"], 6)] for f in flips if f["i"] >= off]
+    if cfg["vstop"]["on"]:
+        vs, vsd = en.volatility_stop(full, cfg["vstop"]["n"], cfg["vstop"]["mult"])
+        ind["vstop"], ind["vstop_dir"] = _ser(vs.tail(keep)), _ser(vsd.tail(keep), 0)
+    if cfg["stoch"]["on"]:
+        sk, sd2 = en.stoch(full, cfg["stoch"]["k"], cfg["stoch"]["d"], cfg["stoch"]["smooth"])
+        ind["stoch_k"], ind["stoch_d"] = _ser(sk.tail(keep)), _ser(sd2.tail(keep))
+    if cfg["atr"]["on"]:
+        ind["atr"] = _ser(en.atr(full, cfg["atr"]["n"]).tail(keep))
+    rsi = macd_line = wt1 = None
+    if cfg["rsi"]["on"] or (cfg["div"]["on"] and cfg["div"]["src"] == "rsi"):
+        rsi = en.rsi(full["Close"], cfg["rsi"]["len"]).tail(keep)
+        if cfg["rsi"]["on"]:
+            ind["rsi"] = _ser(rsi)
+    if cfg["macd"]["on"] or (cfg["div"]["on"] and cfg["div"]["src"] == "macd"):
+        line, sig, hist = en.macd(full["Close"], cfg["macd"]["f"], cfg["macd"]["s"], cfg["macd"]["sig"])
+        macd_line = line.tail(keep)
+        if cfg["macd"]["on"]:
+            ind["macd"], ind["macd_sig"], ind["macd_hist"] = \
+                _ser(macd_line), _ser(sig.tail(keep)), _ser(hist.tail(keep))
+    if cfg["wt"]["on"] or (cfg["div"]["on"] and cfg["div"]["src"] == "wt"):
+        a, b = en.wavetrend(full, cfg["wt"]["n1"], cfg["wt"]["n2"])
+        wt1 = a.tail(keep)
+        if cfg["wt"]["on"]:
+            ind["wt1"], ind["wt2"] = _ser(wt1), _ser(b.tail(keep))
+    zones = []
+    if cfg["zones"]["on"]:
+        z = cfg["zones"]
+        zones = key_zones(en.ranked_sr_zones(df, z["lookback"], z["left"], z["right"], z["merge"], 14),
+                          float(df["Close"].iloc[-1]), z["max"])
+    gaps = []
+    if cfg["gaps"]["on"]:
+        g = cfg["gaps"]
+        gaps = [{"lo": round(x["lo"], 6), "hi": round(x["hi"], 6), "kind": x["kind"], "dir": x["dir"],
+                 "start": x["i"], "pct": round(x["pct"], 2)}
+                for x in en.price_gaps(df, g["lookback"], g["min"], g["max"])]
+    divs = []
+    if cfg["div"]["on"]:
+        osc = {"rsi": rsi, "macd": macd_line, "wt": wt1}.get(cfg["div"]["src"])
+        if osc is not None:
+            divs = en.divergences(df, osc, cfg["div"]["left"], cfg["div"]["right"],
+                                  hidden=cfg["div"]["hidden"])
+    bars = [[int(pd.Timestamp(ts).value // 10 ** 6), round(float(o), 6), round(float(h), 6),
+             round(float(lo2), 6), round(float(c), 6), float(v)]
+            for ts, o, h, lo2, c, v in zip(df.index, df["Open"], df["High"], df["Low"],
+                                           df["Close"], df["Volume"])]
+    d = md.get_company_detail(sym)
+    name = (d or {}).get("name") or md.company_name(sym)
+    dec = 4 if sym.endswith("=X") else (0 if float(df["Close"].iloc[-1]) >= 10000 else 2)
+    return {"ok": True, "sym": sym, "name": name, "dec": dec,
+            "src": df.attrs.get("src", "real"), "intraday": intraday,
+            "interval": norm_tf(tf), "intervalName": tf_name(tf), "intervals": interval_list(),
+            "bars": bars, "ind": ind, "zones": zones, "gaps": gaps, "divs": divs, "cfg": cfg,
+            "visible": bars_n, "lookback": norm_lb(lb) if lb is not None else ""}
 
 
-def _bots_tick_acct(md, email, acct, slot, now, force):
-    """Tek hesabın 15 dakikalık turu: veriyi kilit dışında topla, hesabı kilit içinde güncelle, haber ver."""
-    active = any(b.get("on") for b in acct.get("bots") or [])
-    owned = any(has_orders(p) for p in acct["pos"].values()) or bool(acct.get("pend"))
-    if not (active or owned) or (not force and acct.get("bot_slot") == slot):
-        return 0
-    aid = acct["id"]
+ZONE_MAX_DIST = 18.0     # fiyata bundan uzak bantlar çizilmez (%)
+
+
+def key_zones(zones, px, n=4):
+    """En önemli n bant: fiyatın hemen üstündeki direnç ve hemen altındaki destek her zaman,
+    kalan yerler güce göre. Zayıf ("Weak") ve uzak bantlar elenir."""
+    n = int(max(1, n))
+    mid = lambda z: (z["lo"] + z["hi"]) / 2.0
+    near = [z for z in zones if px > 0 and abs(mid(z) / px - 1) * 100 <= ZONE_MAX_DIST]
+    strong = [z for z in near if not z.get("weak")] or near
+    pick = []
+    above = sorted([z for z in strong if mid(z) >= px], key=lambda z: mid(z))
+    below = sorted([z for z in strong if mid(z) < px], key=lambda z: -mid(z))
+    for grp in (above, below):
+        if grp:
+            pick.append(grp[0])
+    for z in sorted(strong, key=lambda z: -z.get("pct", 0)):
+        if len(pick) >= n:
+            break
+        if z not in pick:
+            pick.append(z)
+    return sorted(pick[:n], key=lambda z: -z.get("pct", 0))
+
+
+def data_token(sym, tf, lb=None):
+    """Fiyat verisi değişince payload önbelleği yenilensin."""
+    full, n, _ = chart_data(sym, tf, lb)
+    if full.empty:
+        return "none"
+    return "%s|%d|%d|%s|%.6g" % (full.attrs.get("src"), len(full), n, full.index[-1],
+                                 float(full["Close"].iloc[-1]))
+
+
+# ----------------------------------------------------------------------
+# Bileşen
+# ----------------------------------------------------------------------
+UI_VERSION = "5.6"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+
+
+def frontend_version():
+    """Sunucudaki pulse_chart/index.html sürümü; dosya yoksa None, işaret yoksa 'old'."""
     try:
-        data = bots_collect(md, acct)
-    except Exception as ex:
-        _MON["err"] = f"bots_collect: {type(ex).__name__}: {ex}"[:200]
-        return 0
+        with open(_INDEX, encoding="utf-8") as fh:
+            head = fh.read(4000)
+    except OSError:
+        return None
+    m = re.search(r'name="pulse-ui"\s+content="([^"]+)"', head)
+    return m.group(1) if m else "old"
 
-    def run(a):
-        if not force and a.get("bot_slot") == slot:
-            return []
-        a["bot_slot"] = slot
-        return bots_apply(a, data, now)
+
+@st.cache_resource(show_spinner=False)
+def _component():
+    if not os.path.isfile(_INDEX):
+        return None
     try:
-        if aid not in demo_user(email)["accounts"]:      # bu arada silindiyse dokunma
-            return 0
-        events = demo_edit(email, run, aid)
-    except Exception as ex:
-        _MON["err"] = f"bots_apply: {type(ex).__name__}: {ex}"[:200]
-        return 0
-    _MON["bots_last"] = now
-    n = sum(1 for e in events if e["kind"] != "breach")
-    if events:
+        return components.declare_component("pulse_chart", path=_DIR)
+    except Exception:
+        return None
+
+
+def missing_frontend():
+    return not os.path.isfile(_INDEX)
+
+
+# ----------------------------------------------------------------------
+# v4.8 — sıralanabilir liste (izleme listeleri): ⋮⋮ ile sürükle-bırak, ↑ / ↓, isteğe bağlı kaldır
+# ----------------------------------------------------------------------
+_LIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_list")
+_LIST_INDEX = os.path.join(_LIST_DIR, "index.html")
+
+
+# v5.0: bileşen uygulamaya gömülü — pulse_list/index.html yüklenmemiş olsa bile sürükle-bırak çalışır.
+# (_LIST_B64, pulse_list/index.html dosyasının birebir base64 kopyasıdır; sürüm testleri eş olduğunu doğrular.)
+_LIST_B64 = (
+    "PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVuIj4KPGhlYWQ+CjxtZXRhIGNoYXJzZXQ9InV0Zi04Ij4KPG1ldGEgbmFtZT0i"
+    "cHVsc2UtbGlzdCIgY29udGVudD0iNS4zIj4KPG1ldGEgbmFtZT0idmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPWRldmljZS13aWR0"
+    "aCxpbml0aWFsLXNjYWxlPTEiPgo8dGl0bGU+UHVsc2Ugc29ydGFibGUgbGlzdDwvdGl0bGU+CjxzdHlsZT4KLyogUHVsc2Ug4oCU"
+    "IHPEsXJhbGFuYWJpbGlyIGxpc3RlIChpemxlbWUgbGlzdGVsZXJpKS4gdjUuMDogc2F0xLFyxLFuIEhFUkhBTkfEsCBiaXIgeWVy"
+    "aW5kZW4gc8O8csO8a2xlCiAgIChmYXJlOiA2IHB4IGhhcmVrZXRsZSBiYcWfbGFyIMK3IGRva3VubWF0aWs6IGJhc8SxbMSxIHR1"
+    "dCwgc29ucmEgc8O8csO8a2xlKSwg4ouu4ouuIHR1dGFtYWPEsSBhbsSxbmRhIHPDvHLDvGtsZXIsCiAgIOKGkSAvIOKGkyBva2xh"
+    "csSxIHRlayBrb251bSB0YcWfxLFyOyDimIDvuI8gLyDwn4yZIHNlYW5zIGTEscWfxLEgc2F0xLFyxLEgc2HEn2EgeWFzbMSxIGfD"
+    "tnN0ZXJpbGlyLgogICB2NS4yOiBoZWRlZiA9IMSwTUxFQ8SwTiBBTFRJTkRBS8SwIHNhdMSxciAodHV0dWxhbiBub2t0YWRhbiBi"
+    "YcSfxLFtc8Sxeik7IGRpxJ9lciBzYXTEsXJsYXIgeWVyaW5kZSBrYWzEsXIsCiAgIG1hdmkgZWtsZW1lIMOnaXpnaXNpICgrIHll"
+    "bmkgc8SxcmEgbnVtYXJhc8SxKSBixLFyYWvEsWxhY2FrIHllcmkgdGFtIGfDtnN0ZXJpcjsgYsSxcmFrxLFuY2EgdGFtIHNwbGlj"
+    "ZSB0YcWfxLFtYS4gKi8KOnJvb3R7LS1iZzp0cmFuc3BhcmVudDstLXJvdzojMEYxMTE1Oy0tcm93aDojMTUxOTIyOy0tbGluZToj"
+    "MUMxRjI1Oy0tdHh0OiNFQ0VFRjE7LS1tdXQ6IzhEOTZBNTstLWRpbTojNUI2MjcwOwogLS1hY2M6IzVCOENGRjstLXVwOiMzRERD"
+    "OTc7LS1kb3duOiNGODcxNzE7LS1zZWw6IzE1MTkyMn0KOnJvb3QubGlnaHR7LS1yb3c6I0ZGRkZGRjstLXJvd2g6I0YzRjVGOTst"
+    "LWxpbmU6I0U2RTlFRjstLXR4dDojMTQxNzFDOy0tbXV0OiM1QjY0NzU7LS1kaW06IzlBQTJCMTstLXNlbDojRUVGMkZCfQoqe2Jv"
+    "eC1zaXppbmc6Ym9yZGVyLWJveH0KW2hpZGRlbl17ZGlzcGxheTpub25lICFpbXBvcnRhbnR9Cmh0bWwsYm9keXttYXJnaW46MDtw"
+    "YWRkaW5nOjA7YmFja2dyb3VuZDp2YXIoLS1iZyk7Y29sb3I6dmFyKC0tdHh0KTsKIGZvbnQtZmFtaWx5OiJTb3VyY2UgU2FucyAz"
+    "IiwiU291cmNlIFNhbnMgUHJvIixzeXN0ZW0tdWksLWFwcGxlLXN5c3RlbSwiU2Vnb2UgVUkiLHNhbnMtc2VyaWY7Zm9udC1zaXpl"
+    "OjEzcHg7CiAtd2Via2l0LWZvbnQtc21vb3RoaW5nOmFudGlhbGlhc2VkO292ZXJmbG93OmhpZGRlbn0KI3dyYXB7cG9zaXRpb246"
+    "cmVsYXRpdmU7b3ZlcmZsb3cteTphdXRvO292ZXJmbG93LXg6aGlkZGVuO292ZXJzY3JvbGwtYmVoYXZpb3I6Y29udGFpbjtwYWRk"
+    "aW5nOjAgMnB4fQojd3JhcDo6LXdlYmtpdC1zY3JvbGxiYXJ7d2lkdGg6OHB4fQojd3JhcDo6LXdlYmtpdC1zY3JvbGxiYXItdGh1"
+    "bWJ7YmFja2dyb3VuZDpjb2xvci1taXgoaW4gc3JnYix2YXIoLS1hY2MpIDMwJSwjMkEyRjM3KTtib3JkZXItcmFkaXVzOjhweH0K"
+    "LmhkcntkaXNwbGF5OmdyaWQ7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo4cHg7cGFkZGluZzo2cHggOHB4IDdweCA4cHg7Zm9udC1z"
+    "aXplOjEwLjVweDtmb250LXdlaWdodDo3MDA7CiBsZXR0ZXItc3BhY2luZzouMDdlbTt0ZXh0LXRyYW5zZm9ybTp1cHBlcmNhc2U7"
+    "Y29sb3I6dmFyKC0tZGltKTtib3JkZXItYm90dG9tOjFweCBzb2xpZCB2YXIoLS1saW5lKX0KLmxpc3R7cG9zaXRpb246cmVsYXRp"
+    "dmU7bGlzdC1zdHlsZTpub25lO21hcmdpbjowO3BhZGRpbmc6MH0KLnJvd3tkaXNwbGF5OmdyaWQ7YWxpZ24taXRlbXM6Y2VudGVy"
+    "O2dhcDo4cHg7cGFkZGluZzo2cHggOHB4O2JvcmRlci1yYWRpdXM6MTBweDsKIGJhY2tncm91bmQ6dHJhbnNwYXJlbnQ7cG9zaXRp"
+    "b246cmVsYXRpdmU7dXNlci1zZWxlY3Q6bm9uZTstd2Via2l0LXVzZXItc2VsZWN0Om5vbmU7LXdlYmtpdC10b3VjaC1jYWxsb3V0"
+    "Om5vbmU7CiB0cmFuc2l0aW9uOmJhY2tncm91bmQgLjEycyBlYXNlLGJveC1zaGFkb3cgLjEycyBlYXNlLG9wYWNpdHkgLjEycyBl"
+    "YXNlfQoucm93Ky5yb3c6OmJlZm9yZXtjb250ZW50OiIiO3Bvc2l0aW9uOmFic29sdXRlO2xlZnQ6MTBweDtyaWdodDoxMHB4O3Rv"
+    "cDowO2hlaWdodDoxcHg7YmFja2dyb3VuZDp2YXIoLS1saW5lKTsKIHBvaW50ZXItZXZlbnRzOm5vbmV9Ci5yb3c6aG92ZXI6OmJl"
+    "Zm9yZSwucm93OmhvdmVyKy5yb3c6OmJlZm9yZSwucm93LnNlbDo6YmVmb3JlLC5yb3cuc2VsKy5yb3c6OmJlZm9yZXtvcGFjaXR5"
+    "OjB9Ci5yb3c6aG92ZXJ7YmFja2dyb3VuZDp2YXIoLS1yb3doKX0KLnJvdy5zZWx7YmFja2dyb3VuZDp2YXIoLS1zZWwpO2JveC1z"
+    "aGFkb3c6aW5zZXQgM3B4IDAgMCB2YXIoLS1hY2MpfQovKiB2NS4yIHPDvHLDvGtsZW1lOiBrYXluYWsgc2F0xLFyIHllcmluZGUg"
+    "c29sdWsga2FsxLFyIChuZXJlZGVuIGdlbGRpxJ9pIGJlbGxpKSwgImhheWFsZXQiIGtvcHlhIGltbGVjaSBpemxlciwKICAgZWts"
+    "ZW1lIMOnaXpnaXNpIGhlZGVmIGFyYWzEscSfxLEgZ8O2c3RlcmlyIOKAlCBkacSfZXIgc2F0xLFybGFyIEtBWU1BWiwgYsO2eWxl"
+    "Y2UgaW1sZWNpbiBhbHTEsW5kYWtpIHNhdMSxciA9IGhlZGVmICovCi5yb3cuc3Jje29wYWNpdHk6LjM2O291dGxpbmU6MXB4IGRh"
+    "c2hlZCBjb2xvci1taXgoaW4gc3JnYix2YXIoLS1hY2MpIDUwJSx0cmFuc3BhcmVudCk7b3V0bGluZS1vZmZzZXQ6LTJweH0KLnJv"
+    "dy5zcmM6OmJlZm9yZSwucm93LnNyYysucm93OjpiZWZvcmV7b3BhY2l0eTowfQoucm93Lmdob3N0e3Bvc2l0aW9uOmFic29sdXRl"
+    "O3RvcDowO2xlZnQ6MnB4O3JpZ2h0OjJweDt6LWluZGV4OjEwO3BvaW50ZXItZXZlbnRzOm5vbmU7dHJhbnNpdGlvbjpub25lOwog"
+    "YmFja2dyb3VuZDp2YXIoLS1yb3doKTt3aWxsLWNoYW5nZTp0cmFuc2Zvcm07CiBib3gtc2hhZG93OjAgMTRweCAzMnB4IC0xMHB4"
+    "IHJnYmEoMCwwLDAsLjcwKSwwIDAgMCAxcHggY29sb3ItbWl4KGluIHNyZ2IsdmFyKC0tYWNjKSA1MCUsdHJhbnNwYXJlbnQpfQo6"
+    "cm9vdC5saWdodCAucm93Lmdob3N0e2JveC1zaGFkb3c6MCAxMnB4IDI4cHggLTEwcHggcmdiYSgyMCwyMywyOCwuMzApLDAgMCAw"
+    "IDFweCBjb2xvci1taXgoaW4gc3JnYix2YXIoLS1hY2MpIDQ1JSx0cmFuc3BhcmVudCl9Ci5yb3cuZ2hvc3QgLmh7Y29sb3I6dmFy"
+    "KC0tYWNjKX0KLmRyb3BsaW5le3Bvc2l0aW9uOmFic29sdXRlO3RvcDowO2xlZnQ6NnB4O3JpZ2h0OjZweDtoZWlnaHQ6MnB4O2Jv"
+    "cmRlci1yYWRpdXM6MnB4O3otaW5kZXg6MTI7cG9pbnRlci1ldmVudHM6bm9uZTsKIGJhY2tncm91bmQ6dmFyKC0tYWNjKTt3aWxs"
+    "LWNoYW5nZTp0cmFuc2Zvcm07CiBib3gtc2hhZG93OjAgMCAwIDFweCBjb2xvci1taXgoaW4gc3JnYix2YXIoLS1hY2MpIDI1JSx0"
+    "cmFuc3BhcmVudCksMCAwIDEwcHggY29sb3ItbWl4KGluIHNyZ2IsdmFyKC0tYWNjKSA2MCUsdHJhbnNwYXJlbnQpfQouZHJvcGxp"
+    "bmU6OmFmdGVye2NvbnRlbnQ6IiI7cG9zaXRpb246YWJzb2x1dGU7cmlnaHQ6LTNweDt0b3A6NTAlO3dpZHRoOjZweDtoZWlnaHQ6"
+    "NnB4O21hcmdpbi10b3A6LTNweDtib3JkZXItcmFkaXVzOjUwJTsKIGJhY2tncm91bmQ6dmFyKC0tYWNjKX0KLmRsLW57cG9zaXRp"
+    "b246YWJzb2x1dGU7bGVmdDotNHB4O3RvcDo1MCU7dHJhbnNmb3JtOnRyYW5zbGF0ZVkoLTUwJSk7bWluLXdpZHRoOjE4cHg7aGVp"
+    "Z2h0OjE4cHg7cGFkZGluZzowIDVweDsKIGJvcmRlci1yYWRpdXM6OXB4O2JhY2tncm91bmQ6dmFyKC0tYWNjKTtjb2xvcjojZmZm"
+    "O2ZvbnQ6ODAwIDEwLjVweC8xOHB4IHVpLW1vbm9zcGFjZSxTRk1vbm8tUmVndWxhcixNZW5sbyxtb25vc3BhY2U7CiB0ZXh0LWFs"
+    "aWduOmNlbnRlcjtib3gtc2hhZG93OjAgMCAwIDJweCByZ2JhKDEwLDExLDEzLC41NSl9Cjpyb290LmxpZ2h0IC5kbC1ue2JveC1z"
+    "aGFkb3c6MCAwIDAgMnB4IHJnYmEoMjU1LDI1NSwyNTUsLjkpfQouZHJvcGxpbmUudG9wIC5kbC1ue3RyYW5zZm9ybTp0cmFuc2xh"
+    "dGVZKC0zcHgpfQouZHJvcGxpbmUuYm90IC5kbC1ue3RyYW5zZm9ybTp0cmFuc2xhdGVZKGNhbGMoLTEwMCUgKyAzcHgpKX0KI3dy"
+    "YXAuZHJhZ2dpbmcgLnJvdzpob3ZlcntiYWNrZ3JvdW5kOnRyYW5zcGFyZW50fQojd3JhcC5kcmFnZ2luZywjd3JhcC5kcmFnZ2lu"
+    "ZyAqe2N1cnNvcjpncmFiYmluZyAhaW1wb3J0YW50fQoucm93Lm1vdmVke2FuaW1hdGlvbjpmbGFzaCAuN3MgZWFzZX0KQGtleWZy"
+    "YW1lcyBmbGFzaHswJXtiYWNrZ3JvdW5kOmNvbG9yLW1peChpbiBzcmdiLHZhcigtLWFjYykgMjIlLHRyYW5zcGFyZW50KX0xMDAl"
+    "e2JhY2tncm91bmQ6dHJhbnNwYXJlbnR9fQouaHt3aWR0aDoxOHB4O2hlaWdodDoyOHB4O2Rpc3BsYXk6ZmxleDthbGlnbi1pdGVt"
+    "czpjZW50ZXI7anVzdGlmeS1jb250ZW50OmNlbnRlcjtjb2xvcjp2YXIoLS1kaW0pO2N1cnNvcjpncmFiOwogYm9yZGVyLXJhZGl1"
+    "czo2cHg7dG91Y2gtYWN0aW9uOm5vbmU7Zm9udC1zaXplOjE1cHg7bGV0dGVyLXNwYWNpbmc6LTNweDtsaW5lLWhlaWdodDoxO291"
+    "dGxpbmU6bm9uZX0KLmg6aG92ZXIsLmg6Zm9jdXMtdmlzaWJsZXtjb2xvcjp2YXIoLS10eHQpO2JhY2tncm91bmQ6Y29sb3ItbWl4"
+    "KGluIHNyZ2IsdmFyKC0tYWNjKSAxNCUsdHJhbnNwYXJlbnQpfQouYXZ7cG9zaXRpb246cmVsYXRpdmU7ZGlzcGxheTppbmxpbmUt"
+    "ZmxleDthbGlnbi1pdGVtczpjZW50ZXI7anVzdGlmeS1jb250ZW50OmNlbnRlcjtib3JkZXItcmFkaXVzOjUwJTtvdmVyZmxvdzpo"
+    "aWRkZW47CiBmbGV4Om5vbmU7Zm9udC13ZWlnaHQ6ODAwO2xldHRlci1zcGFjaW5nOi0uMDJlbX0KLmF2IGltZ3twb3NpdGlvbjph"
+    "YnNvbHV0ZTtpbnNldDowO3dpZHRoOjEwMCU7aGVpZ2h0OjEwMCU7b2JqZWN0LWZpdDpjb250YWluO2JhY2tncm91bmQ6I0YxRjJG"
+    "NDtwYWRkaW5nOjNweH0KLm5te21pbi13aWR0aDowO2xpbmUtaGVpZ2h0OjEuMjU7Y3Vyc29yOmRlZmF1bHR9Ci5jbGlja2FibGUg"
+    "Lm5te2N1cnNvcjpwb2ludGVyfQoubm0gYntkaXNwbGF5OmJsb2NrO2ZvbnQtZmFtaWx5OnVpLW1vbm9zcGFjZSxTRk1vbm8tUmVn"
+    "dWxhcixNZW5sbyxtb25vc3BhY2U7Zm9udC1zaXplOjEyLjVweDt3aGl0ZS1zcGFjZTpub3dyYXA7CiBvdmVyZmxvdzpoaWRkZW47"
+    "dGV4dC1vdmVyZmxvdzplbGxpcHNpc30KLm5tIGl7ZGlzcGxheTpibG9jaztmb250LXN0eWxlOm5vcm1hbDtjb2xvcjp2YXIoLS1t"
+    "dXQpO2ZvbnQtc2l6ZToxMXB4O3doaXRlLXNwYWNlOm5vd3JhcDtvdmVyZmxvdzpoaWRkZW47CiB0ZXh0LW92ZXJmbG93OmVsbGlw"
+    "c2lzfQouY3t0ZXh0LWFsaWduOnJpZ2h0O2ZvbnQtZmFtaWx5OnVpLW1vbm9zcGFjZSxTRk1vbm8tUmVndWxhcixNZW5sbyxtb25v"
+    "c3BhY2U7Zm9udC12YXJpYW50LW51bWVyaWM6dGFidWxhci1udW1zOwogd2hpdGUtc3BhY2U6bm93cmFwO2xpbmUtaGVpZ2h0OjEu"
+    "MjU7bWluLXdpZHRoOjA7b3ZlcmZsb3c6aGlkZGVuO3RleHQtb3ZlcmZsb3c6ZWxsaXBzaXN9Ci5jIC5ze2Rpc3BsYXk6YmxvY2s7"
+    "Zm9udC1zaXplOjExcHg7Zm9udC13ZWlnaHQ6NzAwfQouYXJ7ZGlzcGxheTpmbGV4O2dhcDoycHh9Ci5hciBidXR0b24sLnJte3dp"
+    "ZHRoOjI0cHg7aGVpZ2h0OjI0cHg7Ym9yZGVyLXJhZGl1czo3cHg7Ym9yZGVyOjFweCBzb2xpZCB0cmFuc3BhcmVudDtiYWNrZ3Jv"
+    "dW5kOnRyYW5zcGFyZW50O2NvbG9yOnZhcigtLWRpbSk7CiBmb250LXNpemU6MTNweDtsaW5lLWhlaWdodDoxO2N1cnNvcjpwb2lu"
+    "dGVyO2Rpc3BsYXk6aW5saW5lLWZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2p1c3RpZnktY29udGVudDpjZW50ZXI7cGFkZGluZzow"
+    "fQouYXIgYnV0dG9uOmhvdmVyOm5vdCg6ZGlzYWJsZWQpe2NvbG9yOnZhcigtLXR4dCk7Ym9yZGVyLWNvbG9yOmNvbG9yLW1peChp"
+    "biBzcmdiLHZhcigtLWFjYykgNDUlLHRyYW5zcGFyZW50KTsKIGJhY2tncm91bmQ6Y29sb3ItbWl4KGluIHNyZ2IsdmFyKC0tYWNj"
+    "KSAxMiUsdHJhbnNwYXJlbnQpfQouYXIgYnV0dG9uOmRpc2FibGVke29wYWNpdHk6LjI1O2N1cnNvcjpkZWZhdWx0fQoucm06aG92"
+    "ZXJ7Y29sb3I6dmFyKC0tZG93bik7Ym9yZGVyLWNvbG9yOnJnYmEoMjQ4LDExMywxMTMsLjQ1KTtiYWNrZ3JvdW5kOnJnYmEoMjQ4"
+    "LDExMywxMTMsLjA4KX0KLmVtcHR5e2NvbG9yOnZhcigtLW11dCk7cGFkZGluZzoxMnB4IDZweDtmb250LXNpemU6MTIuNXB4fQou"
+    "ZXh0cXtncmlkLWNvbHVtbjozLy0xO2dyaWQtcm93OjI7ZGlzcGxheTpmbGV4O2p1c3RpZnktY29udGVudDpmbGV4LWVuZDthbGln"
+    "bi1pdGVtczpiYXNlbGluZTtnYXA6N3B4OwogbWFyZ2luLXRvcDoxcHg7Zm9udC1mYW1pbHk6dWktbW9ub3NwYWNlLFNGTW9uby1S"
+    "ZWd1bGFyLE1lbmxvLG1vbm9zcGFjZTtmb250LXZhcmlhbnQtbnVtZXJpYzp0YWJ1bGFyLW51bXM7CiBmb250LXNpemU6MTAuNXB4"
+    "O2ZvbnQtd2VpZ2h0OjYwMDt3aGl0ZS1zcGFjZTpub3dyYXA7b3ZlcmZsb3c6aGlkZGVuO21pbi13aWR0aDowfQouZXh0cSBpe2Zv"
+    "bnQtc3R5bGU6bm9ybWFsO2ZvbnQtc2l6ZToxMHB4O2ZvbnQtZmFtaWx5OiJTZWdvZSBVSSBFbW9qaSIsIk5vdG8gQ29sb3IgRW1v"
+    "amkiLHNhbnMtc2VyaWZ9Ci5leHRxIGVte2ZvbnQtc3R5bGU6bm9ybWFsO2ZvbnQtc2l6ZTo5cHg7Zm9udC13ZWlnaHQ6ODAwO2xl"
+    "dHRlci1zcGFjaW5nOi4wN2VtO3RleHQtdHJhbnNmb3JtOnVwcGVyY2FzZTtjb2xvcjp2YXIoLS1kaW0pfQouZXh0cSBie2ZvbnQt"
+    "d2VpZ2h0OjcwMDtjb2xvcjp2YXIoLS10eHQpfQouc3J7cG9zaXRpb246YWJzb2x1dGU7d2lkdGg6MXB4O2hlaWdodDoxcHg7b3Zl"
+    "cmZsb3c6aGlkZGVuO2NsaXA6cmVjdCgwIDAgMCAwKX0KPC9zdHlsZT4KPC9oZWFkPgo8Ym9keT4KPGRpdiBpZD0id3JhcCI+PGRp"
+    "diBpZD0iaGRyIiBjbGFzcz0iaGRyIiBoaWRkZW4+PC9kaXY+PHVsIGlkPSJsaXN0IiBjbGFzcz0ibGlzdCIgcm9sZT0ibGlzdGJv"
+    "eCI+PC91bD4KPGRpdiBpZD0iZW1wdHkiIGNsYXNzPSJlbXB0eSIgaGlkZGVuPjwvZGl2PjwvZGl2Pgo8ZGl2IGlkPSJsaXZlIiBj"
+    "bGFzcz0ic3IiIGFyaWEtbGl2ZT0icG9saXRlIj48L2Rpdj4KPHNjcmlwdD4KInVzZSBzdHJpY3QiOwpjb25zdCBpblN0cmVhbWxp"
+    "dCA9IHdpbmRvdy5wYXJlbnQgJiYgd2luZG93LnBhcmVudCAhPT0gd2luZG93Owpjb25zdCBTID0ge3Jvd3M6IFtdLCBvcHRzOiB7"
+    "fSwgbjogMCwgZHJhZzogbnVsbCwgc2VudDogW10sIHZpczogMH07CmNvbnN0IHdyYXAgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJ"
+    "ZCgid3JhcCIpLCBsaXN0ID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoImxpc3QiKTsKCmZ1bmN0aW9uIHN0U2VuZCh0eXBlLCBk"
+    "YXRhKXsgaWYoIWluU3RyZWFtbGl0KSByZXR1cm47CiAgd2luZG93LnBhcmVudC5wb3N0TWVzc2FnZShPYmplY3QuYXNzaWduKHtp"
+    "c1N0cmVhbWxpdE1lc3NhZ2U6IHRydWUsIHR5cGU6IHR5cGV9LCBkYXRhIHx8IHt9KSwgIioiKTsgfQpmdW5jdGlvbiBzZW5kKGV2"
+    "KXsKICBTLm4gPSBNYXRoLm1heChTLm4gKyAxLCBEYXRlLm5vdygpKTsgICAgIC8vIGlmcmFtZSB5ZW5pZGVuIHnDvGtsZW5zZSBk"
+    "ZSAoc2VrbWUgZGXEn2nFn2ltaSkgc2F5YcOnIGhlcCB5ZW5pIOKGkiBvbGF5IGtheWJvbG1hegogIGNvbnN0IHYgPSBPYmplY3Qu"
+    "YXNzaWduKHtuOiBTLm4sIGtleTogUy5vcHRzLmtleSB8fCAiIn0sIGV2KTsKICBTLnNlbnQucHVzaCh2KTsKICBzdFNlbmQoInN0"
+    "cmVhbWxpdDpzZXRDb21wb25lbnRWYWx1ZSIsIHt2YWx1ZTogdiwgZGF0YVR5cGU6ICJqc29uIn0pOwp9CmZ1bmN0aW9uIGVzYyhz"
+    "KXsgcmV0dXJuIFN0cmluZyhzID09IG51bGwgPyAiIiA6IHMpLnJlcGxhY2UoL1smPD4iJ10vZywgYyA9PiAoeyImIjoiJmFtcDsi"
+    "LCI8IjoiJmx0OyIsIj4iOiImZ3Q7IiwKICAnIic6IiZxdW90OyIsIiciOiImIzM5OyJ9KVtjXSk7IH0KCi8qIGRhciBla3JhbmRh"
+    "ICh0ZWxlZm9uKSBzw7x0dW5sYXIgc29uZGFuIGdpemxlbmlyIOKAlCBzYXnEsWxhciBhc2xhIHRhxZ9tYXogLyBrZXNpbG1leiwg"
+    "YWQgc8O8dHVudSBlbiBheiA4MCBweCBrYWzEsXIgKi8KZnVuY3Rpb24gdmlzQ29scygpewogIGNvbnN0IGNvbHMgPSBTLm9wdHMu"
+    "Y29scyB8fCBbXSwgY29sdyA9IFMub3B0cy5jb2x3IHx8IFtdOwogIGNvbnN0IFcgPSAod3JhcC5jbGllbnRXaWR0aCB8fCBkb2N1"
+    "bWVudC5kb2N1bWVudEVsZW1lbnQuY2xpZW50V2lkdGggfHwgNDAwKSAtIDQ7CiAgY29uc3QgcHggPSB3ID0+IHBhcnNlRmxvYXQo"
+    "dykgfHwgNzA7CiAgY29uc3QgZml4ZWQgPSBrID0+IDE4ICsgKFMub3B0cy5hdiB8fCAyNikgKyBjb2x3LnNsaWNlKDAsIGspLnJl"
+    "ZHVjZSgoYSwgdykgPT4gYSArIHB4KHcpLCAwKSArIDUyCiAgICArIChTLm9wdHMucmVtb3ZhYmxlID8gMjQgOiAwKSArIDggKiAo"
+    "MyArIGsgKyAoUy5vcHRzLnJlbW92YWJsZSA/IDEgOiAwKSkgKyAxNjsKICBsZXQgbiA9IGNvbHMubGVuZ3RoOwogIHdoaWxlKG4g"
+    "PiAxICYmIFcgLSBmaXhlZChuKSA8IDgwKSBuLS07CiAgcmV0dXJuIG47Cn0KZnVuY3Rpb24gZ3JpZCgpewogIGNvbnN0IG5jID0g"
+    "Uy52aXM7CiAgcmV0dXJuICIxOHB4ICIgKyAoUy5vcHRzLmF2IHx8IDI2KSArICJweCBtaW5tYXgoMCwxZnIpICIgKyAoUy5vcHRz"
+    "LmNvbHcgfHwgW10pLnNsaWNlKDAsIG5jKS5tYXAodyA9PiB3IHx8ICJhdXRvIikuam9pbigiICIpCiAgICArICIgNTJweCIgKyAo"
+    "Uy5vcHRzLnJlbW92YWJsZSA/ICIgMjRweCIgOiAiIik7Cn0KCmZ1bmN0aW9uIGV4dEhUTUwocil7CiAgY29uc3QgZSA9IHIuZXh0"
+    "OwogIGlmKCFlIHx8IGUucHggPT0gbnVsbCkgcmV0dXJuICIiOwogIHJldHVybiAnPHNwYW4gY2xhc3M9ImV4dHEiIHRpdGxlPSIn"
+    "ICsgZXNjKGUubGFiIHx8ICIiKSArICcg4oCUIGNoYW5nZSB2cyB0aGUgcmVndWxhciBjbG9zZSI+PGkgc3R5bGU9ImNvbG9yOicK"
+    "ICAgICsgZXNjKGUuaWMgfHwgInZhcigtLW11dCkiKSArICciPicgKyBlc2MoZS5pIHx8ICIiKSArICc8L2k+JwogICAgKyAoZS5z"
+    "ID8gJzxlbT4nICsgZXNjKGUucykgKyAnPC9lbT4nIDogIiIpCiAgICArICc8Yj4nICsgZXNjKGUucHgpICsgJzwvYj48c3BhbiBz"
+    "dHlsZT0iY29sb3I6JwogICAgKyBlc2MoZS5jIHx8ICJ2YXIoLS1tdXQpIikgKyAnIj4nICsgZXNjKGUudCB8fCAiIikgKyAnPC9z"
+    "cGFuPjwvc3Bhbj4nOwp9CgpmdW5jdGlvbiByb3dIVE1MKHIsIGksIG4pewogIGNvbnN0IHN6ID0gUy5vcHRzLmF2IHx8IDI2Owog"
+    "IGNvbnN0IGF2ID0gJzxzcGFuIGNsYXNzPSJhdiIgc3R5bGU9IndpZHRoOicgKyBzeiArICdweDtoZWlnaHQ6JyArIHN6ICsgJ3B4"
+    "O2ZvbnQtc2l6ZTonICsgTWF0aC5tYXgoOSwgTWF0aC5yb3VuZChzeiAqIC4zNCkpCiAgICArICdweDtiYWNrZ3JvdW5kOicgKyBl"
+    "c2Moci5hdmJnIHx8ICIjMjYzMDNGIikgKyAnO2NvbG9yOicgKyBlc2Moci5hdmZnIHx8ICIjQzlEM0UzIikgKyAnIj4nICsgZXNj"
+    "KHIuaW5pIHx8ICI/IikKICAgICsgKHIubG9nbyA/ICc8aW1nIHNyYz0iJyArIGVzYyhyLmxvZ28pICsgJyIgYWx0PSIiIGxvYWRp"
+    "bmc9ImxhenkiIG9uZXJyb3I9InRoaXMucmVtb3ZlKCkiPicgOiAiIikgKyAnPC9zcGFuPic7CiAgY29uc3QgY2VsbHMgPSAoci5j"
+    "ZWxscyB8fCBbXSkuc2xpY2UoMCwgUy52aXMpLm1hcChjID0+ICc8c3BhbiBjbGFzcz0iYyI+JyArIChjLnYgIT0gbnVsbCA/ICc8"
+    "c3BhbicgKyAoYy5jID8gJyBzdHlsZT0iY29sb3I6JyArIGVzYyhjLmMpICsgJyInIDogIiIpCiAgICArIChjLmIgPyAnIGNsYXNz"
+    "PSJzIicgOiAiIikgKyAnPicgKyBlc2MoYy52KSArICc8L3NwYW4+JyA6ICIiKQogICAgKyAoYy5zICE9IG51bGwgPyAnPHNwYW4g"
+    "Y2xhc3M9InMiJyArIChjLnNjID8gJyBzdHlsZT0iY29sb3I6JyArIGVzYyhjLnNjKSArICciJyA6ICIiKSArICc+JyArIGVzYyhj"
+    "LnMpICsgJzwvc3Bhbj4nIDogIiIpCiAgICArICc8L3NwYW4+Jykuam9pbigiIik7CiAgcmV0dXJuICc8bGkgY2xhc3M9InJvdycg"
+    "KyAoci5zZWwgPyAiIHNlbCIgOiAiIikgKyAnIiByb2xlPSJvcHRpb24iIGRhdGEtaWQ9IicgKyBlc2Moci5pZCkgKyAnIiBzdHls"
+    "ZT0iZ3JpZC10ZW1wbGF0ZS1jb2x1bW5zOicKICAgICsgZ3JpZCgpICsgJyI+JwogICAgKyAnPHNwYW4gY2xhc3M9ImgiIHRhYmlu"
+    "ZGV4PSIwIiByb2xlPSJidXR0b24iIGFyaWEtbGFiZWw9Ik1vdmUgJyArIGVzYyhyLnRpdGxlKSArICcgKGRyYWcsIG9yIHVzZSB0"
+    "aGUgYXJyb3cga2V5cykiICcKICAgICsgJ3RpdGxlPSJEcmFnIHRvIHJlb3JkZXIiPuKLruKLrjwvc3Bhbj4nICsgYXYKICAgICsg"
+    "JzxzcGFuIGNsYXNzPSJubSIgdGl0bGU9IicgKyBlc2Moci5zdWIgfHwgIiIpICsgJyI+PGI+JyArIGVzYyhyLnRpdGxlKSArICc8"
+    "L2I+PGk+JyArIGVzYyhyLnN1YiB8fCAiIikgKyAnPC9pPjwvc3Bhbj4nCiAgICArIGNlbGxzCiAgICArIGV4dEhUTUwocikKICAg"
+    "ICsgJzxzcGFuIGNsYXNzPSJhciI+PGJ1dHRvbiBjbGFzcz0idXAiIGFyaWEtbGFiZWw9Ik1vdmUgJyArIGVzYyhyLnRpdGxlKSAr"
+    "ICcgdXAiIHRpdGxlPSJNb3ZlIHVwIicgKyAoaSA9PT0gMCA/ICIgZGlzYWJsZWQiIDogIiIpCiAgICArICc+4oaRPC9idXR0b24+"
+    "PGJ1dHRvbiBjbGFzcz0iZG4iIGFyaWEtbGFiZWw9Ik1vdmUgJyArIGVzYyhyLnRpdGxlKSArICcgZG93biIgdGl0bGU9Ik1vdmUg"
+    "ZG93biInICsgKGkgPT09IG4gLSAxID8gIiBkaXNhYmxlZCIgOiAiIikKICAgICsgJz7ihpM8L2J1dHRvbj48L3NwYW4+JwogICAg"
+    "KyAoUy5vcHRzLnJlbW92YWJsZSA/ICc8YnV0dG9uIGNsYXNzPSJybSIgYXJpYS1sYWJlbD0iUmVtb3ZlICcgKyBlc2Moci50aXRs"
+    "ZSkgKyAnIiB0aXRsZT0iUmVtb3ZlIj7DlzwvYnV0dG9uPicgOiAiIikKICAgICsgJzwvbGk+JzsKfQoKZnVuY3Rpb24gcmVuZGVy"
+    "KCl7CiAgY29uc3Qgcm93cyA9IFMucm93cywgbiA9IHJvd3MubGVuZ3RoOwogIFMudmlzID0gdmlzQ29scygpOwogIGNvbnN0IGhk"
+    "ciA9IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJoZHIiKSwgZW0gPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgiZW1wdHkiKTsK"
+    "ICB3cmFwLmNsYXNzTGlzdC50b2dnbGUoImNsaWNrYWJsZSIsICEhUy5vcHRzLmNsaWNrYWJsZSk7CiAgaWYoUy5vcHRzLmNvbHMg"
+    "JiYgUy5vcHRzLmNvbHMuc29tZShCb29sZWFuKSAmJiBuKXsKICAgIGhkci5oaWRkZW4gPSBmYWxzZTsKICAgIGhkci5zdHlsZS5n"
+    "cmlkVGVtcGxhdGVDb2x1bW5zID0gZ3JpZCgpOwogICAgaGRyLmlubmVySFRNTCA9ICc8c3Bhbj48L3NwYW4+PHNwYW4+PC9zcGFu"
+    "PjxzcGFuPicgKyBlc2MoUy5vcHRzLnRpdGxlX2NvbCB8fCAiIikgKyAnPC9zcGFuPicKICAgICAgKyBTLm9wdHMuY29scy5zbGlj"
+    "ZSgwLCBTLnZpcykubWFwKGMgPT4gJzxzcGFuIHN0eWxlPSJ0ZXh0LWFsaWduOnJpZ2h0Ij4nICsgZXNjKGMpICsgJzwvc3Bhbj4n"
+    "KS5qb2luKCIiKQogICAgICArICc8c3Bhbj48L3NwYW4+JyArIChTLm9wdHMucmVtb3ZhYmxlID8gIjxzcGFuPjwvc3Bhbj4iIDog"
+    "IiIpOwogIH0gZWxzZSBoZHIuaGlkZGVuID0gdHJ1ZTsKICBlbS5oaWRkZW4gPSBuID4gMDsKICBlbS50ZXh0Q29udGVudCA9IFMu"
+    "b3B0cy5lbXB0eSB8fCAiVGhlIGxpc3QgaXMgZW1wdHkuIjsKICBsaXN0LmlubmVySFRNTCA9IHJvd3MubWFwKChyLCBpKSA9PiBy"
+    "b3dIVE1MKHIsIGksIG4pKS5qb2luKCIiKTsKICBmaXQoKTsKfQoKZnVuY3Rpb24gZml0KCl7CiAgY29uc3QgZnVsbCA9IGRvY3Vt"
+    "ZW50LmdldEVsZW1lbnRCeUlkKCJoZHIiKS5vZmZzZXRIZWlnaHQgKyBsaXN0Lm9mZnNldEhlaWdodCArIChTLnJvd3MubGVuZ3Ro"
+    "ID8gMCA6IDQ2KSArIDQ7CiAgY29uc3QgaCA9IE1hdGgubWF4KDQwLCBNYXRoLm1pbihmdWxsLCBTLm9wdHMubWF4X2ggfHwgNDIw"
+    "KSk7CiAgd3JhcC5zdHlsZS5oZWlnaHQgPSBoICsgInB4IjsKICBzdFNlbmQoInN0cmVhbWxpdDpzZXRGcmFtZUhlaWdodCIsIHto"
+    "ZWlnaHQ6IGh9KTsKfQoKZnVuY3Rpb24gb3JkZXIoKXsgcmV0dXJuIFsuLi5saXN0LmNoaWxkcmVuXS5tYXAobGkgPT4gbGkuZGF0"
+    "YXNldC5pZCk7IH0KZnVuY3Rpb24gc2F5KHQpeyBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgibGl2ZSIpLnRleHRDb250ZW50ID0g"
+    "dDsgfQoKLyogdjUuMjogVEFNIGRpemkgdGHFn8SxbWEgKHNwbGljZSkg4oCUIHRha2FzIERFxJ7EsEwuIMOWxJ9lIGVza2kgaW5k"
+    "ZWtzaW5kZW4gw6fEsWthcsSxbMSxciB2ZSB0YW0gaGVkZWYgaW5kZWtzZSBla2xlbmlyOgogICBhcmFkYWtpIMO2xJ9lbGVyIHRh"
+    "bSBiaXIga29udW0ga2F5YXIsIGdlcmkga2FsYW4gaGVya2VzIGfDtnJlbGkgc8SxcmFzxLFuxLEga29ydXIuCiAgIMOWcm4uIFtO"
+    "VkRBLCBBQVBMXSDihpIgQUFQTCBiaXIgeXVrYXLEsTogW0FBUEwsIE5WREFdIMK3IDUuIHPEsXJhZGFuIDEuJ3llOiAx4oCTNCBh"
+    "cmFzxLEgdGFtIGJpciBhxZ9hxJ/EsSBrYXlhci4gKi8KZnVuY3Rpb24gYXJyYXlNb3ZlKGxpc3QsIGZyb21JbmRleCwgdG9JbmRl"
+    "eCl7CiAgY29uc3QgW21vdmVkXSA9IGxpc3Quc3BsaWNlKGZyb21JbmRleCwgMSk7CiAgbGlzdC5zcGxpY2UodG9JbmRleCwgMCwg"
+    "bW92ZWQpOwogIHJldHVybiBsaXN0Owp9CgpmdW5jdGlvbiBjb21taXQocHJldiwgZmxhc2hJZCl7CiAgY29uc3Qgbm93ID0gb3Jk"
+    "ZXIoKTsKICBpZihub3cuam9pbigiXHUwMDAxIikgPT09IHByZXYuam9pbigiXHUwMDAxIikpIHJldHVybjsKICBjb25zdCBieUlk"
+    "ID0ge307IFMucm93cy5mb3JFYWNoKHIgPT4gYnlJZFtyLmlkXSA9IHIpOwogIFMucm93cyA9IG5vdy5tYXAoaWQgPT4gYnlJZFtp"
+    "ZF0pOwogIC8vIFN0cmVhbWxpdCd0ZW4gRVNLxLAgc8SxcmF5bGEgZ2VjaWttacWfIGJpciDDp2l6aW0gZ2VsaXJzZSB5ZW5pIHPE"
+    "sXJhecSxIGdlcmkgYWxtYXPEsW4gKGHFn2HEn8SxZGEgYXBwbHlBcmdzKQogIFMuZ3VhcmQgPSB7cHJldjogcHJldi5qb2luKCJc"
+    "dTAwMDEiKSwgbm93OiBub3cuc2xpY2UoKSwgdW50aWw6IERhdGUubm93KCkgKyA2MDAwfTsKICByZW5kZXIoKTsKICBjb25zdCBs"
+    "aSA9IGxpc3QucXVlcnlTZWxlY3RvcignLnJvd1tkYXRhLWlkPSInICsgQ1NTLmVzY2FwZShmbGFzaElkKSArICciXScpOwogIGlm"
+    "KGxpKXsgbGkuY2xhc3NMaXN0LmFkZCgibW92ZWQiKTsgfQogIHNlbmQoe3Q6ICJvcmRlciIsIG9yZGVyOiBub3csIG1vdmVkOiBm"
+    "bGFzaElkLCBmcm9tOiBwcmV2LmluZGV4T2YoZmxhc2hJZCksIHRvOiBub3cuaW5kZXhPZihmbGFzaElkKX0pOwogIHNheShmbGFz"
+    "aElkICsgIiBtb3ZlZCB0byBwb3NpdGlvbiAiICsgKG5vdy5pbmRleE9mKGZsYXNoSWQpICsgMSkpOwp9CgpmdW5jdGlvbiByZW9y"
+    "ZGVyRG9tKG5leHQpewogIGNvbnN0IGJ5SWQgPSB7fTsgWy4uLmxpc3QuY2hpbGRyZW5dLmZvckVhY2gobGkgPT4gYnlJZFtsaS5k"
+    "YXRhc2V0LmlkXSA9IGxpKTsKICBuZXh0LmZvckVhY2goeCA9PiBsaXN0LmFwcGVuZENoaWxkKGJ5SWRbeF0pKTsKfQoKZnVuY3Rp"
+    "b24gbW92ZShpLCBqKXsgICAgICAgICAgICAgICAgICAgICAgIC8vIOKGkSAvIOKGkyAvIGtsYXZ5ZTogaSDihpIgaiAoaW5kZWtz"
+    "KSwgYXluxLEgc3BsaWNlIGt1cmFsxLEKICBjb25zdCBwcmV2ID0gb3JkZXIoKTsKICBpZihqIDwgMCB8fCBqID49IHByZXYubGVu"
+    "Z3RoIHx8IGkgPT09IGopIHJldHVybjsKICBjb25zdCBpZCA9IHByZXZbaV07CiAgcmVvcmRlckRvbShhcnJheU1vdmUocHJldi5z"
+    "bGljZSgpLCBpLCBqKSk7CiAgY29tbWl0KHByZXYsIGlkKTsKICBjb25zdCBoID0gbGlzdC5xdWVyeVNlbGVjdG9yKCcucm93W2Rh"
+    "dGEtaWQ9IicgKyBDU1MuZXNjYXBlKGlkKSArICciXSAuaCcpOyBpZihoKSBoLmZvY3VzKHtwcmV2ZW50U2Nyb2xsOiBmYWxzZX0p"
+    "Owp9CgovKiAtLS0tIHPDvHLDvGtsZS1ixLFyYWs6IHNhdMSxcsSxbiBIRVJIQU5HxLAgYmlyIHllcmluZGVuIChsb2dvLCBhZCwg"
+    "Zml5YXQpIC0tLS0KICAgZmFyZTogNiBweCBkaWtleSBoYXJla2V0bGUgYmHFn2xhciAodMSxa2xhbWEgImHDpyIgb2xhcmFrIGth"
+    "bMSxcikgwrcg4ouu4ouuIHR1dGFtYWPEsTogYW7EsW5kYQogICBkb2t1bm1hdGlrIC8ga2FsZW06IDMwMCBtcyBiYXPEsWzEsSB0"
+    "dXQgKGtheWTEsXJtYSBzZXJiZXN0IGthbMSxciksIHNvbnJhIHPDvHLDvGtsZSAqLwpjb25zdCBIT0xEX01TID0gMzAwLCBNT1VT"
+    "RV9TTE9QID0gNiwgVE9VQ0hfU0xPUCA9IDEwOwpTLnBlbmQgPSBudWxsOyBTLmp1c3REcmFnZ2VkID0gMDsKCi8qIGltbGVjaW4g"
+    "bGlzdGUgacOnZXJpxJ9pbmRla2kgeSBrb251bXUgKGxpc3RlIGtheWTEsXLEsWxtxLHFnyBvbHNhIGRhIGRvxJ9ydSkgKi8KZnVu"
+    "Y3Rpb24gY29udGVudFkoY2xpZW50WSl7IHJldHVybiBjbGllbnRZIC0gbGlzdC5nZXRCb3VuZGluZ0NsaWVudFJlY3QoKS50b3A7"
+    "IH0KCi8qIGhlZGVmIGluZGVrcyA9IGltbGVjaW4gQUxUSU5EQUvEsCBzYXTEsXIuIFNhdMSxcmxhciBzw7xyw7xrbGVtZSBib3l1"
+    "bmNhIHllcmluZGUgZHVydXIgKGtheWTEsXJtYSBhbmltYXN5b251IHlvayksCiAgIHlhbmkgZWtyYW5kYSDDvHplcmluZSBnZWxp"
+    "bmVuIHNhdMSxciBpbGUgaGVzYXBsYW5hbiBoZWRlZiBoZXIgemFtYW4gYXluxLFkxLFyLiDDnHN0dGUg4oaSIDAsIGFsdHRhIOKG"
+    "kiBzb24uICovCmZ1bmN0aW9uIHRhcmdldEluZGV4KGN5KXsKICBjb25zdCByb3dzID0gUy5kcmFnLnJvd3M7IGxldCB0byA9IDA7"
+    "CiAgZm9yKGxldCBrID0gMDsgayA8IHJvd3MubGVuZ3RoOyBrKyspeyBpZihjeSA+PSByb3dzW2tdLm9mZnNldFRvcCkgdG8gPSBr"
+    "OyBlbHNlIGJyZWFrOyB9CiAgcmV0dXJuIHRvOwp9CgpmdW5jdGlvbiBzdGFydERyYWcobGksIGNhcEVsLCBlKXsKICBjb25zdCBy"
+    "b3dzID0gWy4uLmxpc3QuY2hpbGRyZW5dLCBmcm9tID0gcm93cy5pbmRleE9mKGxpKTsKICB0cnl7IGNhcEVsLnNldFBvaW50ZXJD"
+    "YXB0dXJlKGUucG9pbnRlcklkKTsgfWNhdGNoKF8peyB9CiAgY29uc3QgZyA9IGxpLmNsb25lTm9kZSh0cnVlKTsgICAgICAgICAg"
+    "ICAgICAgICAgICAgICAgICAgICAgICAgLy8gaW1sZWNpIGl6bGV5ZW4gaGF5YWxldAogIGcuY2xhc3NMaXN0LnJlbW92ZSgic2Vs"
+    "IiwgIm1vdmVkIik7IGcuY2xhc3NMaXN0LmFkZCgiZ2hvc3QiKTsKICBnLnJlbW92ZUF0dHJpYnV0ZSgicm9sZSIpOyBnLnNldEF0"
+    "dHJpYnV0ZSgiYXJpYS1oaWRkZW4iLCAidHJ1ZSIpOwogIGcucXVlcnlTZWxlY3RvckFsbCgiYnV0dG9uLFt0YWJpbmRleF0iKS5m"
+    "b3JFYWNoKHggPT4geC5zZXRBdHRyaWJ1dGUoInRhYmluZGV4IiwgIi0xIikpOwogIGNvbnN0IGxuID0gZG9jdW1lbnQuY3JlYXRl"
+    "RWxlbWVudCgiZGl2Iik7ICAgICAgICAgICAgICAgICAgICAgIC8vIGVrbGVtZSDDp2l6Z2lzaSArIHllbmkgc8SxcmEgbnVtYXJh"
+    "c8SxCiAgbG4uY2xhc3NOYW1lID0gImRyb3BsaW5lIjsgbG4uaGlkZGVuID0gdHJ1ZTsgbG4uaW5uZXJIVE1MID0gJzxzcGFuIGNs"
+    "YXNzPSJkbC1uIj48L3NwYW4+JzsKICB3cmFwLmFwcGVuZENoaWxkKGcpOyB3cmFwLmFwcGVuZENoaWxkKGxuKTsKICBTLmRyYWcg"
+    "PSB7bGk6IGxpLCBpZDogbGkuZGF0YXNldC5pZCwgZnJvbTogZnJvbSwgdG86IGZyb20sIGxhc3RUbzogZnJvbSwgcm93czogcm93"
+    "cywgcHJldjogb3JkZXIoKSwKICAgICAgICAgICAgZ2hvc3Q6IGcsIGxpbmU6IGxuLCBjeTA6IGNvbnRlbnRZKGUuY2xpZW50WSks"
+    "IHRvcDA6IGxpLm9mZnNldFRvcCwgaDogbGkub2Zmc2V0SGVpZ2h0LAogICAgICAgICAgICB5OiBlLmNsaWVudFksIHJhZjogMH07"
+    "CiAgbGkuY2xhc3NMaXN0LmFkZCgic3JjIik7IHdyYXAuY2xhc3NMaXN0LmFkZCgiZHJhZ2dpbmciKTsKICBwbGFjZSgpOwogIFMu"
+    "ZHJhZy5yYWYgPSByZXF1ZXN0QW5pbWF0aW9uRnJhbWUoZWRnZVNjcm9sbCk7CiAgc2F5KCJNb3ZpbmcgIiArIGxpLmRhdGFzZXQu"
+    "aWQgKyAiIOKAlCByZWxlYXNlIHRvIGRyb3AsIEVzY2FwZSB0byBjYW5jZWwiKTsKfQoKLyogaGF5YWxldGkgaW1sZWNlIGfDtnJl"
+    "IHllcmxlxZ90aXIsIGhlZGVmaSBoZXNhcGxhLCBla2xlbWUgw6dpemdpc2luaSBoZWRlZiBhcmFsxLHEn2Ega295ICovCmZ1bmN0"
+    "aW9uIHBsYWNlKCl7CiAgY29uc3QgZCA9IFMuZHJhZzsgaWYoIWQpIHJldHVybjsKICBjb25zdCBjeSA9IGNvbnRlbnRZKGQueSks"
+    "IGxvID0gbGlzdC5vZmZzZXRUb3A7CiAgbGV0IHRvcCA9IGQudG9wMCArIChjeSAtIGQuY3kwKTsgICAgICAgICAgICAgICAgICAg"
+    "ICAgICAgICAgICAgLy8gdHV0dWxhbiBub2t0YSBrb3J1bnVyCiAgdG9wID0gTWF0aC5tYXgoLWQuaCAqIDAuNSwgTWF0aC5taW4o"
+    "bGlzdC5vZmZzZXRIZWlnaHQgLSBkLmggKiAwLjUsIHRvcCkpOwogIGQuZ2hvc3Quc3R5bGUudHJhbnNmb3JtID0gInRyYW5zbGF0"
+    "ZVkoIiArIChsbyArIHRvcCkgKyAicHgpIjsKICBjb25zdCB0byA9IHRhcmdldEluZGV4KGN5KTsKICBkLnRvID0gdG87CiAgaWYo"
+    "dG8gPT09IGQuZnJvbSl7CiAgICBkLmxpbmUuaGlkZGVuID0gdHJ1ZTsgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    "ICAgICAgLy8ga2VuZGkgeWVyaW5kZSDihpIgZGXEn2nFn2lrbGlrIHlvawogIH0gZWxzZSB7CiAgICBjb25zdCByID0gZC5yb3dz"
+    "W3RvXTsKICAgIC8vIHl1a2FyxLEgdGHFn8SxbWE6IGhlZGVmIHNhdMSxcsSxbiDDnFNUw5xORSDCtyBhxZ9hxJ/EsSB0YcWfxLFt"
+    "YTogaGVkZWYgc2F0xLFyxLFuIEFMVElOQQogICAgY29uc3QgeSA9IHRvIDwgZC5mcm9tID8gci5vZmZzZXRUb3AgOiByLm9mZnNl"
+    "dFRvcCArIHIub2Zmc2V0SGVpZ2h0OwogICAgY29uc3QgeXkgPSBNYXRoLm1heCgxLCBNYXRoLm1pbih3cmFwLnNjcm9sbEhlaWdo"
+    "dCAtIDEsIGxvICsgeSkpOwogICAgZC5saW5lLmhpZGRlbiA9IGZhbHNlOwogICAgZC5saW5lLnN0eWxlLnRyYW5zZm9ybSA9ICJ0"
+    "cmFuc2xhdGVZKCIgKyAoeXkgLSAxKSArICJweCkiOwogICAgZC5saW5lLmNsYXNzTGlzdC50b2dnbGUoInRvcCIsIHl5IDwgMTEp"
+    "OyAgICAgICAgICAgICAgICAgICAgIC8vIG51bWFyYSBrZW5hcmRhIGtlc2lsbWVzaW4g4oaSIGnDp2Uga2F0bGEKICAgIGQubGlu"
+    "ZS5jbGFzc0xpc3QudG9nZ2xlKCJib3QiLCB5eSA+IHdyYXAuc2Nyb2xsSGVpZ2h0IC0gMTEpOwogICAgZC5saW5lLmZpcnN0Q2hp"
+    "bGQudGV4dENvbnRlbnQgPSBTdHJpbmcodG8gKyAxKTsKICB9CiAgaWYodG8gIT09IGQubGFzdFRvKXsKICAgIGQubGFzdFRvID0g"
+    "dG87CiAgICBzYXkodG8gPT09IGQuZnJvbSA/ICJCYWNrIGF0IGl0cyBwbGFjZSIgOiAiRHJvcCBhdCBwb3NpdGlvbiAiICsgKHRv"
+    "ICsgMSkpOwogIH0KfQoKLyoga2VuYXJhIHlha2xhxZ/EsW5jYSAoaW1sZcOnIGR1cnNhIGJpbGUpIHl1bXXFn2FrIG90b21hdGlr"
+    "IGtheWTEsXJtYSDigJQgemFtYW5hIGJhxJ9sxLEsIGthcmUgaMSxesSxbmRhbiBiYcSfxLFtc8SxejoKICAga2VuYXJhIG5lIGth"
+    "ZGFyIHlha8SxbnNhIG8ga2FkYXIgaMSxemzEsSAoa2VuYXLEsW4gZMSxxZ/EsW5kYSBlbiBmYXpsYSB+MTMwMCBweC9zKSAqLwpm"
+    "dW5jdGlvbiBlZGdlU2Nyb2xsKHRzKXsKICBjb25zdCBkID0gUy5kcmFnOyBpZighZCkgcmV0dXJuOwogIGNvbnN0IGR0ID0gZC50"
+    "cyA/IE1hdGgubWluKDUwLCB0cyAtIGQudHMpIDogMTY7IGQudHMgPSB0czsKICBpZih3cmFwLnNjcm9sbEhlaWdodCA+IHdyYXAu"
+    "Y2xpZW50SGVpZ2h0ICsgMSl7CiAgICBjb25zdCB3ciA9IHdyYXAuZ2V0Qm91bmRpbmdDbGllbnRSZWN0KCksIFogPSAyODsKICAg"
+    "IGxldCBwcm94ID0gMDsKICAgIGlmKGQueSA8IHdyLnRvcCArIFopIHByb3ggPSAtTWF0aC5taW4oMS41LCAod3IudG9wICsgWiAt"
+    "IGQueSkgLyBaKTsKICAgIGVsc2UgaWYoZC55ID4gd3IuYm90dG9tIC0gWikgcHJveCA9IE1hdGgubWluKDEuNSwgKGQueSAtICh3"
+    "ci5ib3R0b20gLSBaKSkgLyBaKTsKICAgIGlmKHByb3gpewogICAgICBkLmFjYyA9IChkLmFjYyB8fCAwKSArIHByb3ggKiAwLjkg"
+    "KiBkdDsgICAgICAgICAgICAgICAgICAgIC8vIHB4IGJpcmlraW1pIChhbHQtcGlrc2VsIGtheWJvbG1hc8SxbikKICAgICAgY29u"
+    "c3Qgc3RlcCA9IGQuYWNjID4gMCA/IE1hdGguZmxvb3IoZC5hY2MpIDogTWF0aC5jZWlsKGQuYWNjKTsKICAgICAgaWYoc3RlcCl7"
+    "IGQuYWNjIC09IHN0ZXA7IGNvbnN0IHMwID0gd3JhcC5zY3JvbGxUb3A7IHdyYXAuc2Nyb2xsVG9wICs9IHN0ZXA7IGlmKHdyYXAu"
+    "c2Nyb2xsVG9wICE9PSBzMCkgcGxhY2UoKTsgfQogICAgfSBlbHNlIGQuYWNjID0gMDsKICB9CiAgZC5yYWYgPSByZXF1ZXN0QW5p"
+    "bWF0aW9uRnJhbWUoZWRnZVNjcm9sbCk7Cn0KZnVuY3Rpb24gY2xlYXJQZW5kKCl7IGNvbnN0IHAgPSBTLnBlbmQ7IGlmKHAgJiYg"
+    "cC50aW1lcikgY2xlYXJUaW1lb3V0KHAudGltZXIpOyBTLnBlbmQgPSBudWxsOyB9CgpsaXN0LmFkZEV2ZW50TGlzdGVuZXIoInBv"
+    "aW50ZXJkb3duIiwgZnVuY3Rpb24oZSl7CiAgaWYoZS5idXR0b24gPiAwIHx8IFMuZHJhZykgcmV0dXJuOwogIGlmKGUudGFyZ2V0"
+    "LmNsb3Nlc3QoIi5hciwucm0iKSkgcmV0dXJuOyAgICAgICAgICAgICAgICAgICAgICAvLyBva2xhciB2ZSDDlyBzw7xyw7xrbGVt"
+    "ZSBiYcWfbGF0bWF6CiAgY29uc3QgbGkgPSBlLnRhcmdldC5jbG9zZXN0KCIucm93Iik7IGlmKCFsaSkgcmV0dXJuOwogIGNvbnN0"
+    "IGggPSBlLnRhcmdldC5jbG9zZXN0KCIuaCIpOwogIGlmKGgpeyBlLnByZXZlbnREZWZhdWx0KCk7IHN0YXJ0RHJhZyhsaSwgaCwg"
+    "ZSk7IHJldHVybjsgfSAgICAvLyB0dXRhbWHDpzogYW7EsW5kYQogIGNvbnN0IHRvdWNoID0gZS5wb2ludGVyVHlwZSAhPT0gIm1v"
+    "dXNlIjsKICBjb25zdCBwID0ge2xpOiBsaSwgeDA6IGUuY2xpZW50WCwgeTA6IGUuY2xpZW50WSwgZXY6IHtwb2ludGVySWQ6IGUu"
+    "cG9pbnRlcklkLCBjbGllbnRZOiBlLmNsaWVudFl9LCB0aW1lcjogbnVsbH07CiAgaWYodG91Y2gpIHAudGltZXIgPSBzZXRUaW1l"
+    "b3V0KGZ1bmN0aW9uKCl7ICAgICAgICAgICAgICAgICAgIC8vIGJhc8SxbMSxIHR1dCDihpIgc8O8csO8a2xlCiAgICBpZihTLnBl"
+    "bmQgPT09IHAgJiYgIVMuZHJhZyl7IFMucGVuZCA9IG51bGw7IHN0YXJ0RHJhZyhwLmxpLCBwLmxpLCBwLmV2KTsgfSB9LCBIT0xE"
+    "X01TKTsKICBTLnBlbmQgPSBwOyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIGZh"
+    "cmU6IGhhcmVrZXQgZcWfacSfaW5pIGJla2xlCn0pOwpkb2N1bWVudC5hZGRFdmVudExpc3RlbmVyKCJ0b3VjaG1vdmUiLCBmdW5j"
+    "dGlvbihlKXsgaWYoUy5kcmFnKSBlLnByZXZlbnREZWZhdWx0KCk7IH0sIHtwYXNzaXZlOiBmYWxzZX0pOwoKbGlzdC5hZGRFdmVu"
+    "dExpc3RlbmVyKCJwb2ludGVybW92ZSIsIGZ1bmN0aW9uKGUpewogIGNvbnN0IHAgPSBTLnBlbmQ7CiAgaWYocCAmJiAhUy5kcmFn"
+    "KXsKICAgIGNvbnN0IGR4ID0gTWF0aC5hYnMoZS5jbGllbnRYIC0gcC54MCksIGR5ID0gTWF0aC5hYnMoZS5jbGllbnRZIC0gcC55"
+    "MCk7CiAgICBpZihlLnBvaW50ZXJUeXBlID09PSAibW91c2UiKXsKICAgICAgaWYoZHkgPiBNT1VTRV9TTE9QICYmIGR5ID4gZHgp"
+    "eyBjbGVhclBlbmQoKTsgc3RhcnREcmFnKHAubGksIHAubGksIHtwb2ludGVySWQ6IGUucG9pbnRlcklkLCBjbGllbnRZOiBwLnkw"
+    "fSk7IH0KICAgICAgZWxzZSBpZihkeCA+IDE0KSBjbGVhclBlbmQoKTsKICAgIH0gZWxzZSBpZihkeCA+IFRPVUNIX1NMT1AgfHwg"
+    "ZHkgPiBUT1VDSF9TTE9QKSBjbGVhclBlbmQoKTsgLy8gcGFybWFrIGtheWTEsXLEsXlvciDihpIgbm9ybWFsIHNjcm9sbAogIH0K"
+    "ICBjb25zdCBkID0gUy5kcmFnOyBpZighZCkgcmV0dXJuOwogIGQueSA9IGUuY2xpZW50WTsKICBwbGFjZSgpOwp9KTsKZnVuY3Rp"
+    "b24gZW5kRHJhZyhjYW5jZWwpewogIGNsZWFyUGVuZCgpOwogIGNvbnN0IGQgPSBTLmRyYWc7IGlmKCFkKSByZXR1cm47CiAgUy5k"
+    "cmFnID0gbnVsbDsKICBjYW5jZWxBbmltYXRpb25GcmFtZShkLnJhZik7CiAgZC5naG9zdC5yZW1vdmUoKTsgZC5saW5lLnJlbW92"
+    "ZSgpOwogIGQubGkuY2xhc3NMaXN0LnJlbW92ZSgic3JjIik7IHdyYXAuY2xhc3NMaXN0LnJlbW92ZSgiZHJhZ2dpbmciKTsKICBj"
+    "b25zdCB0byA9IGNhbmNlbCA9PT0gdHJ1ZSA/IGQuZnJvbSA6IGQudG87CiAgY29uc3Qgc3Rhc2ggPSBTLnN0YXNoOyBTLnN0YXNo"
+    "ID0gbnVsbDsKICBpZih0byAhPT0gZC5mcm9tKXsKICAgIFMuanVzdERyYWdnZWQgPSBEYXRlLm5vdygpOyAgICAgICAgICAgICAg"
+    "ICAgICAgICAgICAgICAgICAgICAvLyBoZW1lbiBhcmTEsW5kYW4gZ2VsZW4gY2xpY2sgImHDpyIgc2F5bWFzxLFuCiAgICBpZihz"
+    "dGFzaCl7ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gc8O8csO8a2xlcmtlbiBn"
+    "ZWxlbiB0YXplIHZlcmkgKGZpeWF0bGFyKSDigJQgc8SxcmEgeWVyZWwga2FsxLFyCiAgICAgIFMub3B0cyA9IHN0YXNoLm9wdHMg"
+    "fHwgUy5vcHRzOwogICAgICBjb25zdCBieSA9IHt9OyAoc3Rhc2gucm93cyB8fCBbXSkuZm9yRWFjaChyID0+IHsgaWYociAmJiBy"
+    "LmlkICE9IG51bGwpIGJ5W3IuaWRdID0gcjsgfSk7CiAgICAgIFMucm93cyA9IFMucm93cy5tYXAociA9PiBieVtyLmlkXSB8fCBy"
+    "KTsKICAgIH0KICAgIHJlb3JkZXJEb20oYXJyYXlNb3ZlKGQucHJldi5zbGljZSgpLCBkLmZyb20sIHRvKSk7ICAgICAgICAgICAv"
+    "LyB0YW0gc3BsaWNlOiDDp8Sxa2FyIOKGkiBoZWRlZmUgZWtsZQogICAgY29tbWl0KGQucHJldiwgZC5pZCk7CiAgfSBlbHNlIHsK"
+    "ICAgIGlmKGNhbmNlbCA9PT0gdHJ1ZSkgc2F5KCJNb3ZlIGNhbmNlbGxlZCIpOwogICAgaWYoc3Rhc2gpIGFwcGx5QXJncyhzdGFz"
+    "aCk7CiAgfQp9Cmxpc3QuYWRkRXZlbnRMaXN0ZW5lcigicG9pbnRlcnVwIiwgZW5kRHJhZyk7Cmxpc3QuYWRkRXZlbnRMaXN0ZW5l"
+    "cigicG9pbnRlcmNhbmNlbCIsIGZ1bmN0aW9uKCl7IGVuZERyYWcodHJ1ZSk7IH0pOyAgIC8vIHRhcmF5xLFjxLEgaGFyZWtldGkg"
+    "ZGV2cmFsZMSxIOKGkiBpcHRhbApsaXN0LmFkZEV2ZW50TGlzdGVuZXIoImxvc3Rwb2ludGVyY2FwdHVyZSIsIGVuZERyYWcpOwpk"
+    "b2N1bWVudC5hZGRFdmVudExpc3RlbmVyKCJrZXlkb3duIiwgZnVuY3Rpb24oZSl7CiAgaWYoUy5kcmFnICYmIGUua2V5ID09PSAi"
+    "RXNjYXBlIil7IGUucHJldmVudERlZmF1bHQoKTsgZW5kRHJhZyh0cnVlKTsgfQp9KTsKCi8qIC0tLS0gdMSxa2xhbWFsYXIgKyBr"
+    "bGF2eWUgLS0tLSAqLwpsaXN0LmFkZEV2ZW50TGlzdGVuZXIoImNsaWNrIiwgZnVuY3Rpb24oZSl7CiAgY29uc3QgbGkgPSBlLnRh"
+    "cmdldC5jbG9zZXN0KCIucm93Iik7IGlmKCFsaSkgcmV0dXJuOwogIGNvbnN0IGkgPSBbLi4ubGlzdC5jaGlsZHJlbl0uaW5kZXhP"
+    "ZihsaSk7CiAgaWYoZS50YXJnZXQuY2xvc2VzdCgiLnVwIikpIHJldHVybiBtb3ZlKGksIGkgLSAxKTsKICBpZihlLnRhcmdldC5j"
+    "bG9zZXN0KCIuZG4iKSkgcmV0dXJuIG1vdmUoaSwgaSArIDEpOwogIGlmKGUudGFyZ2V0LmNsb3Nlc3QoIi5ybSIpKSByZXR1cm4g"
+    "c2VuZCh7dDogInJlbW92ZSIsIGlkOiBsaS5kYXRhc2V0LmlkfSk7CiAgaWYoRGF0ZS5ub3coKSAtIFMuanVzdERyYWdnZWQgPCA0"
+    "MDApIHJldHVybjsgICAgICAgICAgICAgICAvLyBzw7xyw7xrbGVtZSBzb25yYXPEsSB0xLFrbGFtYSBkZcSfaWwKICBpZihTLm9w"
+    "dHMuY2xpY2thYmxlICYmIGUudGFyZ2V0LmNsb3Nlc3QoIi5ubSwuYXYsLmMsLmV4dHEiKSkgc2VuZCh7dDogIm9wZW4iLCBpZDog"
+    "bGkuZGF0YXNldC5pZH0pOwp9KTsKbGlzdC5hZGRFdmVudExpc3RlbmVyKCJrZXlkb3duIiwgZnVuY3Rpb24oZSl7CiAgY29uc3Qg"
+    "aCA9IGUudGFyZ2V0LmNsb3Nlc3QoIi5oIik7IGlmKCFoKSByZXR1cm47CiAgY29uc3QgbGkgPSBoLmNsb3Nlc3QoIi5yb3ciKTsg"
+    "Y29uc3QgaSA9IFsuLi5saXN0LmNoaWxkcmVuXS5pbmRleE9mKGxpKTsKICBpZihlLmtleSA9PT0gIkFycm93VXAiKXsgZS5wcmV2"
+    "ZW50RGVmYXVsdCgpOyBtb3ZlKGksIGkgLSAxKTsgfQogIGVsc2UgaWYoZS5rZXkgPT09ICJBcnJvd0Rvd24iKXsgZS5wcmV2ZW50"
+    "RGVmYXVsdCgpOyBtb3ZlKGksIGkgKyAxKTsgfQogIGVsc2UgaWYoZS5rZXkgPT09ICJIb21lIil7IGUucHJldmVudERlZmF1bHQo"
+    "KTsgbW92ZShpLCAwKTsgfQogIGVsc2UgaWYoZS5rZXkgPT09ICJFbmQiKXsgZS5wcmV2ZW50RGVmYXVsdCgpOyBtb3ZlKGksIGxp"
+    "c3QuY2hpbGRyZW4ubGVuZ3RoIC0gMSk7IH0KfSk7CgpmdW5jdGlvbiBhcHBseUFyZ3MoYSl7CiAgZG9jdW1lbnQuZG9jdW1lbnRF"
+    "bGVtZW50LmNsYXNzTGlzdC50b2dnbGUoImxpZ2h0IiwgISFhLmxpZ2h0KTsKICBpZihhLmFjY2VudCkgZG9jdW1lbnQuZG9jdW1l"
+    "bnRFbGVtZW50LnN0eWxlLnNldFByb3BlcnR5KCItLWFjYyIsIGEuYWNjZW50KTsKICBpZihTLmRyYWcpeyBTLnN0YXNoID0gYTsg"
+    "cmV0dXJuOyB9ICAgICAgICAgICAgICAgICAgICAvLyBzw7xyw7xrbGVtZSBzw7xyZXJrZW4gw6dpem1lIOKAlCBiaXRpbmNlIHV5"
+    "Z3VsYQogIFMub3B0cyA9IGEub3B0cyB8fCB7fTsKICBsZXQgcm93cyA9IChhLnJvd3MgfHwgW10pLmZpbHRlcihyID0+IHIgJiYg"
+    "ci5pZCAhPSBudWxsKTsKICBjb25zdCBnID0gUy5ndWFyZDsKICBpZihnKXsgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    "ICAgICAgICAgICAgICAgICAvLyB0YcWfxLFtYWRhbiBoZW1lbiBzb25yYSBlc2tpIHPEsXJheWxhIGdlbGVuIMOnaXppbQogICAg"
+    "Y29uc3QgaWRzID0gcm93cy5tYXAociA9PiByLmlkKS5qb2luKCJcdTAwMDEiKTsKICAgIGlmKERhdGUubm93KCkgPCBnLnVudGls"
+    "ICYmIGlkcyA9PT0gZy5wcmV2KXsKICAgICAgY29uc3QgYnkgPSB7fTsgcm93cy5mb3JFYWNoKHIgPT4gYnlbci5pZF0gPSByKTsK"
+    "ICAgICAgcm93cyA9IGcubm93Lm1hcChpZCA9PiBieVtpZF0pLmZpbHRlcihCb29sZWFuKTsgICAvLyB2ZXJpIHRhemUsIHPEsXJh"
+    "IHllbmkga2FsxLFyCiAgICB9IGVsc2UgUy5ndWFyZCA9IG51bGw7ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8geWVu"
+    "aSBzxLFyYSAoeWEgZGEgYmHFn2thIGRlxJ9pxZ9pa2xpaykgZ2VsZGkKICB9CiAgUy5yb3dzID0gcm93czsKICByZW5kZXIoKTsK"
+    "fQp3aW5kb3cuYWRkRXZlbnRMaXN0ZW5lcigibWVzc2FnZSIsIGZ1bmN0aW9uKGUpewogIGNvbnN0IGQgPSBlLmRhdGEgfHwge307"
+    "CiAgaWYoZC50eXBlID09PSAic3RyZWFtbGl0OnJlbmRlciIpIGFwcGx5QXJncyhkLmFyZ3MgfHwge30pOwp9KTsKbmV3IFJlc2l6"
+    "ZU9ic2VydmVyKGZpdCkub2JzZXJ2ZShsaXN0KTsKbmV3IFJlc2l6ZU9ic2VydmVyKGZ1bmN0aW9uKCl7IGlmKCFTLmRyYWcgJiYg"
+    "Uy5vcHRzLmNvbHMgJiYgdmlzQ29scygpICE9PSBTLnZpcykgcmVuZGVyKCk7IH0pLm9ic2VydmUoZG9jdW1lbnQuZG9jdW1lbnRF"
+    "bGVtZW50KTsKaWYod2luZG93Ll9fUExJU1RfQVJHU19fKSBhcHBseUFyZ3Mod2luZG93Ll9fUExJU1RfQVJHU19fKTsgICAgICAg"
+    "Ly8geWFsbsSxemNhIMO2bml6bGVtZSAvIHRlc3QKZWxzZSBpZihpblN0cmVhbWxpdCkgc3RTZW5kKCJzdHJlYW1saXQ6Y29tcG9u"
+    "ZW50UmVhZHkiLCB7YXBpVmVyc2lvbjogMX0pOwp3aW5kb3cuUExJU1QgPSB7UzogUywgbW92ZTogbW92ZSwgb3JkZXI6IG9yZGVy"
+    "LCBhcHBseUFyZ3M6IGFwcGx5QXJncywgc2VudDogKCkgPT4gUy5zZW50LCBhcnJheU1vdmU6IGFycmF5TW92ZX07Cjwvc2NyaXB0"
+    "Pgo8L2JvZHk+CjwvaHRtbD4K"
+)
+
+
+def _ver_tuple(v):
+    """'5.2' → (5, 2); okunamazsa (0,)."""
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except (TypeError, ValueError):
+        return (0,)
+
+
+def _list_version(head):
+    m = re.search(r'name="pulse-list"\s+content="([^"]+)"', head or "")
+    return m.group(1) if m else "0"
+
+
+def list_versions():
+    """(gömülü sürüm, klasördeki sürüm ya da None) — ör. ('5.2', '5.0')."""
+    emb = _list_version(base64.b64decode(_LIST_B64)[:600].decode("utf-8", "ignore")) if _LIST_B64 else None
+    try:
+        with open(_LIST_INDEX, encoding="utf-8") as fh:
+            disk = _list_version(fh.read(600))
+    except OSError:
+        disk = None
+    return emb, disk
+
+
+@st.cache_resource(show_spinner=False)
+def _list_component():
+    """v5.2: klasördeki pulse_list/index.html yalnızca gömülü kopyadan ESKİ değilse kullanılır. Repoda eski bir
+    dosya kalmışsa (ör. 5.0) yeni sürükle-bırak yine de devrede olur — gömülü kopya geçici klasöre yazılır."""
+    emb, disk = list_versions()
+    d = _LIST_DIR
+    if (disk is None or (emb and _ver_tuple(disk) < _ver_tuple(emb))) and not _LIST_B64:
+        if disk is None:
+            return None
+    elif disk is None or (emb and _ver_tuple(disk) < _ver_tuple(emb)):
         try:
-            prefs = notify_prefs(profile_get(email))
-            an = acct.get("name") or "Demo account"
-            if prefs.get("on") and prefs.get("bot"):
-                for e in events:
-                    if e["kind"] == "breach":
-                        deliver(email, prefs, "bot", f'ACCOUNT BREACHED — demo account “{an}”',
-                                f'{"Weekly" if e["period"] == "week" else "Monthly"} loss {e["loss"]:.2f} reached the '
-                                f'limit {e["limit"]:.2f}. All bots are paused and manual trading is blocked until you '
-                                f'raise or switch off the limit, or reset the account.', tags=["rotating_light"],
-                                priority=4)
-                        continue
-                    if e["kind"] == "limit":               # v5.5: bekleyen limit emri doldu
-                        title = f'Limit order filled: {e["side"]} {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
-                        body = f'Your limit of {e["limit"]:g} was reached. Demo account “{an}”.'
-                        deliver(email, prefs, "bot", title, body, sym=e["sym"], tags=["white_check_mark"],
-                                priority=3)
-                        continue
-                    if e["kind"] == "buy":
-                        title = f'{e["bot"]}: bought {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
-                        body = (f'{e["reason"]}. Stop {e["stop"]:.2f} · '
-                                + (f'TP1 {e["tp1"]:.2f}' if e.get("tp1") else "no target (trailing stop)")
-                                + f'. Demo account “{an}”.')
-                    else:
-                        title = f'{e["bot"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
-                        body = f'{e["reason"]}. Result {e["pnl"]:+.2f}. Demo account “{an}”.'
-                    deliver(email, prefs, "bot", title, body, sym=e["sym"],
-                            tags=["robot"], priority=3)
-        except Exception as ex:
-            _MON["err"] = f"bot notify: {type(ex).__name__}: {ex}"[:200]
-    return n
-
-
-_BUZZ = {"i": 0, "last": {}}
-BUZZ_PER_TICK = 2            # her turda kaç izleme listesi hissesi taranır (sırayla, kaynaklara yük bindirmeden)
-
-
-def check_buzz(md, state, users):
-    """v4.2: izleme listelerindeki hisselerin haber + topluluk nabzını arka planda sırayla tarar (sayfalar sıcak
-    önbellekle açılır) ve hype "Viral" olduğunda isteyen kullanıcılara bir kez haber verir."""
-    if not hasattr(md, "get_market_pulse"):
-        return 0
-    syms = []
-    for email, prof, prefs in users:
-        for s_ in (prof.get("watchlist") or [])[:40]:
-            if s_ and not any(c in s_ for c in "=^") and not s_.endswith("-USD") and s_ not in syms:
-                syms.append(s_)
-    if not syms:
-        return 0
-    n = 0
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    for _ in range(min(BUZZ_PER_TICK, len(syms))):
-        sym = syms[_BUZZ["i"] % len(syms)]
-        _BUZZ["i"] += 1
-        try:
-            mp = md.get_market_pulse(sym)
-        except Exception as ex:
-            _MON["err"] = f"check_buzz: {type(ex).__name__}: {ex}"[:200]
-            continue
-        hy = mp.get("hype") or {}
-        _BUZZ["last"][sym] = (time.time(), hy.get("score"), (mp.get("overall") or {}).get("label"))
-        if hy.get("level") != "Viral":
-            continue
-        ov = mp.get("overall") or {}
-        why = "; ".join(d["text"] for d in (hy.get("drivers") or [])[:3])
-        for email, prof, prefs in users:
-            if not prefs.get("hype") or sym not in (prof.get("watchlist") or []):
-                continue
-            if notify_once(state, f"hype:{email}:{sym}:{day}", email, prefs, "hype",
-                           f"{sym}: viral buzz (hype {hy.get('score')}/100)",
-                           f"{sym} is drawing unusual attention: {why}. Overall sentiment: "
-                           f"{ov.get('label', '—')} ({ov.get('score', 0):+.0f}).",
-                           sym=sym, tags=["fire"], priority=4):
-                n += 1
-    return n
-
-
-def monitor_tick(md):
-    """Tüm kullanıcılar için bir tur. Döner: gönderilen bildirim sayısı."""
-    state = _state()
-    total = 0
-    users = []
-    for email, prof in profiles().items():
-        prefs = notify_prefs(prof)
-        if not prefs.get("on"):
-            continue
-        users.append((email, prof, prefs))
-        for fn in (check_prices, check_earnings, check_macro):
-            try:
-                total += fn(md, state, email, prof, prefs)
-            except Exception as ex:      # bir kaynak bozulsa da diğerleri çalışsın
-                _MON["err"] = f"{fn.__name__}: {type(ex).__name__}: {ex}"[:200]
+            import hashlib
+            tag = hashlib.sha1(_LIST_B64.encode("ascii")).hexdigest()[:10]
+            d = os.path.join(tempfile.gettempdir(), f"pulse_list_{tag}")
+            os.makedirs(d, exist_ok=True)
+            fp = os.path.join(d, "index.html")
+            if not os.path.isfile(fp):
+                with open(fp, "wb") as f:
+                    f.write(base64.b64decode(_LIST_B64))
+        except Exception:
+            if disk is None:
+                return None
+            d = _LIST_DIR
     try:
-        total += check_buzz(md, state, users)
-    except Exception as ex:
-        _MON["err"] = f"check_buzz: {type(ex).__name__}: {ex}"[:200]
-    try:
-        total += len(orders_tick(md))       # v4.8: Stop-Loss / Take-Profit canlı fiyatla (her turda)
-    except Exception as ex:
-        _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
-    try:
-        total += bots_tick(md)              # v4.3: otomatik işlem botları (15 dakikada bir)
-    except Exception as ex:
-        _MON["err"] = f"bots_tick: {type(ex).__name__}: {ex}"[:200]
-    if state.pop("_dirty", False):
-        _state_save(state)
-    _MON["ticks"] += 1
-    _MON["last"] = time.time()
-    return total
+        return components.declare_component("pulse_list", path=d)
+    except Exception:
+        return None
 
 
-ORD_LOOP = 30        # v4.8: tam turlar arasında SL / TP her 30 sn'de bir canlı fiyatla denetlenir
+def list_available():
+    return _list_component() is not None
 
 
-def _loop(md):
-    time.sleep(20)
-    while True:
-        try:
-            monitor_tick(md)
-        except Exception as ex:  # pragma: no cover
-            _MON["err"] = f"{type(ex).__name__}: {ex}"[:200]
-        try:
-            kv_flush()
-        except Exception:  # pragma: no cover
-            pass
-        end = time.time() + TICK_SEC
-        while True:
-            left = end - time.time()
-            if left <= 1:
+def sortable_list(rows, key, *, cols=None, colw=None, title_col="", removable=False, clickable=False, max_h=420,
+                  av=26, light=False, accent=None, empty=""):
+    """rows: [{'id','title','sub','ini','avbg','avfg','logo','sel', 'cells': [{'v','c','s','sc'}]}].
+    Döner: son olay ({'t': 'order'|'open'|'remove', 'n', ...}) ya da None. Bileşen yoksa None (çağıran yedeği çizer)."""
+    comp = _list_component()
+    if comp is None:
+        return None
+    return comp(key=key, default=None, rows=rows, light=bool(light), accent=accent,
+                opts={"key": key, "cols": cols or [], "colw": colw or [], "title_col": title_col,
+                      "removable": bool(removable), "clickable": bool(clickable), "max_h": int(max_h), "av": int(av),
+                      "empty": empty})
+
+
+def render_chart(payload, draws, alerts, chart_type="candles", height=640, rev=0, key="chart", light=False,
+                 ov=None, fit=0.0, hmax=0, pmin=0):
+    """Grafiği çizer. Kullanıcı bir şey değiştirdiyse olay sözlüğü döndürür.
+    ov: isteğe bağlı katman (formasyon çizgileri, order block'lar, hacim işaretleri, dark pool seviyeleri, plan seviyeleri).
+    fit/hmax/pmin (v4.2): yükseklik görünür pencerenin `fit` oranına büyür, fiyat paneli en az `pmin` px kalır,
+    üst sınır `hmax` px."""
+    comp = _component()
+    args = dict(payload)
+    args.update({"draws": draws or [], "alerts": alerts or [], "type": chart_type,
+                 "height": int(height), "rev": int(rev), "light": bool(light), "ov": ov,
+                 "fit": float(fit or 0), "hmax": int(hmax or 0), "pmin": int(pmin or 0)})
+    if comp is None:
+        html = open(_INDEX, encoding="utf-8").read() if os.path.isfile(_INDEX) else ""
+        if html:
+            html = html.replace("</head>", "<script>window.__PULSE_ARGS__=" +
+                                json.dumps(args) + ";</script></head>")
+            components.html(html, height=int(height) + 8, scrolling=False)
+        return None
+    return comp(key=key, default=None, **args)
+
+
+# ----------------------------------------------------------------------
+# Alarmlar
+# ----------------------------------------------------------------------
+def check_alerts(alerts, df, lookback=3):
+    """Son barlara bakarak tetiklenen alarmları işaretler; tetiklenenleri döndürür."""
+    if not alerts or df is None or len(df) < 2:
+        return []
+    c = df["Close"].tail(lookback + 1).to_numpy(float)
+    hi = df["High"].tail(lookback + 1).to_numpy(float)
+    lo = df["Low"].tail(lookback + 1).to_numpy(float)
+    fired = []
+    for a in alerts:
+        if a.get("triggered"):
+            continue
+        p = float(a.get("price", 0))
+        cond, hit = a.get("cond", "cross"), False
+        for i in range(1, len(c)):
+            prev, cur = c[i - 1], c[i]
+            if cond == "above":
+                hit = hi[i] >= p
+            elif cond == "below":
+                hit = lo[i] <= p
+            elif cond == "cross_up":
+                hit = prev < p <= cur
+            elif cond == "cross_dn":
+                hit = prev > p >= cur
+            else:
+                hit = (prev < p <= cur) or (prev > p >= cur)
+            if hit:
                 break
-            time.sleep(min(ORD_LOOP, left))
-            if end - time.time() > 1:
-                try:
-                    if orders_tick(md):
-                        kv_flush()
-                except Exception as ex:  # pragma: no cover
-                    _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
+        if hit:
+            a["triggered"] = True
+            a["at"] = str(df.index[-1])[:16]
+            fired.append(a)
+    return fired
 
 
-def start_monitor(md):
-    """Arka plan izleyicisini (bir kez) başlatır."""
-    if os.environ.get("PULSE_NO_MONITOR"):
-        return False
-    with _LOCK:
-        t = _MON["thread"]
-        if t is not None and t.is_alive():
-            return True
-        t = threading.Thread(target=_loop, args=(md,), name="pulse-monitor", daemon=True)
-        _MON["thread"] = t
-        t.start()
-        return True
-
-
-def monitor_status():
-    t = _MON["thread"]
-    return {"running": bool(t is not None and t.is_alive()), "ticks": _MON["ticks"], "last": _MON["last"],
-            "err": _MON["err"]}
+def alert_text(a):
+    return "Price %s %s" % (CONDS.get(a.get("cond"), ""), en.fmt_num(a.get("price"), 2))
