@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.4"
+BACKEND_VERSION = "5.6"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -747,7 +747,7 @@ def demo_new(start=25000, ccy="USD", watch=None, bots=None, name="Main account",
             "start": start, "ccy": ccy if ccy in DEMO_CCYS else "USD", "cash": start, "pos": {},
             "trades": [], "eq": [[time.time(), start]], "watch": list(watch if watch is not None else DEMO_WATCH),
             "bots": list(bots or []), "log": [], "seq": 0, "created": time.time(), "fx": None, "bot_slot": None,
-            "guard": guard_default()}
+            "guard": guard_default(), "pend": []}
 
 
 def demo_clean_name(name):
@@ -784,6 +784,7 @@ def _demo_user(raw):
         a.setdefault("log", [])
         a.setdefault("eq", [[time.time(), a.get("start", 25000)]])
         a.setdefault("guard", guard_default())      # v5.4: her hesapta devre kesici (varsayılan 5.000)
+        a.setdefault("pend", [])                    # v5.5: bekleyen limit emirleri
     order = [i for i in (u.get("order") or []) if i in acc]
     order += [i for i in acc if i not in order]
     u["order"] = order
@@ -934,6 +935,7 @@ def demo_reset(email, start, ccy, keep=True, acc_id=None):
         new = demo_new(start, ccy, acct.get("watch") if keep else None, bots, name=acct.get("name") or "Account",
                        acc_id=acct.get("id"))
         new["guard"] = dict(guard_cfg(acct), breach=None)     # v5.4: limit ayarları kalır, kilit kalkar
+        new["pend"] = []                                      # v5.5: bekleyen emirler silinir
         acct.clear()
         acct.update(new)
         return True
@@ -1043,7 +1045,7 @@ def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan
     if side in ("short", "cover") and pos and not psh:
         return False, "Close the long position first.", None
     if side == "buy":
-        if amt > acct["cash"] + 1e-6:
+        if amt > pend_free(acct) + 1e-6:         # v5.6: bekleyen açılış emirlerinin ayırdığı sermaye hariç
             return False, "Not enough cash for this order.", None
         if pos:
             pos["entry"] = (pos["entry"] * pos["qty"] + price * qty) / (pos["qty"] + qty)
@@ -1057,7 +1059,7 @@ def demo_trade(acct, sym, side, qty, price, fxm, owner="manual", reason="", plan
             _apply_plan(pos, plan, price, ts, owner)
         acct["cash"] -= amt
     elif side == "short":               # v5.3: açığa satış — teminat kadar nakit ayrılır, K/Z ters yönde
-        if amt > acct["cash"] + 1e-6:
+        if amt > pend_free(acct) + 1e-6:
             return False, "Not enough cash (margin) for this short.", None
         if pos:
             pos["entry"] = (pos["entry"] * pos["qty"] + price * qty) / (pos["qty"] + qty)
@@ -1127,7 +1129,9 @@ def demo_value(acct, quotes=None, eurusd=None):
     rpl = sum(t["pnl"] for t in acct.get("trades") or [] if t.get("pnl") is not None)
     eq = float(acct["cash"]) + inv
     rows.sort(key=lambda r: -r["value"])
+    res = pend_reserved(acct)
     return {"equity": eq, "cash": float(acct["cash"]), "invested": inv, "upl": upl, "rpl": rpl,
+            "reserved": res, "free": float(acct["cash"]) - res,      # v5.6: açılış emirleri için ayrılan sermaye
             "total": eq - float(acct["start"]), "total_pct": (eq / float(acct["start"]) - 1) * 100, "rows": rows}
 
 
@@ -1138,7 +1142,10 @@ GUARD_PERIODS = ("week", "month")
 GUARD_BASES = ("fixed", "pct")
 GUARD_LIMIT_DEFAULT = 5000.0         # her yeni hesapta hesabın para biriminde
 GUARD_PCT_DEFAULT = 5.0              # yüzde modunda: başlangıç bakiyesinin %'si
-GUARD_WARN, GUARD_RED = 0.70, 0.90   # çubuk: yeşil < %70 ≤ sarı / turuncu < %90 ≤ kırmızı
+# v5.5: kalan "account health" = %100 − harcanan limit yüzdesi; çubuk 4 kademe
+# health 100–75 koyu yeşil · 75–50 açık yeşil · 50–25 sarı/amber · 25–0 kırmızı
+GUARD_STEPS = (0.25, 0.50, 0.75)     # harcanan limit oranının kademe sınırları
+GUARD_WARN, GUARD_RED = GUARD_STEPS[1], GUARD_STEPS[2]
 
 
 def demo_stats(acct):
@@ -1229,11 +1236,13 @@ def guard_status(acct, val=None, now=None):
     lim = guard_limit(acct, g)
     ratio = (loss / lim) if lim > 0 else 0.0
     locked = bool(g["on"] and g["breach"])
+    s1, s2, s3 = GUARD_STEPS
     level = ("breach" if locked else "off" if not g["on"] else
-             "red" if ratio >= GUARD_RED else "warn" if ratio >= GUARD_WARN else "ok")
+             "red" if ratio >= s3 else "warn" if ratio >= s2 else "good" if ratio >= s1 else "ok")
     return {"on": g["on"], "period": g["period"], "basis": g["basis"], "limit": lim, "fixed": g["limit"],
             "pct": g["pct"], "loss": loss, "realized": realized, "open": upl, "pl": pl, "ratio": ratio,
-            "level": level, "locked": locked, "breach": g["breach"], "t0": t0}
+            "health": max(0.0, (1.0 - ratio) * 100.0), "level": level, "locked": locked, "breach": g["breach"],
+            "t0": t0}
 
 
 def guard_locked(acct):
@@ -1324,6 +1333,277 @@ def guard_set(email, acc_id=None, **chg):
             msg = "Still above the new limit — the account stays locked"
         return True, msg
     return demo_edit(email, run, acc_id)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v5.5 — Bekleyen limit emirleri ("Pending orders"): kurs istenen seviyeye gelince kendiliğinden dolar
+# ---------------------------------------------------------------------------------------------------------------
+PEND_MAX = 20                 # hesap başına en fazla bekleyen emir
+
+
+def pend_list(acct):
+    return list(acct.get("pend") or [])
+
+
+def pend_syms(acct):
+    return sorted({o["sym"] for o in acct.get("pend") or []})
+
+
+def pend_add(acct, sym, side, qty, limit, stop=0.0, tp=0.0, mode="regular", ts=None, kind="limit", est=0.0,
+             fxm=1.0):
+    """Kilit İÇİNDE: bekleyen emir ekler.
+    kind='limit': buy kurs ≤ limit · sell kurs ≥ limit · kind='open' (v5.6): borsa kapalıyken verilen emir,
+    açılışta piyasa fiyatından dolar (est = o anki referans fiyat, planlanan tutar için). Döner: (ok, mesaj, emir)."""
+    sym = str(sym or "").upper().strip()
+    side = "buy" if str(side).lower().startswith("b") else "sell"
+    kind = "open" if str(kind) == "open" else "limit"
+    try:
+        qty, limit = float(qty), float(limit or 0)
+        stop, tp = float(stop or 0), float(tp or 0)
+        est, fxm = float(est or 0), float(fxm or 1.0)
+    except (TypeError, ValueError):
+        return False, "Quantity and price must be numbers.", None
+    if inst_ccy(sym) is None:
+        return False, f"{sym} cannot be traded in the demo account.", None
+    if not qty > 0:
+        return False, "Enter a quantity above zero.", None
+    if kind == "limit" and not limit > 0:
+        return False, "Enter a limit price above zero.", None
+    if len(acct.get("pend") or []) >= PEND_MAX:
+        return False, f"An account holds up to {PEND_MAX} pending orders — cancel one first.", None
+    ref = limit if kind == "limit" else est
+    if side == "sell":
+        stop = tp = 0.0
+        have = sum(p["qty"] for p in acct["pos"].values()
+                   if p["sym"] == sym and p["owner"] == "manual" and p.get("side") != "short")
+        held = have - sum(float(x["qty"]) for x in acct.get("pend") or []
+                          if x["side"] == "sell" and x["sym"] == sym)        # aynı adet iki kez satılmasın
+        if held < qty - 1e-9:
+            return False, (f"You only hold {max(0.0, held):g} {sym} by hand that is not already in a pending "
+                           f"order."), None
+    else:
+        if stop and ref and stop >= ref:
+            return False, f"The stop-loss ({stop:g}) must be below the order price ({ref:g}).", None
+        if tp and ref and tp <= ref:
+            return False, f"The take-profit ({tp:g}) must be above the order price ({ref:g}).", None
+        if kind == "open" and ref > 0:          # açılışa kadar ayrılacak sermaye (serbest nakitle sınırlı)
+            need = qty * ref * fxm
+            if need > pend_free(acct) + 1e-6:
+                return False, (f"Not enough free cash for this order — {need:.2f} needed, "
+                               f"{pend_free(acct):.2f} available (pending orders already reserve "
+                               f"{pend_reserved(acct):.2f})."), None
+    acct["seq"] = int(acct.get("seq") or 0) + 1
+    o = {"id": f'p{acct["seq"]}', "sym": sym, "side": side, "qty": qty, "limit": limit, "stop": stop, "tp": tp,
+         "mode": "trailing" if str(mode).lower().startswith("trail") else "regular", "ts": round(float(ts or time.time())),
+         "err": None, "kind": kind, "est": est, "amt": (qty * ref * fxm) if ref else 0.0, "fxm": fxm}
+    acct.setdefault("pend", []).append(o)
+    if kind == "open":
+        st_ = market_status(sym, ts)
+        return True, (f'Order queued: {side} {qty:g} {sym} at the market open — {st_["label"]} is closed'
+                      + (f', it opens at {st_["txt"]}' if st_["txt"] else "") + '.'), o
+    return True, (f'Limit order placed: {"buy" if side == "buy" else "sell"} {qty:g} {sym} at {limit:g} — it fills as '
+                  f'soon as the price {"falls to" if side == "buy" else "rises to"} {limit:g}.'), o
+
+
+def pend_reserved(acct):
+    """v5.6: açılışta dolacak ALIŞ emirleri için ayrılan sermaye (hesabın para biriminde)."""
+    return sum(float(o.get("amt") or 0) for o in acct.get("pend") or []
+               if o.get("kind") == "open" and o["side"] == "buy")
+
+
+def pend_free(acct):
+    """Serbest nakit = nakit − ayrılan sermaye."""
+    return float(acct.get("cash") or 0) - pend_reserved(acct)
+
+
+def pend_cancel(email, oid, acc_id=None):
+    """Bekleyen emri iptal eder. Döner: (ok, mesaj)."""
+    def run(a):
+        keep = [o for o in a.get("pend") or [] if o["id"] != oid]
+        if len(keep) == len(a.get("pend") or []):
+            return False, "This order is no longer pending."
+        gone = [o for o in a.get("pend") or [] if o["id"] == oid][0]
+        a["pend"] = keep
+        return True, f'Limit order cancelled: {gone["side"]} {gone["qty"]:g} {gone["sym"]} at {gone["limit"]:g}'
+    return demo_edit(email, run, acc_id)
+
+
+def pend_hit(o, px, now=None):
+    """Emir tetiklendi mi? (kilitsiz ön kontrol) — limit: fiyat seviyeye geldi · open: borsa açıldı.
+    Her iki tür de yalnızca normal seansta dolar."""
+    if px is None or not o or not market_open(o["sym"], now):
+        return False
+    if o.get("kind") == "open":
+        return True
+    return (px <= float(o["limit"]) + 1e-12) if o["side"] == "buy" else (px >= float(o["limit"]) - 1e-12)
+
+
+def pend_check(acct, live, eurusd, now=None, log=None):
+    """Kilit İÇİNDE: tetiklenen limit emirlerini doldurur. Dolum fiyatı kursla limitin iyisi (alışta düşük olan).
+    Hesap devre kesiciyle kilitliyse ALIŞ emirleri beklemede kalır, satışlar (risk azaltma) dolar.
+    Döner: olay listesi."""
+    now = float(now or time.time())
+    out = []
+    locked = guard_locked(acct)
+    for o in list(acct.get("pend") or []):
+        px = live.get(o["sym"])
+        if not pend_hit(o, px, now):
+            continue
+        if locked and o["side"] == "buy":
+            o["err"] = "Blocked — account breached"
+            continue
+        fxm = fx_mult(acct["ccy"], inst_ccy(o["sym"]), eurusd)
+        if fxm is None:
+            continue
+        px = float(px)
+        if o.get("kind") == "open":                 # açılış emri: piyasa fiyatından
+            fill = px
+        else:
+            fill = min(px, float(o["limit"])) if o["side"] == "buy" else max(px, float(o["limit"]))
+        stop, tp = float(o.get("stop") or 0), float(o.get("tp") or 0)
+        trail = round(fill - stop, 6) if (stop and o.get("mode") == "trailing") else 0.0
+        plan = ({"stop": stop, "tp1": 0.0, "tp2": tp, "atr": 0.0, "tp1_done": True, "checked": now, "trail": trail}
+                if (stop or tp) and o["side"] == "buy" else None)
+        why = ((f'Queued at {market_label(o["sym"])} open' if o.get("kind") == "open"
+                else f'Limit order at {o["limit"]:g}')
+               + ((f' · trailing SL {stop:g}' if trail else f' · SL {stop:g}') if stop else "")
+               + (f' · TP {tp:g}' if tp else ""))
+        rest = [x for x in acct.get("pend") or [] if x["id"] != o["id"]]
+        acct["pend"] = rest                         # ayrılan sermaye bu emir için serbest bırakılır
+        ok, msg, tr = demo_trade(acct, o["sym"], o["side"], float(o["qty"]), fill, fxm, "manual", why, plan=plan,
+                                 ts=now)
+        if not ok:                       # ör. nakit yetmiyor / pozisyon satılmış → emir hatasıyla beklemede kalır
+            o["err"] = msg
+            acct["pend"] = rest + [o]
+            continue
+        kind_ = "open" if o.get("kind") == "open" else "limit"
+        out.append({"kind": "limit", "otype": kind_, "side": o["side"], "sym": o["sym"], "qty": float(o["qty"]),
+                    "price": fill, "limit": float(o["limit"] or 0), "bot": "Limit order", "reason": why,
+                    "pnl": tr["pnl"] if tr else None})
+        if log:
+            log("Limit order", o["sym"], f'{o["side"].upper()} {o["qty"]:g} @ {fill:.2f} — '
+                                        + (f'{market_label(o["sym"])} open' if kind_ == "open"
+                                           else f'limit {o["limit"]:g}'))
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v5.6 — Borsa saatleri: emir, enstrümanın kendi borsası kapalıyken açılışa kadar bekletilir
+# ---------------------------------------------------------------------------------------------------------------
+# kural: (saat dilimi, açılış dk, kapanış dk) — yerel borsa saatiyle
+MKT_RULES = {"us": ("America/New_York", 9 * 60 + 30, 16 * 60), "eu": (TZ, 9 * 60, 17 * 60 + 30)}
+MKT_SFX = {".DE": ("eu", "XETRA"), ".F": ("eu", "Börse Frankfurt"), ".PA": ("eu", "Euronext Paris"),
+           ".AS": ("eu", "Euronext Amsterdam"), ".BR": ("eu", "Euronext Brussels"), ".LS": ("eu", "Euronext Lisbon"),
+           ".IR": ("eu", "Euronext Dublin"), ".MI": ("eu", "Borsa Italiana"), ".MC": ("eu", "BME Madrid"),
+           ".VI": ("eu", "Wiener Börse"), ".HE": ("eu", "Nasdaq Helsinki")}
+# NYSE / NASDAQ ve Avrupa borsalarının tatilleri (2026–2027). Sonraki yıllarda yalnızca hafta sonu + saatler geçerli.
+MKT_HOL = {
+    "us": {"2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+           "2026-09-07", "2026-11-26", "2026-12-25",
+           "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05",
+           "2027-09-06", "2027-11-25", "2027-12-24"},
+    "eu": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01", "2026-12-24", "2026-12-25", "2026-12-31",
+           "2027-01-01", "2027-03-26", "2027-03-29", "2027-12-24", "2027-12-31"}}
+MKT_HALF = {"us": {"2026-11-27": 13 * 60, "2026-12-24": 13 * 60, "2027-11-26": 13 * 60},
+            "eu": {}}
+MKT_YEARS = (2026, 2027)              # tatil listesinin kapsadığı yıllar
+
+
+def sym_market(sym):
+    """Enstrümanın borsası. Döner: (kural, ad) — kural: 'us' | 'eu' | 'crypto' | 'fut'."""
+    s_ = str(sym or "").upper().strip()
+    if s_.endswith(("-USD", "-EUR")):
+        return "crypto", "Crypto (24/7)"
+    if s_.endswith("=F"):
+        return "fut", "CME Globex"
+    for sfx, v in MKT_SFX.items():
+        if s_.endswith(sfx):
+            return v
+    return "us", "NYSE / NASDAQ"
+
+
+def market_label(sym):
+    return sym_market(sym)[1]
+
+
+def _fut_open(t):
+    """CME: pazar 18:00 ET → cuma 17:00 ET, her gün 17:00–18:00 ET arası kapalı."""
+    hm, wd = t.hour * 60 + t.minute, t.weekday()
+    if 17 * 60 <= hm < 18 * 60:
+        return False
+    if wd == 5:                                   # cumartesi
+        return False
+    if wd == 6 and hm < 18 * 60:                  # pazar akşamı açılır
+        return False
+    if wd == 4 and hm >= 17 * 60:                 # cuma akşamı kapanır
+        return False
+    return True
+
+
+def _day_hours(rule, t):
+    """O günün seans saatleri (yerel borsa dakikası) ya da None (hafta sonu / tatil)."""
+    tzn, o, c = MKT_RULES[rule]
+    if t.weekday() >= 5:
+        return None
+    day = t.strftime("%Y-%m-%d")
+    if day in MKT_HOL.get(rule, ()):
+        return None
+    half = MKT_HALF.get(rule, {}).get(day)
+    return (o, half) if half else (o, c)
+
+
+def market_open(sym, now=None):
+    """Enstrümanın borsası şu an normal seansta mı? (kripto her zaman açık)"""
+    rule, _ = sym_market(sym)
+    if rule == "crypto":
+        return True
+    t = pd.Timestamp(float(now or time.time()), unit="s", tz="UTC")
+    if rule == "fut":
+        return _fut_open(t.tz_convert("America/New_York"))
+    t = t.tz_convert(MKT_RULES[rule][0])
+    h = _day_hours(rule, t)
+    return bool(h and h[0] <= t.hour * 60 + t.minute < h[1])
+
+
+def market_next_open(sym, now=None):
+    """Bir sonraki normal açılışın zamanı (unix) — zaten açıksa None."""
+    rule, _ = sym_market(sym)
+    now = float(now or time.time())
+    if rule == "crypto" or market_open(sym, now):
+        return None
+    t0 = pd.Timestamp(now, unit="s", tz="UTC")
+    if rule == "fut":                                  # en fazla 3 gün ileriye bak (saatlik adım yeterli)
+        for i in range(1, 72 * 60, 5):
+            t = t0 + pd.Timedelta(minutes=i)
+            if _fut_open(t.tz_convert("America/New_York")):
+                return float(t.timestamp())
+        return None
+    tzn, _, _ = MKT_RULES[rule]
+    t = t0.tz_convert(tzn)
+    for i in range(0, 12):
+        d = (t + pd.Timedelta(days=i)).normalize()
+        h = _day_hours(rule, d)
+        if not h:
+            continue
+        op = d + pd.Timedelta(minutes=h[0])
+        if op.timestamp() > now:
+            return float(op.timestamp())
+    return None
+
+
+def market_status(sym, now=None, tz=None):
+    """Arayüz için: {'open','label','rule','next','txt'} — txt: kullanıcının saatiyle açılış ('15:30 CET')."""
+    rule, lab = sym_market(sym)
+    now = float(now or time.time())
+    op = market_open(sym, now)
+    nx = None if op else market_next_open(sym, now)
+    txt = ""
+    if nx:
+        t = pd.Timestamp(nx, unit="s", tz="UTC").tz_convert(tz or TZ)
+        same = t.strftime("%Y-%m-%d") == pd.Timestamp(now, unit="s", tz="UTC").tz_convert(tz or TZ).strftime("%Y-%m-%d")
+        txt = (t.strftime("%H:%M %Z") if same else t.strftime("%a %H:%M %Z"))
+    return {"open": op, "label": lab, "rule": rule, "next": nx, "txt": txt,
+            "known": pd.Timestamp(now, unit="s", tz="UTC").year in MKT_YEARS}
 
 
 def _eq_point(acct, equity, now, gap=840):
@@ -1608,6 +1888,8 @@ def bots_apply(acct, data, now=None):
         return _bars15(data["i15"].get(p["sym"]), float(p.get("checked") or p.get("opened") or 0))
     ev_x, sells = apply_exits(acct, bars_of, eurusd, now, live=False, log=log)
     events += ev_x
+    # 1a) v5.5: bekleyen limit emirleri — 15 dakikalık turda da kontrol edilir
+    events += pend_check(acct, {k: float(v) for k, v in data["px"].items() if v}, eurusd, now, log=log)
     # 1b) v5.4: devre kesici — dönem zararı limite ulaştıysa tüm botlar durur, yeni alım yapılmaz
     gs, gnew = guard_eval(acct, demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()},
                                            eurusd), now)
@@ -1615,22 +1897,26 @@ def bots_apply(acct, data, now=None):
         events.append({"kind": "breach", "sym": "", "qty": 0.0, "price": 0.0, "bot": "Circuit breaker",
                        "reason": "ACCOUNT BREACHED", "pnl": None, "loss": gs["loss"], "limit": gs["limit"],
                        "period": gs["period"], "paused": gs.get("paused", 0)})
-    # 2) alımlar
-    is_open = (not BOT_HOURS_ONLY) or us_session_open(now)
+    # 2) alımlar — v5.6: her sembol kendi borsasına göre (kripto / vadeli US seansı dışında da işlem görür)
+    hours = bool(BOT_HOURS_ONLY)
     for b in acct.get("bots") or []:
         if not b.get("on") or gs["locked"]:
             continue
         bid, cfg = b["id"], en.bot_cfg(b.get("cfg"))
         buys, note = 0, ""
+        sigs = data["sig"].get(bid, [])
         if bid in (data.get("err") or {}):
             note = "data error: " + data["err"][bid]
-        elif not is_open:
-            note = "US market closed — open positions are still watched"
+        elif hours and not us_session_open(now) and not any(market_open(sym, now) for sym, _ in sigs):
+            note = "markets closed — open positions are still watched"
         else:
             cool = b.setdefault("cool", {})
             for t in [t for t, ts_ in cool.items() if now - ts_ > cfg["cooldown_days"] * 86400]:
                 cool.pop(t, None)
-            for sym, s in data["sig"].get(bid, []):
+            for sym, s in sigs:
+                if hours and not market_open(sym, now):
+                    note = note or f"{market_label(sym)} closed"
+                    continue
                 cur_p = acct["pos"].get(f"{sym}|{bid}")
                 add = bool(cur_p and int(s.get("stage") or 0) == 2 and int(cur_p.get("stage") or 0) == 1
                            and cur_p.get("side", "long") == s.get("side", "long"))      # v5.3: aşama 2 ekleme
@@ -1652,7 +1938,7 @@ def bots_apply(acct, data, now=None):
                 eq = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)["equity"]
                 frac = str(sym).upper().endswith("-USD")             # kripto: kesirli adet
                 short = s.get("side") == "short"
-                qty = en.bot_size(eq, acct["cash"], s["entry"], s["stop"], fxm, cfg, frac=frac)
+                qty = en.bot_size(eq, pend_free(acct), s["entry"], s["stop"], fxm, cfg, frac=frac)
                 if s.get("size_frac"):                               # kademeli mod: ⅓ / ⅔
                     q_ = float(qty) * float(s["size_frac"])
                     qty = (int(q_ * 10000 + 1e-9) / 10000.0) if frac else int(q_ + 1e-9)
@@ -1829,13 +2115,14 @@ def orders_tick(md, only=None, gap=ORD_GAP, now=None):
             continue
         for acct in list(demo_user(email)["accounts"].values()):
             cand = [p for p in acct["pos"].values() if has_orders(p)]
-            if not cand:
+            pend = pend_list(acct)                       # v5.5: bekleyen limit emirleri
+            if not cand and not pend:
                 continue
             k = (email, acct["id"])
             if now - _ORD_LAST.get(k, 0) < gap:
                 continue
             _ORD_LAST[k] = now
-            syms = sorted({p["sym"] for p in cand})
+            syms = sorted({p["sym"] for p in cand} | {o["sym"] for o in pend})
             try:
                 q = (getattr(md, "get_live_quotes", None) or md.get_quotes)(syms + ["EURUSD=X"])
             except Exception:
@@ -1844,7 +2131,8 @@ def orders_tick(md, only=None, gap=ORD_GAP, now=None):
                     if (q.get(s_) or {}).get("src") == "real" and (q.get(s_) or {}).get("last")}
             e_ = q.get("EURUSD=X") or {}
             eurusd = float(e_["last"]) if (e_.get("src") == "real" and e_.get("last")) else acct.get("fx")
-            if not any(_live_hit(p, live.get(p["sym"])) for p in cand):
+            if not (any(_live_hit(p, live.get(p["sym"])) for p in cand)
+                    or any(pend_hit(o, live.get(o["sym"]), now) for o in pend)):
                 continue
             aid, an = acct["id"], acct.get("name") or "Demo account"
 
@@ -1854,6 +2142,7 @@ def orders_tick(md, only=None, gap=ORD_GAP, now=None):
                     del a["log"][:-200]
                 evs, _ = apply_exits(a, lambda p: ([(now, live[p["sym"]], live[p["sym"]], live[p["sym"]], live[p["sym"]])]
                                                    if p["sym"] in live else []), eurusd, now, live=True, log=log)
+                evs = evs + pend_check(a, live, eurusd, now, log=log)        # v5.5: limit emirleri
                 if evs:
                     val = demo_value(a, {s_: {"last": v, "src": "real"} for s_, v in live.items()}, eurusd)
                     _eq_point(a, val["equity"], now)
@@ -1872,6 +2161,12 @@ def orders_tick(md, only=None, gap=ORD_GAP, now=None):
                     prefs = notify_prefs(profile_get(email))
                     if prefs.get("on") and prefs.get("bot"):
                         for e in evs:
+                            if e["kind"] == "limit":
+                                deliver(email, prefs, "bot",
+                                        f'Limit order filled: {e["side"]} {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}',
+                                        f'Your limit of {e["limit"]:g} was reached. Demo account “{an}”.',
+                                        sym=e["sym"], tags=["white_check_mark"], priority=3)
+                                continue
                             deliver(email, prefs, "bot", f'{e["reason"]}: sold {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}',
                                     f'{e["bot"]} position closed. Result {e["pnl"]:+.2f}. Demo account “{an}”.',
                                     sym=e["sym"], tags=["chart_with_downwards_trend" if e["pnl"] < 0 else "moneybag"],
@@ -1899,7 +2194,7 @@ def bots_tick(md, only=None, force=False):
 def _bots_tick_acct(md, email, acct, slot, now, force):
     """Tek hesabın 15 dakikalık turu: veriyi kilit dışında topla, hesabı kilit içinde güncelle, haber ver."""
     active = any(b.get("on") for b in acct.get("bots") or [])
-    owned = any(has_orders(p) for p in acct["pos"].values())
+    owned = any(has_orders(p) for p in acct["pos"].values()) or bool(acct.get("pend"))
     if not (active or owned) or (not force and acct.get("bot_slot") == slot):
         return 0
     aid = acct["id"]
@@ -1935,6 +2230,12 @@ def _bots_tick_acct(md, email, acct, slot, now, force):
                                 f'limit {e["limit"]:.2f}. All bots are paused and manual trading is blocked until you '
                                 f'raise or switch off the limit, or reset the account.', tags=["rotating_light"],
                                 priority=4)
+                        continue
+                    if e["kind"] == "limit":               # v5.5: bekleyen limit emri doldu
+                        title = f'Limit order filled: {e["side"]} {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
+                        body = f'Your limit of {e["limit"]:g} was reached. Demo account “{an}”.'
+                        deliver(email, prefs, "bot", title, body, sym=e["sym"], tags=["white_check_mark"],
+                                priority=3)
                         continue
                     if e["kind"] == "buy":
                         title = f'{e["bot"]}: bought {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
