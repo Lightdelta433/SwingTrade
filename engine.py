@@ -18,7 +18,7 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "5.4"
+ENGINE_VERSION = "5.6"
 NAN = float("nan")
 
 
@@ -5449,6 +5449,11 @@ def ichi_market_name(sym):
     return next((n for s_, n, _ in ICHI_MARKETS if s_ == str(sym or "").upper()), str(sym or ""))
 ST_FRESH = 3          # kırılım kaç gün "taze" sayılır (liste rozeti)
 ST_BOT_FRESH = 1      # bot en geç kaç gün sonra hâlâ alır
+# v5.6 — Ichimoku tazelik filtresi: sinyal gücü ilk Kumo kırılımından (günlük kapanış bulutun dışına) bu yana geçen
+# mum sayısına bağlı. 1–3. mum: Strong breakout / armed (yeni giriş) · 4–10: Mature trend / aging (giriş yok, tut ya
+# da Kijun geri çekilmesini bekle) · >10: kırılım sinyali yok (nötr — sıradaki kurulum: Kijun bounce / second entry)
+ICHI_FRESH = 3
+ICHI_AGING = 10
 C_TREND, C_ENTRY, C_STOP, C_ON, C_POLE, C_FLAG = "#A78BFA", "#F5B544", "#F87171", "#3DDC97", "#3DDC97", "#22D3EE"
 
 
@@ -5810,6 +5815,61 @@ def ichimoku_series(df, tenkan=9, kijun=26, senkou=52):
             "ten_f": ten.to_numpy(float), "kij_f": kij.to_numpy(float)}
 
 
+def ichi_kumo_ages(s, short=False):
+    """v5.6 — her bar için: kapanış kaç mumdur kesintisiz bulutun dışında? 1 = ilk kırılım mumu (önceki kapanış
+    bulutun içinde ya da öbür yanındaydı), 0 = kapanış bulutun dışında değil. short: bulutun altı."""
+    c, a_, b_ = s["c"], s["spa"], s["spb"]
+    n = len(c)
+    out = np.zeros(n, dtype=int)
+    run = 0
+    for j in range(n):
+        if _ok(a_[j]) and _ok(b_[j]) and ((c[j] < min(a_[j], b_[j])) if short else (c[j] > max(a_[j], b_[j]))):
+            run += 1
+        else:
+            run = 0
+        out[j] = run
+    return out
+
+
+def ichi_fresh_trigger(s, ages, rule, av, P, i, short=False):
+    """v5.6 — klasik modda kırılım girişi: i. bar, taze pencerede (Kumo yaşı 1–ICHI_FRESH) giriş koşullarının
+    (bulut + Tenkan/Kijun + Chikou + piyasa kuralı + ≤ max_atr Kijun mesafesi) İLK tuttuğu gün mü?
+    Geçmiş testi, grafikteki noktalar ve tahta aynı kuralı kullanır."""
+    def ok(j):
+        if j < 1 or not (1 <= int(ages[j]) <= ICHI_FRESH) or not rule[j] or not _ichi_ok(s, j, short):
+            return False
+        kj, c_ = s["kij"][j], s["c"][j]
+        a = av[j] if (av is not None and av[j] == av[j]) else c_ * 0.02
+        if not _ok(kj) or a <= 0:
+            return False
+        return ((kj - c_) if short else (c_ - kj)) <= float(P["max_atr"]) * a
+    return ok(i) and not ok(i - 1)
+
+
+def ichi_grade(age):
+    """Kırılım yaşına göre sinyal kademesi: 'strong' (1–3) · 'aging' (4–10) · 'late' (>10) · 'none' (0)."""
+    age = int(age or 0)
+    if age <= 0:
+        return "none"
+    if age <= ICHI_FRESH:
+        return "strong"
+    if age <= ICHI_AGING:
+        return "aging"
+    return "late"
+
+
+def ichi_age_text(age):
+    """'candle 2 of 3' · 'candle 6 — aging' · 'candle 14 — no breakout signal'."""
+    g = ichi_grade(age)
+    if g == "strong":
+        return "candle %d of %d" % (age, ICHI_FRESH)
+    if g == "aging":
+        return "candle %d — aging" % age
+    if g == "late":
+        return "candle %d — no breakout signal" % age
+    return "not beyond the cloud"
+
+
 def _ichi_ok(s, i, short=False):
     """i. barın kapanışında 1–3 numaralı giriş koşulları (bulut + Tenkan/Kijun + Chikou)."""
     c, k_ = s["c"], s["disp"]
@@ -5907,10 +5967,12 @@ def _ichi_classic(df, s, P, short, a, rule_ok):
         return None
     px, kij = float(s["c"][last]), float(s["kij"][last])
     dist = ((kij - px) if short else (px - kij)) / a if a > 0 else 99.0
-    k0 = last                                                 # kırılım günü: koşulların kesintisiz ilk günü
-    while k0 > P["senkou"] + P["kijun"] and _ichi_ok(s, k0 - 1, short):
-        k0 -= 1
-    age = last - k0
+    # v5.6: yaş = İLK Kumo kırılımından (kapanışın bulutun dışına çıktığı mum = 1) bu yana geçen mum sayısı —
+    # Tenkan/Kijun ya da Chikou sonradan tutsa da sinyal o andan itibaren yaşlanır
+    kage = int(ichi_kumo_ages(s, short)[last])
+    grade = ichi_grade(kage)
+    age = max(0, kage - 1)
+    k0 = last - age
     lo_c, hi_c = float(min(s["spa"][last], s["spb"][last])), float(max(s["spa"][last], s["spb"][last]))
     word, side = ("below", "short") if short else ("above", "long")
     base = {"key": "ichimoku", "kind": "bear" if short else "bull", "side": side, "mode": 0,
@@ -5918,34 +5980,48 @@ def _ichi_classic(df, s, P, short, a, rule_ok):
             "stop": float(kij + 0.25 * a) if short else float(kij - 0.25 * a),
             "vol_x": round(_vx_at(df, last), 2), "vol_ok": True, "start": int(max(0, k0 - P["kijun"])),
             "kij": kij, "ten": float(s["ten"][last]), "dist_atr": round(float(dist), 2), "age": int(age),
+            "kumo_age": kage, "grade": grade,
             "trail_kj": int(P["kijun"]), "spa": float(s["spa"][last]), "spb": float(s["spb"][last]),
             "cloud_lo": lo_c, "cloud_hi": hi_c, "atr": float(a)}
     tag = " (short)" if short else ""
-    if ((full_ok and age <= ST_FRESH) or bounce_ok) and not rule_ok and dist <= P["max_atr"]:
+    strong = full_ok and grade == "strong"
+    brk = "breakdown" if short else "breakout"
+    if (strong or bounce_ok) and not rule_ok and dist <= P["max_atr"]:
         why = _ichi_rule_note(df, P, short)
-        return dict(base, name="Kumo signal%s — market rule not met" % tag, state="armed", bars_since=int(age),
-                    conf=0.40, note="the Ichimoku signal is there, but " + (why or "the market rule is not met"))
-    if full_ok and age <= ST_FRESH and dist <= P["max_atr"]:
-        conf = 0.62 + (0.10 if dist <= 1.0 else 0.0) + (0.06 if age == 0 else 0.0)
-        return dict(base, name=("Kumo breakdown (short)" if short else "Kumo breakout"), state="breakout",
-                    bars_since=int(age), conf=round(min(1.0, conf), 2),
-                    note="close %s the cloud, Tenkan %s Kijun, Chikou clear · %s ATR from the Kijun (max %s) · "
-                         "day %d of the trend" % (word, "<" if short else ">", fmt_num(dist, 1),
-                                                  fmt_num(P["max_atr"], 1), age + 1))
+        return dict(base, name="Kumo signal%s — market rule not met" % tag, state="armed",
+                    bars_since=0 if (bounce_ok and not strong) else int(age), conf=0.40,
+                    note="the Ichimoku signal is there, but " + (why or "the market rule is not met"))
+    if strong and dist <= P["max_atr"]:
+        conf = 0.62 + (0.10 if dist <= 1.0 else 0.0) + (0.06 if kage == 1 else 0.03 if kage == 2 else 0.0)
+        return dict(base, name="Candle %d of %d · strong %s · armed%s" % (kage, ICHI_FRESH, brk, tag),
+                    state="breakout", bars_since=int(age), conf=round(min(1.0, conf), 2),
+                    note="fresh Kumo %s — the daily close left the cloud %s · Tenkan %s Kijun, Chikou clear · %s ATR "
+                         "from the Kijun (max %s) · full signal strength for a new entry"
+                         % (brk, "today" if kage == 1 else "%d candles ago" % (kage - 1), "<" if short else ">",
+                            fmt_num(dist, 1), fmt_num(P["max_atr"], 1)))
     if bounce_ok and dist <= P["max_atr"]:
-        return dict(base, name="Kijun bounce%s" % tag, state="retest", bars_since=0, conf=0.60,
-                    note="running trend pulled back to the Kijun and closed back %s the Tenkan · %s ATR from the "
-                         "Kijun" % (word, fmt_num(dist, 1)))
+        return dict(base, name="Kijun bounce%s · second entry" % tag, state="retest", bars_since=0, conf=0.60,
+                    note="follow-up setup: the running trend (candle %d since the Kumo %s) pulled back to the Kijun "
+                         "and closed back %s the Tenkan · %s ATR from the Kijun"
+                         % (kage, brk, word, fmt_num(dist, 1)))
     if not full_ok:
         return None
-    if dist > P["max_atr"]:
-        return dict(base, name="Extended %s the Kijun%s" % (word, tag), state="armed", bars_since=int(age),
-                    conf=0.40,
-                    note="trend is on, but price is %s ATR from the Kijun (max %s) — wait for the pullback or the "
-                         "Kijun bounce" % (fmt_num(dist, 1), fmt_num(P["max_atr"], 1)))
-    return dict(base, name="Trend %s the cloud%s" % (word, tag), state="running", bars_since=int(age), conf=0.50,
-                note="in the trend for %d days — exits on a close %s the Kijun %s"
-                     % (age, "above" if short else "below", fmt_num(kij, 2)))
+    if grade == "strong":                            # taze ama Kijun'dan çok uzak
+        return dict(base, name="Candle %d of %d · extended %s the Kijun%s" % (kage, ICHI_FRESH, word, tag),
+                    state="armed", bars_since=int(age), conf=0.40,
+                    note="fresh %s, but price is %s ATR from the Kijun (max %s) — wait for the pullback or the "
+                         "Kijun bounce" % (brk, fmt_num(dist, 1), fmt_num(P["max_atr"], 1)))
+    if grade == "aging":                             # 4–10. mum: hareket sürüyor, taze giriş değil
+        return dict(base, name="Candle %d · mature trend · aging%s" % (kage, tag), state="aging",
+                    bars_since=int(age), conf=0.42,
+                    note="the Kumo %s is %d candles old — the move is already running, so this is no fresh entry "
+                         "any more: hold an open trade (exit on a close %s the Kijun %s) or wait for the Kijun "
+                         "pullback" % (brk, kage, "above" if short else "below", fmt_num(kij, 2)))
+    return dict(base, name="Candle %d · no breakout signal%s" % (kage, tag), state="late",
+                bars_since=int(age), conf=0.30,
+                note="candle %d since the Kumo %s — no breakout signal any more (risk of consolidation or "
+                     "exhaustion). Next setup: a Kijun bounce (second entry) · open trades exit on a close %s the "
+                     "Kijun %s" % (kage, brk, "above" if short else "below", fmt_num(kij, 2)))
 
 
 def _ichi_staged_flags(s, i, short):
@@ -6000,22 +6076,32 @@ def _ichi_staged(df, s, P, short, a, rule_ok):
             "spb": float(s["spb"][last]), "cloud_lo": lo_c, "cloud_hi": hi_c, "atr": float(a)}
     if not beyond:
         base["trail_cloud"] = "%d-%d-%d" % (P["tenkan"], P["kijun"], P["senkou"])
-    if age <= ST_FRESH and not rule_ok:
+    fresh_win = (age + 1 <= ICHI_FRESH) if beyond else (age <= ST_FRESH)    # v5.6: aşama 2 = Kumo kırılımı 1–3
+    if fresh_win and not rule_ok:
         why = _ichi_rule_note(df, P, short)
         return dict(base, name="Stage %d signal%s — market rule not met" % (base["stage"], tag), state="armed",
                     bars_since=int(age), conf=0.40,
                     note="the cloud signal is there, but " + (why or "the market rule is not met"))
     if beyond:
-        if age <= ST_FRESH:
-            return dict(base, name="Stage 2 · out of the cloud%s" % tag, state="breakout", bars_since=int(age),
-                        conf=round(0.62 + (0.06 if age == 0 else 0.0), 2),
+        kage = age + 1                                   # v5.6: mum 1 = bulutun dışına ilk kapanış
+        base.update({"kumo_age": kage, "grade": ichi_grade(kage)})
+        if kage <= ICHI_FRESH:
+            return dict(base, name="Stage 2 · candle %d of %d · strong %s%s"
+                        % (kage, ICHI_FRESH, "breakdown" if short else "breakout", tag), state="breakout",
+                        bars_since=int(age), conf=round(0.62 + (0.06 if age == 0 else 0.0), 2),
                         note="close %s the cloud — add the remaining ⅔ (or open ⅔ if stage 1 was skipped) · "
-                             "day %d · both parts trail on the Kijun %s"
-                             % ("below" if short else "above", age + 1, fmt_num(kij, 2)))
-        return dict(base, name="Trend %s the cloud%s" % ("below" if short else "above", tag), state="running",
-                    bars_since=int(age), conf=0.50,
-                    note="staged trade running for %d days — exits on a close %s the Kijun %s"
-                         % (age, "above" if short else "below", fmt_num(kij, 2)))
+                             "candle %d of %d · both parts trail on the Kijun %s"
+                             % ("below" if short else "above", kage, ICHI_FRESH, fmt_num(kij, 2)))
+        if kage <= ICHI_AGING:
+            return dict(base, name="Stage 2 · candle %d · mature trend · aging%s" % (kage, tag), state="aging",
+                        bars_since=int(age), conf=0.42,
+                        note="the stage-2 close is %d candles old — no fresh entry; hold (exit on a close %s the "
+                             "Kijun %s) or wait for the pullback" % (kage, "above" if short else "below",
+                                                                    fmt_num(kij, 2)))
+        return dict(base, name="Stage 2 · candle %d · no breakout signal%s" % (kage, tag),
+                    state="late", bars_since=int(age), conf=0.30,
+                    note="candle %d since the cloud exit — no breakout signal any more · open trades exit on a "
+                         "close %s the Kijun %s" % (kage, "above" if short else "below", fmt_num(kij, 2)))
     if age <= ST_FRESH:
         return dict(base, name="Stage 1 · into the cloud%s" % tag, state="cloud_in", bars_since=int(age),
                     conf=round(0.55 + (0.05 if age == 0 else 0.0), 2),
@@ -6030,14 +6116,15 @@ def _ichi_staged(df, s, P, short, a, rule_ok):
                                    "above" if short else "below", fmt_num(hi_c if short else lo_c, 2)))
 
 
-_ICHI_STATE_ORDER = {"breakout": 0, "retest": 0, "cloud_in": 0, "armed": 1, "running": 2}
+_ICHI_STATE_ORDER = {"breakout": 0, "retest": 0, "cloud_in": 0, "armed": 1, "aging": 2, "running": 2, "late": 3}
 
 
 def strat_ichimoku(df, tenkan=9, kijun=26, senkou=52, max_atr=2.0, bounce=1, mode=0, wk_cloud=0, adx_min=0.0,
                    side="both", **_):
     """Son barın durumu, long ve short ayrı ayrı değerlendirilir (en uygulanabilir olan döner).
-    Mod 0: breakout (taze Kumo kırılımı) · retest (Kijun geri çekilmesi) · armed (uzamış / piyasa kuralı yok) ·
-    running (trend sürüyor). Mod 1: cloud_in (aşama 1) · breakout (aşama 2) · running · armed."""
+    Mod 0: breakout (taze Kumo kırılımı, 1–3. mum) · retest (Kijun geri çekilmesi) · armed (uzamış / piyasa kuralı
+    yok) · aging (4–10. mum) · late (>10. mum, kırılım sinyali yok). Mod 1: cloud_in (aşama 1) · breakout (aşama 2,
+    1–3. mum) · aging · late · running (aşama 1 sürüyor) · armed."""
     P = strat_params("ichimoku", {"tenkan": tenkan, "kijun": kijun, "senkou": senkou, "max_atr": max_atr,
                                   "bounce": bounce, "mode": mode, "wk_cloud": wk_cloud, "adx_min": adx_min})
     need = P["senkou"] + P["kijun"] + 5
@@ -6071,8 +6158,9 @@ def ichi_status(df, params=None):
     lo, hi = float(min(s["spa"][-1], s["spb"][-1])), float(max(s["spa"][-1], s["spb"][-1]))
     kij, ten = float(s["kij"][-1]), float(s["ten"][-1])
     staged = int(P["mode"]) == 1
+    up_age, dn_age = int(ichi_kumo_ages(s, False)[-1]), int(ichi_kumo_ages(s, True)[-1])
     if px > hi:
-        nm = "Above the cloud — no fresh signal"
+        nm = "Above the cloud — no fresh signal" + (" (candle %d)" % up_age if up_age else "")
         nt = ("Long needs a fresh breakout; " + ("Tenkan is below the Kijun" if ten <= kij else
                                                "the trend is older or the Chikou is in the way")
               + " · short only after a close below %s" % fmt_num(lo, 2))
@@ -6080,7 +6168,7 @@ def ichi_status(df, params=None):
             nt = "trend above the cloud without a fresh stage-2 close · short stage 1 on a close back inside the cloud"
         lvl = hi
     elif px < lo:
-        nm = "Below the cloud — no fresh signal"
+        nm = "Below the cloud — no fresh signal" + (" (candle %d)" % dn_age if dn_age else "")
         nt = ("Short needs a fresh breakdown; " + ("Tenkan is above the Kijun" if ten >= kij else
                                                  "the trend is older or the Chikou is in the way")
               + " · long only after a close above %s" % fmt_num(hi, 2))
@@ -6568,9 +6656,18 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
                                "ok" if thick >= 1.0 else "warn", 6,
                                "A thick cloud behind the price is strong support (short: resistance); a thin one "
                                "breaks easily."))
-            out.append(_ck(G[2], "Age of the trend", "day %d %s the cloud" % (int(sig.get("age") or 0) + 1, side_w),
-                           "ok" if sig.get("age", 0) <= 40 else "warn", 6,
-                           "Fresh Kumo breakouts carry further than late entries."))
+            ka = int(sig.get("kumo_age") or (int(sig.get("age") or 0) + 1))
+            if sig.get("state") == "retest":           # Kijun geri çekilmesi kendi başına bir kurulum
+                out.append(_ck(G[2], "Age of the breakout", "candle %d — follow-up setup (Kijun bounce)" % ka, "ok", 6,
+                               "A Kijun bounce is a second entry into a running trend — the breakout age does not "
+                               "count against it."))
+            else:
+                g_ = ichi_grade(ka)
+                out.append(_ck(G[2], "Age of the breakout", "%s %s the cloud" % (ichi_age_text(ka), side_w),
+                               "ok" if g_ == "strong" else "warn" if g_ == "aging" else "bad", 10,
+                               "Candle 1–%d after the Kumo breakout = full signal strength; %d–%d = mature trend "
+                               "(hold, no new entry); after %d the breakout signal has expired."
+                               % (ICHI_FRESH, ICHI_FRESH + 1, ICHI_AGING, ICHI_AGING)))
     elif key == "wavetrend":
         w_ = float(sig.get("wt") or 0.0)
         out.append(_ck(G[2], "Depth of the washout", "WaveTrend %s at the signal" % fmt_num(w_, 0),
@@ -6666,10 +6763,14 @@ def strat_summary(r):
     return " ".join(bits)
 
 
-def strat_fresh(r, max_bars=ST_BOT_FRESH):
-    """Bildirim / bot için yeterince taze sinyal mi? (Ichimoku'da Kijun geri çekilmesi de sinyaldir.)"""
+def strat_fresh(r, max_bars=None):
+    """Bildirim / bot için yeterince taze sinyal mi? (Ichimoku'da Kijun geri çekilmesi de sinyaldir;
+    v5.6: Ichimoku kırılımı 1–3. mumda taze sayılır.)"""
     b = (r or {}).get("best")
-    states = ("breakout", "retest", "cloud_in") if (r or {}).get("strat") == "ichimoku" else ("breakout",)
+    ichi = (r or {}).get("strat") == "ichimoku"
+    if max_bars is None:
+        max_bars = (ICHI_FRESH - 1) if ichi else ST_BOT_FRESH
+    states = ("breakout", "retest", "cloud_in") if ichi else ("breakout",)
     return bool(b and b["state"] in states and int(b.get("bars_since") or 0) <= max_bars
                 and b.get("vol_ok", True))
 
@@ -6694,11 +6795,17 @@ def bot_signal_strat(r, cfg=None, regime_ok=True):
     if b["state"] == "forming":
         return None, ("at the band — waiting for the WaveTrend cross" if key == "wavetrend" else
                       "flag still forming — trigger %s" % fmt_num(b["level"], 2))
+    if b["state"] == "aging":                      # v5.6: 4–10. mum
+        return None, ("breakout is %d candles old — mature trend, no fresh entry (waiting for a Kijun pullback)"
+                      % int(b.get("kumo_age") or 0))
+    if b["state"] == "late":                       # v5.6: >10. mum
+        return None, "no breakout signal — the trend is %d candles old" % int(b.get("kumo_age") or 0)
     buy_states = ("cloud_in", "breakout") if staged else \
         (("breakout", "retest") if key == "ichimoku" else ("breakout",))
     if b["state"] not in buy_states:
         return None, ("trend trade already running" if b["state"] == "running" else "price back below the level")
-    if int(b.get("bars_since") or 0) > ST_BOT_FRESH:
+    max_old = (ICHI_FRESH - 1) if key == "ichimoku" else ST_BOT_FRESH     # v5.6: Ichimoku 1–3. mum alınır
+    if int(b.get("bars_since") or 0) > max_old:
         return None, "signal is %d days old" % int(b["bars_since"])
     if not b.get("vol_ok", True):
         return None, "breakout volume %sx is below the required surge" % fmt_num(b.get("vol_x") or 0, 1)
@@ -6907,20 +7014,23 @@ def strategy_geometry(df, key, params=None, span=260):
                     out.append({"label": lab, "color": col_, "lines": [], "dots": pts[-4:], "fill": None,
                                 "at": pts[-1]})
             return out
-        # giriş noktaları: kırılım ve geri çekilme sinyal günleri (long ve short)
+        # giriş noktaları: kırılım (yalnız taze, 1–3. mum) ve geri çekilme sinyal günleri (long ve short)
         dots_b, dots_r, dots_bs, dots_rs = [], [], [], []
+        av_ = atr(df, 14).to_numpy(dtype=float)
+        ag_l, ag_s = ichi_kumo_ages(s, False), ichi_kumo_ages(s, True)
         for i in range(max(i0, P["senkou"] + P["kijun"] + 1), last + 1):
-            if _ichi_ok(s, i) and not _ichi_ok(s, i - 1) and lo_ok[i]:
+            if ichi_fresh_trigger(s, ag_l, lo_ok, av_, P, i):
                 dots_b.append((i, float(s["c"][i])))
             elif P["bounce"] and _ichi_trend_ok(s, i) and _ichi_bounce(s, i) and lo_ok[i]:
                 dots_r.append((i, float(s["c"][i])))
-            if _ichi_ok(s, i, True) and not _ichi_ok(s, i - 1, True) and so_ok[i]:
+            if ichi_fresh_trigger(s, ag_s, so_ok, av_, P, i, True):
                 dots_bs.append((i, float(s["c"][i])))
             elif P["bounce"] and _ichi_trend_ok(s, i, True) and _ichi_bounce(s, i, True) and so_ok[i]:
                 dots_rs.append((i, float(s["c"][i])))
-        for pts, lab, col_, n_ in ((dots_b, "Kumo breakout · close above the cloud", C_ON, 5),
+        for pts, lab, col_, n_ in ((dots_b, "Fresh Kumo breakout · candle 1–%d after the cloud exit" % ICHI_FRESH,
+                                    C_ON, 5),
                                    (dots_r, "Kijun bounce · back above the Tenkan", C_FLAG, 4),
-                                   (dots_bs, "Kumo breakdown (short) · close below the cloud", C_STOP, 5),
+                                   (dots_bs, "Fresh Kumo breakdown (short) · candle 1–%d" % ICHI_FRESH, C_STOP, 5),
                                    (dots_rs, "Kijun bounce (short) · back below the Tenkan", C_SHORT2, 4)):
             if pts:
                 out.append({"label": lab, "color": col_, "lines": [], "dots": pts[-n_:], "fill": None, "at": pts[-1]})
@@ -6984,10 +7094,11 @@ def describe_strategy(cfg):
                  "the close out of the other side · both parts trail on the Kijun"
                  % (P["tenkan"], P["kijun"], P["senkou"]))
         else:
-            s = ("Ichimoku %d / %d / %d · entry: close beyond the cloud, Tenkan / Kijun in line, Chikou clear, ≤ %s "
-                 "ATR from the Kijun%s · exit: close beyond the Kijun (initial stop just past it)"
-                 % (P["tenkan"], P["kijun"], P["senkou"], fmt_num(P["max_atr"], 1),
-                    " · + Kijun-bounce entries" if P["bounce"] else ""))
+            s = ("Ichimoku %d / %d / %d · entry: fresh Kumo breakout only (candle 1–%d after the close left the "
+                 "cloud; %d–%d = aging, no entry), Tenkan / Kijun in line, Chikou clear, ≤ %s ATR from the Kijun%s · "
+                 "exit: close beyond the Kijun (initial stop just past it)"
+                 % (P["tenkan"], P["kijun"], P["senkou"], ICHI_FRESH, ICHI_FRESH + 1, ICHI_AGING,
+                    fmt_num(P["max_atr"], 1), " · + Kijun-bounce entries (second entry)" if P["bounce"] else ""))
         rules = ([("weekly-cloud rule")] if P["wk_cloud"] else []) + \
             (["ADX ≥ %s" % fmt_num(P["adx_min"], 0)] if P["adx_min"] > 0 else [])
         if rules:
@@ -7168,6 +7279,8 @@ def backtest_strategy(df, cfg, bench=None):
     eq = np.full(total, cap, dtype=float)
     s = donchian_series(df, P["n_trend"], P["n_entry"], P["n_exit"]) if key == "donchian2" else None
     ichi = ichimoku_series(df, P["tenkan"], P["kijun"], P["senkou"]) if key == "ichimoku" else None
+    ages_l = ichi_kumo_ages(ichi, False) if ichi is not None else None      # v5.6: Kumo-kırılım yaşı
+    ages_s = ichi_kumo_ages(ichi, True) if ichi is not None else None
     wts = wavetrend_series(df, P) if key == "wavetrend" else None
     side_long = cfg.get("dir", "long") != "short" or key in ("flag", "wavetrend")
     side_short = key in ("donchian2", "ichimoku") and cfg.get("dir", "long") != "long"
@@ -7202,12 +7315,12 @@ def backtest_strategy(df, cfg, bench=None):
             if not _ok(kij) or a <= 0:
                 return None
             if side_long and rule_l[i]:
-                fresh = _ichi_ok(ichi, i) and not _ichi_ok(ichi, i - 1)        # Kumo kırılım günü
+                fresh = ichi_fresh_trigger(ichi, ages_l, rule_l, av, P, i)      # v5.6: yalnız 1–3. mum
                 bnc = (P["bounce"] and _ichi_trend_ok(ichi, i) and _ichi_bounce(ichi, i))   # Kijun geri çekilmesi
                 if (fresh or bnc) and (c[i] - kij) <= float(P["max_atr"]) * a:
                     return {"long": True, "stop": float(kij - 0.25 * a), "tp1": None, "tp2": None}
             if side_short and rule_s[i]:
-                fresh = _ichi_ok(ichi, i, short=True) and not _ichi_ok(ichi, i - 1, short=True)
+                fresh = ichi_fresh_trigger(ichi, ages_s, rule_s, av, P, i, True)
                 bnc = (P["bounce"] and _ichi_trend_ok(ichi, i, True) and _ichi_bounce(ichi, i, True))
                 if (fresh or bnc) and (kij - c[i]) <= float(P["max_atr"]) * a:
                     return {"long": False, "stop": float(kij + 0.25 * a), "tp1": None, "tp2": None}
