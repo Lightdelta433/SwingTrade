@@ -1,4 +1,123 @@
-# Pulse — Market Dashboard (Streamlit) · v5.4
+# Pulse — Market Dashboard (Streamlit) · v5.6
+
+## Neu in v5.6 (Deutsch)
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`,
+`pulse_chart/index.html` (bei `chart.py`, `mock_data.py` und `pulse_chart/index.html` ändert sich nur die
+Versionsnummer) — dann *Reboot app*. `pulse_list/index.html` ist unverändert (5.3). v5.6 enthält alles aus v5.4
+und v5.5; wenn du die noch nicht hochgeladen hast, reicht dieses Paket. Keine neuen Secrets.
+
+### Börsenzeiten: Orders außerhalb der Handelszeit werden vorgemerkt
+* Beim Absenden prüft Pulse, ob die **Heimatbörse** des Wertpapiers gerade regulär handelt:
+  US-Aktien/ETFs (NYSE / NASDAQ) 15:30–22:00 MEZ, XETRA / Frankfurt 09:00–17:30, Euronext (Paris, Amsterdam,
+  Brüssel, Lissabon, Dublin), Mailand, Madrid, Wien, Helsinki jeweils 09:00–17:30 MEZ. Wochenenden und die
+  Börsenfeiertage 2026/2027 sind hinterlegt (USA inkl. Halbtage nach Thanksgiving und an Heiligabend, Europa
+  inkl. 24.12. und 31.12.). Gerechnet wird in der Ortszeit der Börse, die Wochen mit abweichender Zeitumstellung
+  (USA/Europa) stimmen also automatisch. Krypto handelt rund um die Uhr, Gold/Silber/Öl-Futures nach CME-Zeiten
+  (So 18:00 – Fr 17:00 New Yorker Zeit, also Mo 0:00 – Fr 23:00 MEZ, mit täglicher Pause 23:00–0:00 MEZ).
+* Ist die Börse zu, zeigt das Order Ticket einen gelben Hinweis („NYSE / NASDAQ is closed · opens 15:30 CET“) und
+  der Knopf heißt **„Queue for the open“**. Die Order wird **nicht** in *Open positions* gebucht, sondern landet
+  in **Pending orders** (über den offenen Positionen) als *BUY AT OPEN* bzw. *SELL AT OPEN* — mit Symbol,
+  Stückzahl, Order-Typ (Market), **geplanter Summe** und Status *„Waits for the NYSE / NASDAQ open · 15:30 CET“*.
+* Das benötigte Kapital wird als **reservierte Buying Power** geblockt: Die Cash-Kachel zeigt „$2,000 reserved“,
+  *Buying power* im Risk-Panel sinkt entsprechend, und neue Käufe können das reservierte Geld nicht nutzen.
+  Solange die Börse zu ist, gibt es **keinen Open P/L** — das Geld ist ja noch nicht investiert.
+* **× Cancel** storniert die vorgemerkte Order jederzeit vor Börsenstart und gibt das Kapital sofort frei.
+* **Bei Börsenöffnung** wird sie automatisch zum aktuellen Eröffnungs-/Marktkurs ausgeführt (Prüfung im Live-Takt
+  alle 20 Sekunden, auch beim Seitenaufruf, und bei jedem 15-Minuten-Botlauf), verschwindet aus *Pending orders*
+  und steht dann in *Open positions* und der Trade History („Queued at NYSE / NASDAQ open“). Ein beim Absenden
+  gesetzter Stop-Loss / Take-Profit wird mit übernommen. Reicht das Cash zum Eröffnungskurs nicht (der Kurs kann
+  über Nacht steigen), bleibt die Order mit Hinweis stehen.
+* **Limit-Orders** füllen ebenfalls nur noch in der regulären Sitzung (Status außerhalb: „… closed — fills in the
+  session“).
+* **Bots** prüfen jetzt jedes Symbol gegen seine eigene Börse: Aktien nur in deren Handelszeit, Krypto und Futures
+  auch außerhalb der US-Sitzung (vorher waren alle Bots an die US-Sitzung gebunden). Bots nutzen dabei nur freies,
+  nicht reserviertes Cash.
+* *Grenzen:* Die Feiertagslisten decken 2026 und 2027 ab — danach gelten nur Wochenenden und Uhrzeiten, bis die
+  Liste ergänzt wird. „Cover all“ für Short-Positionen und SL/TP-Ausstiege laufen weiter wie bisher (ohne
+  Börsenzeiten-Prüfung). Ausgeführt wird, solange Pulse läuft: Schläft die App auf Streamlit Cloud um 15:30
+  (niemand hatte sie länger offen), füllt die Order beim ersten Check nach dem Aufwachen — zum dann aktuellen Kurs,
+  nicht rückwirkend zum Eröffnungskurs.
+
+### Ichimoku: Frische-Filter & Signal-Abstufung nach Kerzen-Alter
+* Das Alter eines Signals zählt jetzt ab dem **initialen Kumo-Ausbruch** — der ersten Tageskerze, deren Schlusskurs
+  die Wolke (Senkou A & B) verlässt (= Kerze 1). Kreuzen Tenkan/Kijun oder die Chikou erst später, altert das Signal
+  trotzdem ab diesem Ausbruch.
+* **Kerze 1–3:** *Strong breakout · armed (candle 2 of 3)* — Chip **STRONG · ARMED**, volle Signalstärke für den
+  Neueinstieg. Bots dürfen in diesen drei Kerzen einsteigen (vorher nur Tag 1–2).
+* **Kerze 4–10:** *Mature trend · aging (candle 6)* — Chip **AGING** (orange). Kein frisches Einstiegssignal mehr:
+  offene Trades halten (Ausstieg bei Schluss jenseits der Kijun) oder auf den Kijun-Pullback warten. Bots steigen
+  nicht ein; der Trade-Plan zeigt den Einstieg an der Kijun.
+* **Ab Kerze 11:** *Trend above the cloud · no breakout signal* — Chip **NO SIGNAL** (neutral). Als Folge-Setup
+  bleibt der **Kijun Bounce (Second Entry)** — er wird unabhängig vom Ausbruchsalter erkannt (Chip **KIJUN BOUNCE**).
+* Damit es keine Verwechslung gibt: Der bisherige gelbe Chip „ARMED“ (Signal da, aber Marktregel nicht erfüllt
+  oder zu weit von der Kijun) heißt auf dem Ichimoku-Board jetzt **ON HOLD**.
+* Gilt für Long und Short, im klassischen Modus und für Stufe 2 im gestaffelten Modus. Der **Backtest** nimmt nur
+  noch frische Ausbrüche (Kerze 1–3), die Einstiegspunkte im Chart ebenfalls; die Checkliste zeigt „Age of the
+  breakout: candle 2 of 3“. Die Wartezeile ohne Signal nennt ebenfalls das Alter („Above the cloud — no fresh
+  signal (candle 14)“).
+* Die Ichimoku-Auswertung läuft auf Tageskerzen — „Kerze“ heißt hier also Handelstag.
+
+## Neu in v5.5 (Deutsch)
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`,
+`pulse_chart/index.html` und (neu) `pulse_list/index.html` — dann *Reboot app*. v5.5 enthält alles aus v5.4
+(Zahnrad, 8 Kacheln, Positionsrechner, Risk-Panel, Circuit Breaker); wenn du v5.4 noch nicht hochgeladen hast,
+reicht dieses Paket. `pulse_list/index.html` steckt auch eingebettet in `chart.py` — wer die Datei im Repo nicht
+anlegen will, kann sie weglassen. Keine neuen Secrets.
+
+### Loss-Limit-Balken: vierstufige Health-Skala
+* **Verbleibende Account Health = 100 % − verbrauchtes Limit.** Der Balken wechselt die Farbe in vier Stufen:
+  **100–75 % dunkelgrün** (`#0E9F6E`, optimal) · **75–50 % hellgrün** (`#34D399`) · **50–25 % gelb/amber**
+  (`#F5B544`, Warnbereich) · **25–0 % rot** (`#F87171`, kurz vor ACCOUNT BREACHED).
+* Das **Status-Badge** oben rechts im Circuit-breaker-Block zeigt dieselbe Stufe samt Prozentwert:
+  *HEALTHY · 92 %* → *GOOD · 61 %* → *WARNING · 36 %* → *CRITICAL · 12 %* → *BREACHED*.
+* Beide wechseln weich: `transition: background-color .3s ease, width .3s ease` — Breite und Farbe folgen sofort,
+  wenn sich offener P/L oder realisierte Verluste ändern (die Seite rechnet den Periodenverlust bei jedem Lauf neu).
+* Unter dem Balken steht jetzt „63.7 % used · 36 % left“ in einer Zeile.
+
+### Open-risk-Warnung zentriert
+Der gelbe Hinweis („1 position without a stop-loss …“) sitzt jetzt **innerhalb** der Open-risk-Box, über die volle
+Breite zentriert (`text-align:center; width:100%; display:block`), ohne linke Einrückung — direkt unter
+*$0.00 / 0.00 % of equity*.
+
+### Position size: Unternehmens-Auswahl + heller Live-Kurs
+* Neues **Auswahlfeld „Company“** über die ganze Breite der Karte, mit Dropdown-Pfeil. Die Liste enthält das
+  Symbol aus dem Order Ticket, deine offenen Positionen und die Demo-Watchlist; in neueren Streamlit-Versionen
+  kannst du zusätzlich einen beliebigen Ticker eintippen (ältere Versionen zeigen nur die Liste).
+* Auswahl ist **freiwillig**: mit `— no company (manual) —` trägst du Einstieg und Stop weiter komplett von Hand
+  ein, genau wie bisher.
+* Nach der Auswahl erscheint der **Live-Kurs in hellem Weiß** (`#F8FAFC`, Tagesveränderung in Grün/Rot) statt im
+  dunklen Grau, und der Einstiegspreis folgt ihm, solange *„Use live price as entry“* an ist. Der Stop wird vom
+  Order Ticket übernommen, wenn dort für dasselbe Symbol ein Stop-Loss gesetzt ist.
+* **„Use in order ticket →“** schreibt jetzt auch das gewählte Unternehmen ins Order Ticket (zusätzlich zu
+  Stückzahl, Seite *Buy* und Stop-Loss).
+
+### Pending Orders: echte Limit-Orders
+* Das Order Ticket hat einen neuen Schalter **Market / Limit**. Bei *Limit* gibst du den Wunschkurs ein; darunter
+  steht, wie weit er entfernt ist („Waits until AAPL falls to 190.00 (−5.00 % from 200.00). Good until you cancel
+  it.“). Stop-Loss und Take-Profit beziehen sich dann auf den Limitkurs.
+* Die Order wandert in die Karte **Pending orders** unter dem Order Ticket: Symbol, BUY/SELL LIMIT, Stückzahl,
+  Limit, aktueller Kurs mit Abstand in %, SL/TP, Zeitpunkt, Status und **Cancel**. Pro Konto bis zu 20 Orders,
+  sie bleiben liegen, bis sie ausgeführt oder storniert werden (GTC).
+* **Ausführung:** Kauf füllt bei Kurs ≤ Limit, Verkauf bei Kurs ≥ Limit — geprüft im Live-Takt des Monitors
+  (alle 20 Sekunden, auch beim Seitenaufruf) und zusätzlich bei jedem 15-Minuten-Botlauf. Gefüllt wird zum
+  **besseren** Kurs: steht der Markt schon bei 188, während dein Kauflimit 190 ist, bekommst du 188.
+  Stop-Loss / Take-Profit werden beim Füllen automatisch gesetzt, und du bekommst eine Push-/E-Mail-Meldung
+  (wenn Bot-Benachrichtigungen an sind).
+* Reicht beim Füllen das Cash nicht (oder wurde die Position vorher verkauft), bleibt die Order mit rotem
+  Hinweistext liegen, statt still zu verschwinden.
+* **Circuit Breaker:** Bei *ACCOUNT BREACHED* lassen sich keine neuen Limit-Orders aufgeben, bestehende
+  **Kauf-Limits bleiben geparkt** („Blocked — account breached“), **Verkaufs-Limits füllen weiter** — Risiko
+  verringern bleibt immer erlaubt.
+
+### Watchlist: Pre-Market & After-Hours
+Die vor- und nachbörslichen Kurse stehen in der Watchlist schon seit v5.0 unter der jeweiligen Zeile (rechts
+ausgerichtet, ☀️ / 🌙 + Kurs + Veränderung gegenüber dem regulären Schluss, Quelle: 1-Minuten-Kerzen mit
+`prepost=True`). Neu ist nur das **Kürzel PRE / AFTER** neben dem Symbol, damit auf einen Blick klar ist, welche
+Session gemeint ist. Drag & Drop und die ↑ / ↓-Sortierung bleiben unverändert.
+*Grenze:* Die Zeile erscheint nur, wenn es in der laufenden Extended-Hours-Session wirklich einen Handel gab —
+ohne vorbörslichen Umsatz liefert Yahoo keinen Kurs, dann bleibt die Zeile leer.
 
 ## Neu in v5.4 (Deutsch)
 
