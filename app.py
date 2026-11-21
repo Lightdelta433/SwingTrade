@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "5.6"
+APP_VERSION = "5.7"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -1468,6 +1468,7 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .rk-lab{font-size:11.5px;font-weight:600;color:#8D96A5;padding:2px 0 0 0}
 .rk-out{border-radius:12px;padding:8px 12px;background:var(--panel2);
  border:1px solid color-mix(in srgb,var(--acc) 22%,var(--border))}
+.rk-out+.rk-out{margin-top:12px}
 .rk-kv{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12.5px;color:#8D96A5;padding:5px 0}
 .rk-kv+.rk-kv{border-top:1px solid #1C1F25}
 .rk-kv b{color:#ECEEF1;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;text-align:right}
@@ -1485,7 +1486,8 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
  font-weight:700}
 .rk-px .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#C4CAD4}
 .rk-px .st{color:#E2E8F0;font-family:ui-monospace,monospace}
-.rk-row{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;color:#8D96A5}
+.rk-row{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 8px;font-size:11.5px;color:#8D96A5;
+ min-width:0}
 .rk-row b{font-family:ui-monospace,monospace;color:#ECEEF1}
 .rk-hr{height:1px;background:#22262D;margin:2px 0}
 .pos-ext{font-size:10.5px;font-family:ui-monospace,monospace;margin-top:1px}
@@ -1496,13 +1498,16 @@ a.ghost:hover{color:#F87171;border-color:rgba(248,113,113,.5);background:rgba(24
 .mkt-shut div span{display:block;font-size:11.5px;line-height:1.45;color:#C4CAD4;margin-top:2px;font-size:11.5px}
 .st-key-demo_pend table.pos td{vertical-align:middle}
 .st-key-demo_pend .panel-title{white-space:nowrap}
-.cb-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.cb-t{font-size:12.5px;font-weight:800;color:#ECEEF1;display:flex;align-items:center;gap:6px}
-.cb-st{font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;border-radius:999px;padding:2px 8px}
-.cb-big{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-family:ui-monospace,monospace;
- font-variant-numeric:tabular-nums}
-.cb-big b{font-size:16px;color:#ECEEF1;white-space:nowrap}
-.cb-big span{font-size:11px;color:#8D96A5;white-space:nowrap}
+.cb-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 8px}
+.cb-t{font-size:12.5px;font-weight:800;color:#ECEEF1;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.cb-st{font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;border-radius:999px;padding:2px 8px;
+ white-space:nowrap}
+.cb-big{display:block;min-width:0;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.cb-big>b{display:block;font-size:16px;line-height:1.3;color:#ECEEF1;overflow-wrap:anywhere}
+.cb-pct{display:flex;justify-content:space-between;gap:8px;min-width:0;margin-top:2px;font-size:11px;
+ color:#8D96A5;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.cb-pct span{white-space:nowrap}
+.cb-pct b{display:inline;color:#C4CAD4;font-weight:600}
 .breach{border-radius:12px;padding:10px 12px;border:1px solid rgba(248,113,113,.65);color:#FECACA;
  background:linear-gradient(135deg,rgba(248,113,113,.20),rgba(248,113,113,.08));box-shadow:0 0 0 3px rgba(248,113,113,.10)}
 .breach b.bt{display:block;font-size:13px;font-weight:900;letter-spacing:.04em;color:#F87171}
@@ -7194,6 +7199,19 @@ def _guard_cb(aid, field):
     toast_later(msg if ok else f"⚠️ {msg}")
 
 
+def pl_b(x, cur, dec=0):
+    """v5.7: K/Z değeri — pozitif yeşil (+), negatif kırmızı (−), tam sıfır nötr. 1'in altındaki tutarlar kuruşlu."""
+    try:
+        v = float(x or 0)
+    except (TypeError, ValueError):
+        return f'<b style="color:{MUT}">—</b>'
+    if abs(v) < 0.005:
+        return f'<b style="color:{TXT}">{money(0, cur, dec)}</b>'
+    d = dec if abs(v) >= 1 else 2
+    return (f'<b style="color:{UP if v > 0 else DOWN}">{"+" if v > 0 else "−"}'
+            f'{money(abs(v), cur, d)}</b>')
+
+
 def render_risk_panel(acct, val, cur, gs):
     """Risk & Exposure: açık risk, alım gücü / kullanım ve Prop-Firm devre kesici (haftalık / aylık zarar limiti)."""
     aid = acct["id"]
@@ -7274,13 +7292,12 @@ def render_risk_panel(acct, val, cur, gs):
         t0 = pd.Timestamp(gs["t0"], unit="s", tz="UTC").tz_convert(md.TZ)
         since = ("Mon " + t0.strftime("%d.%m.")) if gs["period"] == "week" else t0.strftime("%d.%m.")
         H(f'<div class="cb-big"><b>{money(gs["loss"], cur)} / {money(gs["limit"], cur, 0)}</b>'
-          f'<span>{tr(gs["ratio"] * 100, 1)}% used · {hp:.0f}% left</span></div>'
+          f'<div class="cb-pct"><span><b>{tr(gs["ratio"] * 100, 1)}%</b> used</span>'
+          f'<span><b>{hp:.0f}%</b> left</span></div></div>'
           f'<div class="rk-bar" title="Account health {hp:.0f}% — {lab}">'
           f'<i style="width:{ratio * 100:.1f}%;background:{bcol}"></i></div>'
-          f'<div class="rk-row"><span>Realised since {since} <b style="color:{col(gs["realized"])}">'
-          f'{("+" if gs["realized"] >= 0 else "")}{money(gs["realized"], cur, 0)}</b></span>'
-          f'<span>Open <b style="color:{col(gs["open"])}">{("+" if gs["open"] >= 0 else "")}'
-          f'{money(gs["open"], cur, 0)}</b></span></div>'
+          f'<div class="rk-row"><span>Realised since {since} {pl_b(gs["realized"], cur)}</span>'
+          f'<span>Open {pl_b(gs["open"], cur)}</span></div>'
           + ('' if on else '<div class="rk-note">Switched off — no loss limit for this account.</div>'))
 
 
