@@ -1,4 +1,22 @@
-# Pulse — Market Dashboard (Streamlit) · v5.6
+# Pulse — Market Dashboard (Streamlit) · v5.7
+
+## Neu in v5.7 (Deutsch)
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`,
+`pulse_chart/index.html` (außer `app.py` ändert sich überall nur die Versionsnummer, alle müssen aber auf 5.7
+stehen) — dann *Reboot app*. `pulse_list/index.html` ist unverändert (5.3). v5.7 enthält alles aus v5.4–v5.6.
+
+### Risk & exposure: UI-Korrekturen
+* **Abstand:** Zwischen der Box *Open risk* und der Box *Buying power* liegen jetzt 12 px, die Kästen gehen nicht
+  mehr ineinander über.
+* **Loss-Limit-Text bleibt in der Spalte:** Der Betrag („$105.00 / $5,000“) steht in einer eigenen Zeile, darunter
+  kompakt „2.1 % used“ links und „98 % left“ rechts, dann der Balken. Nichts ist mehr auf eine Zeile gezwungen,
+  auch bei schmalen Fenstern ragt nichts ins rechte Panel. Titel „Circuit breaker“ und Status-Badge brechen nicht
+  mehr mitten im Wort um; wird es eng, rutscht das Badge als Ganzes in die nächste Zeile.
+* **Farben für Realised / Open:** Unter dem Balken gilt jetzt: Gewinn grün mit „+“, Verlust rot mit „−“
+  (z. B. „Realised since Mon 16.11. −$120“), exakt null neutral weiß ohne Vorzeichen („$0“). Vorher war auch $0
+  und ein Verlust grün eingefärbt. Beträge unter 1 werden mit Cent angezeigt (z. B. „−$0.40“), damit ein kleiner
+  Verlust nicht als „$0“ erscheint. Gleiche Regel für den *Open*-Wert daneben. Rot ist das App-weite Rot `#F87171`.
 
 ## Neu in v5.6 (Deutsch)
 
