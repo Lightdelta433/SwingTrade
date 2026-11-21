@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.6"
+BACKEND_VERSION = "5.7"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
