@@ -38,13 +38,82 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.7"
+BACKEND_VERSION = "5.11"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
 DATA_DIR = os.environ.get("PULSE_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                            ".pulse_data")
 TZ = "Europe/Berlin"
+# v5.8 — paylaşımlı mod: arayüz ve 7/24 worker AYNI veri klasörünü kullanır (Docker / VPS / ev bilgisayarı).
+#   Yerel dosya esas kaynaktır; her okumada dosya değiştiyse yeniden okunur, oku-değiştir-yaz adımları süreçler
+#   arası dosya kilidiyle korunur → iki süreç aynı anda işlem yapsa da çift alım / kayıp güncelleme olmaz.
+SHARED = str(os.environ.get("PULSE_SHARED") or "").strip().lower() in ("1", "true", "yes", "on")
+WORKER_STALE = 180           # sn: daha eski kalp atışı = worker çalışmıyor
+
+
+def _flock(fh, on):
+    """Süreçler arası özel kilit — Linux / macOS: fcntl, Windows: msvcrt (60 sn'ye kadar bekler)."""
+    try:
+        import fcntl
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if on else fcntl.LOCK_UN)
+        return
+    except ImportError:          # pragma: no cover — Windows
+        pass
+    import msvcrt                # pragma: no cover
+    fh.seek(0)
+    if not on:
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        return
+    for _ in range(600):
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            time.sleep(0.1)
+    raise OSError("lock timeout")
+
+
+class _FileLock:
+    """Aynı süreçte iç içe girilebilen kilit; paylaşımlı modda ayrıca süreçler arası dosya kilidi."""
+
+    def __init__(self, name):
+        self.name, self.fh, self.depth, self.tl = name, None, 0, threading.RLock()
+
+    def __enter__(self):
+        self.tl.acquire()
+        if self.depth == 0 and SHARED:
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                self.fh = open(os.path.join(DATA_DIR, "." + self.name + ".lock"), "a+")
+                _flock(self.fh, True)
+            except OSError:
+                if self.fh is not None:
+                    try:
+                        self.fh.close()
+                    except OSError:
+                        pass
+                self.fh = None
+        self.depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        self.depth -= 1
+        if self.depth == 0 and self.fh is not None:
+            try:
+                _flock(self.fh, False)
+            except OSError:
+                pass
+            try:
+                self.fh.close()
+            except OSError:
+                pass
+            self.fh = None
+        self.tl.release()
+        return False
 
 
 def configure(cfg):
@@ -97,6 +166,15 @@ def _local_read(name):
         return None
 
 
+def _local_mtime(name):
+    """Dosyanın (değişiklik zamanı, boyut) imzası — paylaşımlı modda başka süreç yazdı mı?"""
+    try:
+        st_ = os.stat(_local_path(name))
+        return (st_.st_mtime_ns, st_.st_size)
+    except OSError:
+        return None
+
+
 def _local_write(name, obj):
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -114,7 +192,11 @@ def _local_write(name, obj):
 
 
 def _kv_load(name):
-    e = {"obj": None, "sha": None, "loaded": True, "dirty": False, "t": time.time()}
+    e = {"obj": None, "sha": None, "loaded": True, "dirty": False, "t": time.time(), "mt": None}
+    if SHARED and os.path.exists(_local_path(name)):       # v5.8: paylaşımlı modda yerel dosya esas
+        e["obj"], e["mt"] = _local_read(name), _local_mtime(name)
+        _KV[name] = e
+        return e
     if store_mode() == "github":
         try:
             r = _gh("GET", name)
@@ -141,6 +223,7 @@ def _kv_load(name):
                 e["obj"] = loc
     else:
         e["obj"] = _local_read(name)
+    e["mt"] = _local_mtime(name)
     _KV[name] = e
     return e
 
@@ -151,6 +234,12 @@ def kv_get(name, default=None):
         e = _KV.get(name)
         if e is None or (not e["loaded"] and time.time() - e["t"] > 45):
             e = _kv_load(name)
+        elif SHARED:                                   # v5.8: başka süreç (worker / arayüz) yazdıysa tazele
+            mt = _local_mtime(name)
+            if mt is not None and mt != e.get("mt"):
+                obj = _local_read(name)
+                if obj is not None:
+                    e["obj"], e["mt"] = obj, mt
         return copy.deepcopy(e["obj"]) if e["obj"] is not None else default
 
 
@@ -195,6 +284,10 @@ def _push_one(name):
         if not e or not e.get("dirty"):
             return True
         obj, sha, stamp = copy.deepcopy(e["obj"]), e.get("sha"), e["t"]
+        if SHARED:                                     # v5.8: en güncel hâl yerel dosyada
+            loc = _local_read(name)
+            if loc is not None:
+                obj = loc
     try:
         ok, new_sha = _gh_put(name, obj, sha)
     except Exception as ex:
@@ -219,6 +312,7 @@ def kv_put(name, obj, sync=True):
         e["t"] = time.time()
         _KV[name] = e
         loc = _local_write(name, e["obj"])
+        e["mt"] = _local_mtime(name)
         gh = store_mode() == "github"
         if gh:
             e["dirty"] = True
@@ -383,6 +477,10 @@ def notify_prefs(prof):
     return n
 
 
+_PLOCK = _FileLock("profiles")
+_ILOCK = _FileLock("inbox")
+
+
 def profiles():
     return (kv_get("profiles") or {}).get("users") or {}
 
@@ -396,14 +494,15 @@ def profile_put(email, prof, sync=False):
     email = str(email or "").lower()
     if not email:
         return
-    with _LOCK:
-        allp = kv_get("profiles") or {"v": 1, "users": {}}
-        allp.setdefault("users", {})[email] = prof
-    return kv_put("profiles", allp, sync=sync)
+    with _PLOCK:
+        with _LOCK:
+            allp = kv_get("profiles") or {"v": 1, "users": {}}
+            allp.setdefault("users", {})[email] = prof
+        return kv_put("profiles", allp, sync=sync)
 
 
 def profile_remove(email):
-    with _LOCK:
+    with _PLOCK:
         allp = kv_get("profiles") or {"v": 1, "users": {}}
         if allp.get("users", {}).pop(str(email or "").lower(), None) is not None:
             kv_put("profiles", allp, sync=False)
@@ -430,9 +529,17 @@ def _state_save(s):
     kv_put("state", s, sync=False)
 
 
+def _inbox_box(email):
+    """Kullanıcının bildirim kutusu — paylaşımlı modda worker'ın ürettikleri de (yerel 'inbox' dosyası)."""
+    email = str(email or "").lower()
+    if SHARED:
+        return list(((_local_read("inbox") or {}).get(email)) or [])
+    return list(_INBOX.get(email, []))
+
+
 def inbox_since(email, last_id=0):
     with _LOCK:
-        return [dict(x) for x in _INBOX.get(str(email or "").lower(), []) if x["id"] > int(last_id or 0)]
+        return [dict(x) for x in _inbox_box(email) if x["id"] > int(last_id or 0)]
 
 
 def deliver(email, prefs, kind, title, body, sym=None, tags=None, priority=3):
@@ -443,11 +550,23 @@ def deliver(email, prefs, kind, title, body, sym=None, tags=None, priority=3):
     if prefs.get("_inbox", True):
         used.append("inbox")
         with _LOCK:
-            _SEQ[0] += 1
+            _SEQ[0] = max(_SEQ[0] + 1, int(time.time() * 1000))     # süreçler arası da artan kimlik
             item = {"id": _SEQ[0], "ts": time.time(), "kind": kind, "sym": sym or "", "title": title, "body": body}
-            box = _INBOX.setdefault(email, [])
-            box.append(item)
-            del box[:-100]
+            if SHARED:                                  # v5.8: worker'ın bildirimleri arayüzde de görünsün
+                with _ILOCK:
+                    allb = _local_read("inbox") or {}
+                    box = allb.setdefault(email, [])
+                    # v5.10: iki süreç aynı milisaniyede yazarsa kimlik çakışmasın — dosya kilidi altında en büyüğün +1'i
+                    top = max([int(x.get("id", 0) or 0) for b_ in allb.values() for x in b_] + [0])
+                    if item["id"] <= top:
+                        item["id"] = _SEQ[0] = top + 1
+                    box.append(item)
+                    del box[:-100]
+                    _local_write("inbox", allb)
+            else:
+                box = _INBOX.setdefault(email, [])
+                box.append(item)
+                del box[:-100]
     url = CFG.get("app_url") or None
     if url and sym:
         url = f"{url}/?sec=Markets&sym={sym}"
@@ -702,7 +821,7 @@ BOT_HOURS_ONLY = True        # yalnızca ABD seansı açıkken alım (09:30–16
 BOT_BAR_MAX_AGE = 45 * 60    # alım için son 15 dk mumunun en fazla yaşı
 BOT_MAX = 8
 _EUR_SFX = (".DE", ".F", ".PA", ".AS", ".MI", ".MC", ".BR", ".VI", ".HE", ".LS", ".IR")
-_DLOCK = threading.RLock()
+_DLOCK = _FileLock("demo")        # v5.8: paylaşımlı modda süreçler arası da kilit
 
 
 def _engine():
@@ -1615,12 +1734,12 @@ def _eq_point(acct, equity, now, gap=840):
         eq[-1][1] = round(equity, 2)
 
 
-def bot_new(name, src, universe, cfg=None, flt=None, params=None, ichi=None):
+def bot_new(name, src, universe, cfg=None, flt=None, params=None, ichi=None, pairs=None, rot=None):
     """src: 'ai' (formasyon kırılımı) · 'filter' (kendi filtren) · v4.9: 'donchian2' · 'flag' (hazır stratejiler).
     v5.3: Ichimoku botu yalnızca seçilen piyasalarda (altın, gümüş, petrol, Bitcoin) long + short işlem yapar;
     ichi = {'mkts': [...], 'btc': 'btc1030'} — her piyasa kendi ön ayarıyla."""
     en = _engine()
-    src = src if (src == "filter" or src in en.STRAT_PARAMS) else "ai"
+    src = src if (src in ("filter", "pairs", "rotation") or src in en.STRAT_PARAMS) else "ai"
     b = {"id": secrets.token_hex(4), "name": str(name or "Bot").strip()[:40] or "Bot",
          "on": True, "src": src,
          "universe": "scan" if universe == "scan" else "demo", "cfg": en.bot_cfg(cfg),
@@ -1633,7 +1752,32 @@ def bot_new(name, src, universe, cfg=None, flt=None, params=None, ichi=None):
         btc = (ichi or {}).get("btc")
         b["ichi"] = {"mkts": mk, "btc": btc if btc in en.ICHI_BTC else "btc1030"}
         b["universe"] = "ichi"
+    if src == "pairs":                       # v5.8: çift listesi + çift ayarları; açık çiftler 'pt' içinde
+        lst, seen = [], set()
+        for x in (pairs or {}).get("list") or []:
+            if isinstance(x, (list, tuple)) and len(x) == 2:
+                a_, b_ = str(x[0]).upper().strip()[:24], str(x[1]).upper().strip()[:24]
+                if a_ and b_ and a_ != b_ and en.pair_key(a_, b_) not in seen:
+                    seen.add(en.pair_key(a_, b_))
+                    lst.append([a_, b_])
+        b["pairs"] = {"list": lst[:20], "p": en.pair_cfg((pairs or {}).get("p"))}
+        b["universe"], b["pt"] = "pairs", {}
+    if src == "rotation":                    # v5.8: evren + rotasyon ayarları; ay başında yeniden dengeler
+        r_ = rot or {}
+        uni = r_.get("uni") if r_.get("uni") in list(en.ROT_UNIVERSES) + ["watch", "custom"] else "us_sectors"
+        syms = [str(x).upper().strip()[:24] for x in (r_.get("syms") or []) if str(x).strip()][:40]
+        b["rot"] = {"uni": uni, "syms": syms, "p": en.rot_cfg(r_.get("p"))}
+        b["universe"] = "rotation"
     return b
+
+
+def rot_month(now=None):
+    return pd.Timestamp(now or time.time(), unit="s", tz="UTC").tz_convert(TZ).strftime("%Y-%m")
+
+
+def rot_due(b, now=None):
+    """Rotasyon botu bu turda yeniden dengelemeli mi? (yeni ay ya da kullanıcı "şimdi" dedi)"""
+    return bool(b.get("rot_force")) or b.get("rot_month") != rot_month(now)
 
 
 def bot_stats(acct, bot_id, val=None):
@@ -1686,11 +1830,11 @@ def _real(df):
 def bots_collect(md, acct):
     """Kilidin DIŞINDA: botların ihtiyacı olan tüm veriyi çeker ve sinyalleri hesaplar."""
     en = _engine()
-    bots = [b for b in acct.get("bots") or [] if b.get("on")]
+    bots = [b for b in acct.get("bots") or [] if b.get("on") or (b.get("src") == "pairs" and b.get("pt"))]
     held = sorted({p["sym"] for p in acct["pos"].values() if has_orders(p)})
     watch = [s for s in acct.get("watch") or [] if inst_ccy(s)]
-    data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "eurusd": None, "err": {},
-            "chan": {}}
+    data = {"sig": {}, "skip": {}, "n": {}, "i15": {}, "px": {}, "regime_ok": True, "regime_dn": False, "eurusd": None,
+            "err": {}, "chan": {}}
     # v4.9/5.1/5.3: izleyen stoplu pozisyonlar — Donchian: N günlük dip · Ichimoku: Kijun · kademeli aşama 1: bulut
     chan = {}
     for p in acct["pos"].values():
@@ -1723,18 +1867,30 @@ def bots_collect(md, acct):
         pass
     if bots:
         try:
-            data["regime_ok"] = bool(en.ai_regime(md.get_daily_batch(("SPY", "QQQ")), 50).get("ok"))
+            reg_ = en.ai_regime(md.get_daily_batch(("SPY", "QQQ")), 50)
+            data["regime_ok"], data["regime_dn"] = bool(reg_.get("ok")), bool(reg_.get("dn"))   # v5.11: dn = short
         except Exception:
-            data["regime_ok"] = False
+            data["regime_ok"], data["regime_dn"] = False, False
     need15, evals = set(held), {}
     for b in bots:
         try:
             if b["src"] == "ai":
-                meta = {}
+                meta, sides = {}, {}
+                both = en.bot_cfg(b.get("cfg")).get("ai_dir") == "both"      # v5.11: ayı formasyonlarında short
                 if b["universe"] == "scan":
-                    cand, _ = en.ai_prefilter(md.get_market_snapshot(), None)
+                    snap_ = md.get_market_snapshot()
+                    cand, _ = en.ai_prefilter(snap_, None)
                     syms = [t for t in list(cand["ticker"].head(40)) if inst_ccy(t)] if len(cand) else []
                     meta = cand.set_index("ticker").to_dict("index") if len(cand) else {}
+                    sides = {t: "long" for t in syms}
+                    if both:
+                        cs_, _ = en.ai_prefilter(snap_, None, side="short")
+                        sh_ = [t for t in list(cs_["ticker"].head(20)) if inst_ccy(t) and t not in sides] \
+                            if cs_ is not None and len(cs_) else []
+                        if sh_:
+                            meta = dict(cs_.set_index("ticker").to_dict("index"), **meta)
+                        syms += sh_
+                        sides.update({t: "short" for t in sh_})
                 else:
                     syms = list(watch)
                 daily = md.get_daily_batch(tuple(syms)) if syms else {}
@@ -1743,7 +1899,7 @@ def bots_collect(md, acct):
                     df = daily.get(t)
                     if not _real(df):
                         continue
-                    r = en.ai_evaluate(t, df, meta=meta.get(t))
+                    r = en.ai_evaluate(t, df, meta=meta.get(t), side=sides.get(t) or (None if both else "long"))
                     if r:
                         rs.append(r)
                         bb = r.get("best")
@@ -1751,6 +1907,44 @@ def bots_collect(md, acct):
                             need15.add(t)
                 evals[b["id"]] = ("ai", rs)
                 data["n"][b["id"]] = len(rs)
+            elif b["src"] == "pairs":                              # v5.8: iki bacaklı çift işlemi
+                pc_ = b.get("pairs") or {}
+                lst = [tuple(x) for x in (pc_.get("list") or []) if len(x) == 2]
+                syms = sorted({s_ for pr in lst for s_ in pr if inst_ccy(s_)})
+                daily = md.get_daily_batch(tuple(syms), period="2y") if syms else {}
+                pdat = {}
+                for a_, b_ in lst:
+                    if _real(daily.get(a_)) and _real(daily.get(b_)):
+                        pdat[en.pair_key(a_, b_)] = (a_, b_, daily[a_], daily[b_])
+                        need15.update((a_, b_))
+                for t_ in (b.get("pt") or {}).values():           # açık çiftlerin bacakları her zaman izlenir
+                    need15.update((t_["a"], t_["b"]))
+                data.setdefault("pdat", {})[b["id"]] = pdat
+                data["n"][b["id"]] = len(pdat)
+                evals[b["id"]] = ("pairs", [])
+            elif b["src"] == "rotation":                           # v5.8: aylık momentum rotasyonu
+                ro = b.get("rot") or {}
+                uni = en.rot_universe(ro.get("uni") or "us_sectors", watch=acct.get("watch"), custom=ro.get("syms"))
+                held_r = sorted({p["sym"] for p in acct["pos"].values() if p["owner"] == b["id"]})
+                info = {"due": rot_due(b), "held": held_r, "uni": uni["key"]}
+                if info["due"]:
+                    want = list(dict.fromkeys(uni["syms"] + [x for x in (uni.get("bench"), uni.get("safe")) if x]))
+                    daily = md.get_daily_batch(tuple(want), period="2y") if want else {}
+                    fr = en.rot_frame({t_: df for t_, df in daily.items() if _real(df)}, want)
+                    if fr is not None:                             # yalnızca tamamlanmış günler (bugünkü yarım mum yok)
+                        fr = fr[fr.index < pd.Timestamp.now(tz=TZ).normalize().tz_localize(None)]
+                    rk = en.rot_rank(fr, uni, ro.get("p"), held=held_r) if fr is not None and len(fr) > 260 else None
+                    if rk:
+                        info.update({"pick": rk["pick"], "risk_on": rk["risk_on"], "safe": uni.get("safe"),
+                                     "free": rk["free"], "date": rk["date"],
+                                     "top": [(r_["sym"], round(float(r_["score"]), 1)) for r_ in rk["rows"][:5]]})
+                        need15.update(set(held_r) | set(rk["pick"]) |
+                                      ({uni["safe"]} if uni.get("safe") and rk["free"] > 0 else set()))
+                    else:
+                        info["err"] = "no price data for the universe"
+                data.setdefault("rot", {})[b["id"]] = info
+                data["n"][b["id"]] = len(uni["syms"])
+                evals[b["id"]] = ("rotation", [])
             elif b["src"] == "ichimoku":                           # v5.3: yalnızca altın / gümüş / petrol / Bitcoin
                 ich = b.get("ichi") or {}
                 syms = [s_ for s_ in (ich.get("mkts") or [m[0] for m in en.ICHI_MARKETS]) if inst_ccy(s_)]
@@ -1819,16 +2013,31 @@ def bots_collect(md, acct):
             data["px"][t] = float(df["Close"].iloc[-1])
         except Exception:
             pass
+    for bid, pdat in (data.pop("pdat", None) or {}).items():       # v5.8: çiftlerin güncel z-skoru (canlı fiyatla)
+        bb_ = next((x for x in bots if x["id"] == bid), {})
+        pc_ = (bb_.get("pairs") or {}).get("p")
+        zz = {}
+        for k_, (a_, b_, da, db) in pdat.items():
+            try:
+                s_ = en.pair_signal_live(da, db, pc_, data["px"].get(a_), data["px"].get(b_))
+            except Exception:
+                s_ = None
+            if s_:
+                zz[k_] = s_
+        data.setdefault("pz", {})[bid] = zz
     for b in bots:
         kind, rows = evals.get(b["id"], (None, []))
         sig, skip = [], []
+        if kind == "ai":                              # v5.11: önce 15 dk teyidi, sonra skora göre (mum bonusu = öncelik)
+            for r in rows:
+                bb = r.get("best")
+                if bb and r["ticker"] in data["i15"]:
+                    en.ai_apply_15m(r, en.confirm_15m(data["i15"][r["ticker"]], bb["level"], bb["kind"]))
+            rows = sorted(rows, key=lambda r_: -float(r_.get("score") or 0.0))
         for r in rows:
             t = r["ticker"]
             if kind == "ai":
-                bb = r.get("best")
-                if bb and t in data["i15"]:
-                    en.ai_apply_15m(r, en.confirm_15m(data["i15"][t], bb["level"], bb["kind"]))
-                s, why = en.bot_signal_ai(r, b["cfg"], data["regime_ok"])
+                s, why = en.bot_signal_ai(r, b["cfg"], data["regime_ok"], data.get("regime_dn", False))
             elif kind == "strat":                     # v5.3: 15 dk teyidi / rejim yok — yalnızca stratejinin kuralı
                 s, why = en.bot_signal_strat(r, b["cfg"])
             else:
@@ -1900,6 +2109,20 @@ def bots_apply(acct, data, now=None):
     # 2) alımlar — v5.6: her sembol kendi borsasına göre (kripto / vadeli US seansı dışında da işlem görür)
     hours = bool(BOT_HOURS_ONLY)
     for b in acct.get("bots") or []:
+        if b.get("src") in ("pairs", "rotation"):          # v5.8: kendi yönetimleri (iki bacak / aylık sepet)
+            entries = bool(b.get("on")) and not gs["locked"]
+            if not entries and not (b.get("src") == "pairs" and b.get("pt")):
+                continue
+            fn_ = _pairs_apply if b["src"] == "pairs" else _rot_apply
+            try:
+                evs_, buys_, sells_, note_ = fn_(acct, b, data, now, eurusd, log, entries)
+            except Exception as ex:
+                evs_, buys_, sells_, note_ = [], 0, 0, f"error: {type(ex).__name__}: {ex}"[:160]
+            events += evs_
+            if b.get("on"):
+                b["last"] = {"ts": round(now), "checked": int(data["n"].get(b["id"], 0)), "buys": buys_,
+                             "sells": sells_, "note": note_}
+            continue
         if not b.get("on") or gs["locked"]:
             continue
         bid, cfg = b["id"], en.bot_cfg(b.get("cfg"))
@@ -1973,6 +2196,215 @@ def bots_apply(acct, data, now=None):
     val = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)
     _eq_point(acct, val["equity"], now)
     return events
+
+
+def _leg_trade(acct, sym, side, qty, price, owner, why, now, name, eurusd, events, extra=None):
+    """v5.8: çift / rotasyon botunun tek emri (olay listesine de yazar). Döner: işlem kaydı ya da None."""
+    fxm = fx_mult(acct["ccy"], inst_ccy(sym), eurusd)
+    if fxm is None:
+        return None, "EUR/USD rate not available"
+    ok, msg, tr = demo_trade(acct, sym, side, qty, price, fxm, owner, why, ts=now, bot=name)
+    if not ok:
+        return None, msg
+    events.append(dict({"kind": side, "sym": sym, "qty": float(qty), "price": float(price), "bot": name,
+                        "reason": why, "pnl": tr["pnl"], "stop": 0.0, "tp1": None,
+                        "side": "short" if side in ("short", "cover") else "long"}, **(extra or {})))
+    return tr, ""
+
+
+def _pairs_apply(acct, b, data, now, eurusd, log, entries=True):
+    """v5.8 — çift botu: açık çiftleri kapatır (z ortalamada / durdurma / süre / tek bacak kaldı), sonra yeni
+    çiftleri açar (|z| ≥ giriş). İki bacak birlikte: biri başarısız olursa diğeri geri alınır. Bacaklarda stop
+    yoktur — çıkışı spread belirler. Döner: (olaylar, açılan, kapanan, not)."""
+    en = _engine()
+    bid, name = b["id"], b["name"]
+    cfg = en.bot_cfg(b.get("cfg"))
+    pc = en.pair_cfg((b.get("pairs") or {}).get("p"))
+    zs = (data.get("pz") or {}).get(bid) or {}
+    px = data.get("px") or {}
+    openp = b.setdefault("pt", {})
+    cool = b.setdefault("cool", {})
+    events, opened, closed, notes = [], 0, 0, []
+    just_closed = set()                                    # aynı turda ters yöne hemen girilmez (backtest gibi)
+    for k, t in list(openp.items()):                       # 1) çıkışlar
+        a_, b_ = t["a"], t["b"]
+        has_a, has_b = f"{a_}|{bid}" in acct["pos"], f"{b_}|{bid}" in acct["pos"]
+        if not has_a and not has_b:
+            openp.pop(k, None)
+            continue
+        zz = zs.get(k)
+        days = (now - float(t.get("opened") or now)) / 86400.0
+        why = None
+        if has_a != has_b:
+            why = "one leg was closed — closing the other"
+        elif zz is not None:
+            z, d = float(zz["z"]), int(t["d"])
+            if (d > 0 and z >= -pc["exit"]) or (d < 0 and z <= pc["exit"]):
+                why = "spread back at the mean (z %+.2f)" % z
+            elif (d > 0 and z <= -pc["stop"]) or (d < 0 and z >= pc["stop"]):
+                why = "spread stop (z %+.2f)" % z
+            elif not float(zz["beta"]) > 0:
+                why = "hedge ratio no longer valid"
+        if why is None and days >= pc["max_days"] * 7.0 / 5.0:
+            why = "time exit after %d days" % int(days)
+        if not why:
+            continue
+        legs = [x for x, h_ in ((a_, has_a), (b_, has_b)) if h_]
+        if not all(market_open(x, now) for x in legs):
+            notes.append("%s: exit waits for the market" % k)
+            continue
+        if not all(px.get(x) for x in legs):
+            notes.append("%s: no live price" % k)
+            continue
+        res = 0.0
+        for x in legs:
+            p_ = acct["pos"][f"{x}|{bid}"]
+            short = p_.get("side") == "short"
+            tr, _m = _leg_trade(acct, x, "cover" if short else "sell", p_["qty"], px[x], bid,
+                                "Pair %s: %s" % (k, why), now, name, eurusd, events,
+                                {"pair": k, "leg": "a" if x == a_ else "b"})
+            res += float((tr or {}).get("pnl") or 0.0)
+        closed += 1
+        openp.pop(k, None)
+        just_closed.add(k)
+        if "stop" in why:
+            cool[k] = now
+        log(name, k, "CLOSE pair %s — %s · result %+.2f" % (k, why, res))
+    if not entries:
+        return events, opened, closed, "; ".join(notes[:2])
+    for k in [k for k, ts_ in cool.items() if now - float(ts_) > max(1, cfg["cooldown_days"]) * 86400]:
+        cool.pop(k, None)
+    val = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in px.items()}, eurusd)
+    for k, zz in sorted(zs.items(), key=lambda kv: -abs(kv[1]["z"])):  # 2) girişler — en uç z önce
+        if k in openp or k in cool or k in just_closed:
+            continue
+        if len(openp) >= cfg["max_pos"]:
+            notes.append("pair limit reached (%d)" % cfg["max_pos"])
+            break
+        a_, b_ = k.split("/", 1)
+        z, beta = float(zz["z"]), float(zz["beta"])
+        d = 1 if z <= -pc["entry"] else (-1 if z >= pc["entry"] else 0)
+        if not d or not beta > 0 or abs(z) >= pc["stop"]:
+            continue
+        if f"{a_}|{bid}" in acct["pos"] or f"{b_}|{bid}" in acct["pos"]:
+            notes.append("%s: a symbol is already used by another pair" % k)
+            continue
+        if not (market_open(a_, now) and market_open(b_, now)):
+            notes.append("%s: market closed" % k)
+            continue
+        pa, pb = px.get(a_), px.get(b_)
+        fa, fb = fx_mult(acct["ccy"], inst_ccy(a_), eurusd), fx_mult(acct["ccy"], inst_ccy(b_), eurusd)
+        if not (pa and pb and fa and fb):
+            notes.append("%s: no live price" % k)
+            continue
+        gross = min(val["equity"] * cfg["max_alloc"] / 100.0, max(0.0, pend_free(acct)) * 0.98)
+        na = gross / (1.0 + beta)
+        qa, qb = na / (pa * fa), (gross - na) / (pb * fb)
+        qa = (int(qa * 10000) / 10000.0) if a_.endswith("-USD") else int(qa)
+        qb = (int(qb * 10000) / 10000.0) if b_.endswith("-USD") else int(qb)
+        if qa <= 0 or qb <= 0:
+            notes.append("%s: not enough cash for both legs" % k)
+            continue
+        sa, sb = ("buy", "short") if d > 0 else ("short", "buy")
+        why = "Pair %s: z %+.2f — %s %s, %s %s (hedge β %.2f)" % (k, z, "long" if d > 0 else "short", a_,
+                                                                  "short" if d > 0 else "long", b_, beta)
+        tr1, m1 = _leg_trade(acct, a_, sa, qa, pa, bid, why, now, name, eurusd, events, {"pair": k, "leg": "a", "z": z})
+        if not tr1:
+            notes.append("%s: %s" % (k, m1))
+            continue
+        tr2, m2 = _leg_trade(acct, b_, sb, qb, pb, bid, why, now, name, eurusd, events, {"pair": k, "leg": "b", "z": z})
+        if not tr2:                                         # ikinci bacak olmadı → birincisini geri al
+            events.pop()
+            _leg_trade(acct, a_, "sell" if sa == "buy" else "cover", qa, pa, bid,
+                       "Pair %s: second leg failed — first leg undone" % k, now, name, eurusd, [])
+            notes.append("%s: %s" % (k, m2))
+            continue
+        openp[k] = {"a": a_, "b": b_, "d": d, "opened": now, "z0": round(z, 3), "beta": round(beta, 4),
+                    "qa": qa, "qb": qb}
+        opened += 1
+        log(name, k, "OPEN pair %s — %s %g %s @ %.2f + %s %g %s @ %.2f · z %+.2f"
+            % (k, sa.upper(), qa, a_, pa, sb.upper(), qb, b_, pb, z))
+    note = "; ".join(notes[:2]) if (notes and not opened) else ""
+    if not opened and not closed and not note:
+        near = sorted(zs.items(), key=lambda kv: -abs(kv[1]["z"]))[:2]
+        note = (("no pair beyond ±%s yet — closest: " % pc["entry"]) +
+                ", ".join("%s z %+.2f" % (k, v["z"]) for k, v in near)) if near else "no pair data yet"
+    return events, opened, closed, note
+
+
+def _rot_apply(acct, b, data, now, eurusd, log, entries=True):
+    """v5.8 — rotasyon botu: ay başında (ya da "şimdi dengele" ile) sepeti yeniler — listeden düşeni satar, yeni
+    girenleri eşit ağırlıkla alır (bot payı = hesabın 'max_alloc' %'si; boş kalan yerler güvenli limana / nakde).
+    Pazar kapalıysa o emir sonraki tura kalır; ay ancak her emir tamamlanınca 'yapıldı' sayılır."""
+    en = _engine()
+    bid, name = b["id"], b["name"]
+    info = (data.get("rot") or {}).get(bid) or {}
+    if not entries:
+        return [], 0, 0, ""
+    if not info.get("due"):
+        return [], 0, 0, "next rebalance at the start of %s" % (
+            pd.Timestamp(now, unit="s", tz="UTC").tz_convert(TZ) + pd.offsets.MonthBegin(1)).strftime("%B")
+    if info.get("err") or "pick" not in info:
+        return [], 0, 0, "rotation: " + (info.get("err") or "no ranking yet")
+    cfg = en.bot_cfg(b.get("cfg"))
+    rc = en.rot_cfg((b.get("rot") or {}).get("p"))
+    px = data.get("px") or {}
+    pick, safe, free = list(info["pick"]), info.get("safe"), int(info.get("free") or 0)
+    target = list(pick) + ([safe] if (safe and free > 0 and safe not in pick) else [])
+    events, buys, sells, notes, pending = [], 0, 0, [], False
+    for p_ in [p_ for p_ in acct["pos"].values() if p_["owner"] == bid]:          # 1) listeden düşenleri sat
+        sym = p_["sym"]
+        if sym in target:
+            continue
+        if not market_open(sym, now) or not px.get(sym):
+            pending = True
+            notes.append("%s: sell waits for the market" % sym)
+            continue
+        tr, m_ = _leg_trade(acct, sym, "cover" if p_.get("side") == "short" else "sell", p_["qty"], px[sym], bid,
+                            "Rotation: dropped out of the top %d" % rc["top"], now, name, eurusd, events, {"rot": True})
+        if tr:
+            sells += 1
+            log(name, sym, "SELL %g @ %.2f — dropped out of the top %d (%+.2f)" % (p_["qty"], px[sym], rc["top"],
+                                                                                   tr["pnl"] or 0.0))
+        else:
+            pending = True
+    val = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in px.items()}, eurusd)
+    per = val["equity"] * cfg["max_alloc"] / 100.0 / rc["top"]
+    for sym in target:                                                          # 2) yeni girenleri al
+        if f"{sym}|{bid}" in acct["pos"]:
+            continue
+        if not market_open(sym, now) or not px.get(sym):
+            pending = True
+            notes.append("%s: buy waits for the market" % sym)
+            continue
+        fxm = fx_mult(acct["ccy"], inst_ccy(sym), eurusd)
+        if not fxm:
+            pending = True
+            continue
+        slots = free if (sym == safe and sym not in pick) else 1
+        q = min(per * slots, max(0.0, pend_free(acct)) * 0.99) / (px[sym] * fxm)
+        q = (int(q * 10000) / 10000.0) if sym.endswith("-USD") else int(q)
+        if q <= 0:
+            notes.append("%s: not enough cash" % sym)
+            continue
+        why = ("Rotation: rank %d of the momentum list" % (pick.index(sym) + 1) if sym in pick else
+               "Rotation: safe haven (%s)" % ("market filter is off-risk" if not info.get("risk_on") else
+                                              "not enough assets with positive momentum"))
+        tr, m_ = _leg_trade(acct, sym, "buy", q, px[sym], bid, why, now, name, eurusd, events, {"rot": True})
+        if tr:
+            buys += 1
+            log(name, sym, "BUY %g @ %.2f — %s" % (q, px[sym], why.split(": ", 1)[-1]))
+        else:
+            notes.append("%s: %s" % (sym, m_))
+    if not pending:
+        b["rot_month"] = rot_month(now)
+        b.pop("rot_force", None)
+        b["rot_last"] = {"ts": round(now), "pick": pick, "risk_on": bool(info.get("risk_on")),
+                         "safe": safe if (safe and free > 0) else None, "top": info.get("top") or [],
+                         "date": info.get("date")}
+    note = ("rebalanced — holding " + (", ".join(target) if target else "cash")) if not pending else \
+        ("rebalance in progress — " + "; ".join(notes[:2]))
+    return events, buys, sells, note
 
 
 EXIT_WHY = {"stop": "Stop Loss triggered", "trail": "Trailing Stop triggered", "be": "Break-even Stop triggered",
@@ -2065,6 +2497,7 @@ def apply_exits(acct, bars_of, eurusd, now, live=False, log=None):
 
 
 _ORD_LAST = {}
+EVENT_HOOKS = []             # v5.8: fn(email, hesap adı, olaylar) — ör. broker.py emirleri gerçek hesaba kopyalar
 ORD_GAP = 20.0               # aynı hesap için canlı fiyat kontrolleri arası en az (sn)
 
 
@@ -2156,6 +2589,7 @@ def orders_tick(md, only=None, gap=ORD_GAP, now=None):
                 continue
             for e in evs:
                 out.append(dict(e, email=email, account=an, acc_id=aid))
+            _run_hooks(email, an, evs)
             if evs:
                 try:
                     prefs = notify_prefs(profile_get(email))
@@ -2176,6 +2610,17 @@ def orders_tick(md, only=None, gap=ORD_GAP, now=None):
     return out
 
 
+def _run_hooks(email, account_name, events):
+    """v5.8: olay kancaları (aracı kurum köprüsü vb.) — hata işlemi durdurmaz."""
+    if not events:
+        return
+    for fn_ in list(EVENT_HOOKS):
+        try:
+            fn_(email, account_name, events)
+        except Exception as ex:  # pragma: no cover
+            _MON["err"] = f"event hook: {type(ex).__name__}: {ex}"[:200]
+
+
 def bots_tick(md, only=None, force=False):
     """Tüm (ya da tek) kullanıcının botlarını çalıştırır — 15 dakikalık dilim başına bir kez. Döner: işlem sayısı."""
     now = time.time()
@@ -2194,7 +2639,8 @@ def bots_tick(md, only=None, force=False):
 def _bots_tick_acct(md, email, acct, slot, now, force):
     """Tek hesabın 15 dakikalık turu: veriyi kilit dışında topla, hesabı kilit içinde güncelle, haber ver."""
     active = any(b.get("on") for b in acct.get("bots") or [])
-    owned = any(has_orders(p) for p in acct["pos"].values()) or bool(acct.get("pend"))
+    owned = any(has_orders(p) for p in acct["pos"].values()) or bool(acct.get("pend")) or \
+        any(b.get("pt") for b in acct.get("bots") or [])          # v5.8: açık çiftler her turda yönetilir
     if not (active or owned) or (not force and acct.get("bot_slot") == slot):
         return 0
     aid = acct["id"]
@@ -2217,6 +2663,7 @@ def _bots_tick_acct(md, email, acct, slot, now, force):
         _MON["err"] = f"bots_apply: {type(ex).__name__}: {ex}"[:200]
         return 0
     _MON["bots_last"] = now
+    _run_hooks(email, acct.get("name") or "Demo account", events)
     n = sum(1 for e in events if e["kind"] != "breach")
     if events:
         try:
@@ -2235,6 +2682,21 @@ def _bots_tick_acct(md, email, acct, slot, now, force):
                         title = f'Limit order filled: {e["side"]} {e["qty"]:g} {e["sym"]} @ {e["price"]:.2f}'
                         body = f'Your limit of {e["limit"]:g} was reached. Demo account “{an}”.'
                         deliver(email, prefs, "bot", title, body, sym=e["sym"], tags=["white_check_mark"],
+                                priority=3)
+                        continue
+                    if e.get("pair"):                     # v5.8: çift — iki bacak tek bildirimde
+                        if e.get("leg") != "a":
+                            continue
+                        opening = e["kind"] in ("buy", "short")
+                        title = f'{e["bot"]}: pair {e["pair"]} {"opened" if opening else "closed"}'
+                        body = f'{e["reason"]}. Demo account “{an}”.'
+                        deliver(email, prefs, "bot", title, body, sym=e["sym"], tags=["scales"], priority=3)
+                        continue
+                    if e.get("rot"):                      # v5.8: rotasyon
+                        title = f'{e["bot"]}: {"bought" if e["kind"] == "buy" else "sold"} {e["qty"]:g} {e["sym"]} @ ' \
+                                f'{e["price"]:.2f}'
+                        body = f'{e["reason"]}. Demo account “{an}”.'
+                        deliver(email, prefs, "bot", title, body, sym=e["sym"], tags=["arrows_counterclockwise"],
                                 priority=3)
                         continue
                     if e["kind"] == "buy":
@@ -2333,9 +2795,60 @@ def monitor_tick(md):
 ORD_LOOP = 30        # v4.8: tam turlar arasında SL / TP her 30 sn'de bir canlı fiyatla denetlenir
 
 
+def worker_beat(extra=None):
+    """v5.8: worker'ın kalp atışı (yalnızca yerel dosya — arayüz aynı klasörden okur)."""
+    w = {"ts": time.time(), "pid": os.getpid(), "ver": BACKEND_VERSION, "ticks": _MON["ticks"],
+         "err": _MON["err"], "bots_last": _MON.get("bots_last"), "started": _MON.get("started")}
+    w.update(extra or {})
+    _local_write("worker", w)
+    return w
+
+
+def worker_info():
+    """{'alive', 'age', 'ts', 'pid', …} — paylaşımlı modda 7/24 worker çalışıyor mu?"""
+    w = _local_read("worker") or {}
+    age = time.time() - float(w.get("ts") or 0)
+    return dict(w, age=age, alive=bool(w) and age < WORKER_STALE, shared=SHARED)
+
+
+def run_worker(md, stop=None, beat=30):
+    """v5.8 — 7/24 işçi (worker.py): fiyat alarmları, bilanço / takvim bildirimleri, SL / TP ve limit emirleri
+    (30 sn'de bir canlı fiyatla), botlar (15 dakikalık dilimler). Arayüz kapalı ya da uyurken de çalışır.
+    stop: threading.Event (testler ve düzgün kapanış için)."""
+    _MON["is_worker"] = True
+    _MON["started"] = time.time()
+    worker_beat({"state": "starting"})
+    last_full = 0.0
+    while not (stop is not None and stop.is_set()):
+        now = time.time()
+        if now - last_full >= TICK_SEC:
+            last_full = now
+            try:
+                monitor_tick(md)
+            except Exception as ex:  # pragma: no cover
+                _MON["err"] = f"{type(ex).__name__}: {ex}"[:200]
+        else:
+            try:
+                orders_tick(md)
+            except Exception as ex:  # pragma: no cover
+                _MON["err"] = f"orders_tick: {type(ex).__name__}: {ex}"[:200]
+        try:
+            kv_flush()
+        except Exception:  # pragma: no cover
+            pass
+        worker_beat({"state": "running"})
+        end = time.time() + max(1, int(beat))
+        while time.time() < end and not (stop is not None and stop.is_set()):
+            time.sleep(min(1.0, max(0.05, end - time.time())))
+    worker_beat({"state": "stopped", "ts": 0})
+
+
 def _loop(md):
     time.sleep(20)
     while True:
+        if SHARED and worker_info().get("alive"):       # v5.8: 7/24 worker işi yapıyor — arayüz bekler
+            time.sleep(ORD_LOOP)
+            continue
         try:
             monitor_tick(md)
         except Exception as ex:  # pragma: no cover
@@ -2374,5 +2887,7 @@ def start_monitor(md):
 
 def monitor_status():
     t = _MON["thread"]
-    return {"running": bool(t is not None and t.is_alive()), "ticks": _MON["ticks"], "last": _MON["last"],
-            "err": _MON["err"]}
+    w = worker_info() if SHARED else {"alive": False, "shared": False}
+    return {"running": bool(t is not None and t.is_alive()) or bool(w.get("alive")), "ticks": _MON["ticks"],
+            "last": max(_MON["last"] or 0, float(w.get("ts") or 0) if w.get("alive") else 0) or None,
+            "err": _MON["err"], "worker": w}
