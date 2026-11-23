@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "5.10"
+APP_VERSION = "5.11"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -6120,9 +6120,12 @@ def push_notes(rows):
         if k in have or k in gone:     # aynı gün tekrar düşmesin, silinenler geri gelmesin
             continue
         b, c = r["best"], r.get("c15") or {}
-        title = f'{r["ticker"]} · {b["name"]}'
+        sh_ = r.get("side") == "short" and r.get("strat") not in en.STRAT_PARAMS     # v5.11: Short-Signal
+        title = f'{r["ticker"]} · {"SHORT · " if sh_ else ""}{b["name"]}'
+        cnd_ = r.get("candle_pro") or []
         body = (f'{tr(r["price"])} — {b["note"]}' + ("" if r.get("strat") in en.STRAT_PARAMS
-                                                       else f' · 15m {c.get("state", "—")}'))
+                                                       else f' · 15m {c.get("state", "—")}')
+                + (f' · 🕯 {cnd_[0]["name"]}' if cnd_ else ""))
         ss.notes.insert(0, {"ticker": r["ticker"], "day": day,
                             "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M"),
                             "title": title, "body": body, "level": b["level"], "score": r["score"]})
@@ -6282,7 +6285,7 @@ def render_ai_opps(strat="ai"):
           f'those belong to the pattern-breakout strategy only. The confirmation checks are shown as information.'
           f'</div>')
 
-    if is_st:      # v4.9: kurallar adım adım (grafikteki çizgilerle aynı renkler)
+    if is_st or strat == "ai":      # v4.9: kurallar adım adım · v5.11: formasyon kırılımında da (yalnızca senin formasyonların)
         H(strat_steps_html(strat, sparams))
     if not rows:
         H('<div class="muted" style="padding:18px 0">'
