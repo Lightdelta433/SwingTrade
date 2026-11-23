@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="pulse-ui" content="5.7">
+<meta name="pulse-ui" content="5.11">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Pulse Chart</title>
 <style id="baseCss">
@@ -1346,7 +1346,7 @@ function drawDivPrice(p){
     ctx.strokeStyle=col; ctx.setLineDash(d.kind.indexOf("hid")===0?[4,3]:[]);
     ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
     const bull=d.kind.indexOf("bull")>=0;
-    const lab=(d.kind.indexOf("hid")===0?"H":"")+(bull?"▲":"▼");
+    const lab=(d.kind.indexOf("hid")===0?"H":"")+(bull?"▲":"▼")+(d.n>1?"×"+d.n:"");
     ctx.fillStyle=col; ctx.textAlign="center";
     ctx.fillText(lab,x2,y2+(bull?11:-11));
   }
@@ -1418,7 +1418,7 @@ function updateLegend(){
   const extra=[];
   if(c.zones&&c.zones.on) extra.push("Ranked S/R · "+S.zones.length);
   if(c.gaps&&c.gaps.on) extra.push("Gaps · "+S.gaps.length);
-  if(c.div&&c.div.on) extra.push("Divergence "+(c.div.src||"rsi").toUpperCase()+" · "+S.divs.length);
+  if(c.div&&c.div.on) extra.push((c.div.src==="many"?"Divergence ×"+(c.div.min||3)+"+ (many indicators)":"Divergence "+(c.div.src||"rsi").toUpperCase())+" · "+S.divs.length);
   if(extra.length) h+='<div class="r v" style="color:#6B7383">'+extra.join("  ·  ")+"</div>";
   L.innerHTML=h;
 }
@@ -2260,9 +2260,10 @@ const IND_DEFS=[
  {k:"atr",n:"ATR",d:"Average true range — volatility, lower pane",
   g:"Volatility",t:"atr average true range oynaklik volatilite",
   f:[{k:"n",t:"num",l:"Period",min:2,max:100,step:1},{k:"c",t:"col",l:"Colour"}]},
- {k:"div",n:"Divergence",d:"Price–oscillator divergences (regular and hidden)",
+ {k:"div",n:"Divergence",d:"Price–oscillator divergences (regular and hidden) — one oscillator or 12 at once",
   g:"Momentum",t:"divergence uyumsuzluk ayrisma gizli hidden",
-  f:[{k:"src",t:"sel",l:"Source",o:[["rsi","RSI"],["macd","MACD"],["wt","WaveTrend"]]},
+  f:[{k:"src",t:"sel",l:"Source",o:[["rsi","RSI"],["macd","MACD"],["wt","WaveTrend"],["many","Many indicators (12)"]]},
+     {k:"min",t:"num",l:"Min. indicators (many)",min:1,max:12,step:1},
      {k:"left",t:"num",l:"Pivot left",min:1,max:20,step:1},
      {k:"right",t:"num",l:"Pivot right",min:1,max:20,step:1},
      {k:"hidden",t:"bool",l:"Hidden divergences"}]}
