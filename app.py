@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "5.7"
+APP_VERSION = "5.10"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -60,6 +60,10 @@ try:
 except ModuleNotFoundError:
     bk = None
     _missing.append("backend.py")
+try:
+    import macro as mc  # noqa: E402   (v5.9 — Global Macro; yoksa yalnızca o bölüm uyarı gösterir)
+except ModuleNotFoundError:
+    mc = None
 if _missing:
     st.error("**" + ", ".join(_missing) + " not found.** This version consists of these files: `app.py`, "
              "`mock_data.py`, `engine.py`, `chart.py`, `backend.py` and `pulse_chart/index.html`. Upload the missing files "
@@ -303,6 +307,21 @@ def _store():
 
 
 STORE = _store()
+# v5.8 — uyumsuzluk ayarları: parametre → (widget soneki, varsayılan). Tahta "w_dv", backtest "bt_v" öneki kullanır.
+DIV_W = {"prd": ("prd", 5), "src": ("src", 0), "kinds": ("kinds", 2), "min_n": ("min", 3), "maxpp": ("maxpp", 10),
+         "maxbars": ("maxbars", 100), "inds": ("inds", list(en.DIV_IND_KEYS)), "trend": ("trend", False),
+         "risk_atr": ("risk", 3.0), "tp1_r": ("tp1", 1.5), "tp2_r": ("tp2", 3.0), "rsi_n": ("rsi", 14),
+         "macd_f": ("mf", 12), "macd_s": ("ms", 26), "macd_sig": ("msig", 9), "stoch_n": ("stn", 14),
+         "stoch_sm": ("stsm", 3), "cci_n": ("cci", 10), "mom_n": ("mom", 10), "cmf_n": ("cmf", 21),
+         "mfi_n": ("mfi", 14), "willr_n": ("wr", 14), "wt_n1": ("wt1", 10), "wt_n2": ("wt2", 21)}
+V58_WIDGETS = ([f"w_dv_{s_}" for s_, _ in DIV_W.values()] + [f"bt_v_{s_}" for s_, _ in DIV_W.values()] +
+               ["w_pl_uni", "w_pl_groups", "w_pl_custom", "w_pl_yrs", "w_pl_win", "w_pl_entry", "w_pl_exit",
+                "w_pl_stop", "w_pl_days", "w_pl_comm", "w_pl_show", "w_pl_mint", "w_pl_sel",
+                "w_ro_uni", "w_ro_custom", "w_ro_top", "w_ro_buf", "w_ro_w1", "w_ro_w3", "w_ro_w6", "w_ro_w12",
+                "w_ro_yrs", "w_ro_comm", "w_ro_abs", "w_ro_mkt", "w_ro_skip", "w_ro_vol"])
+# v5.9 — Global Macro: seçili gösterge sekmesi, G20 / dünya, en yüksek / en düşük (hesapta saklanır)
+MC_TABS = ("gdp", "infl", "rate", "unemp", "debt", "prod")
+V59_WIDGETS = ["w_mc_tab", "w_mc_scope", "w_mc_order"]
 # Widget anahtarları (kullanıcı ayarları) — sayfa değişse de korunur
 WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_fxtf", "w_lb", "w_fxlb", "w_fxc",
                "w_calday",
@@ -314,16 +333,20 @@ WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_
                "bt_f_pole", "bt_f_min", "bt_f_max", "bt_f_depth", "bt_f_vol", "bt_f_tp1", "bt_cf_weekly",
                "bt_cf_adx", "bt_cf_regime", "bt_i_ten", "bt_i_kij", "bt_i_sen", "bt_i_atr", "bt_i_bounce",
                "bt_i_preset", "bt_ichi_cmp", "bt_i_mode", "bt_i_wk", "bt_i_adx", "w_ichi_mode", "w_ichi_btc", "bt_w_n1", "bt_w_n2", "bt_w_os", "bt_w_vol", "bt_w_h", "bt_w_mult",
-               "bt_w_win"]
+               "bt_w_win"] + V58_WIDGETS + V59_WIDGETS
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
            "theme", "notes", "notes_seen", "notes_gone", "ai_auto", "saved_filters", "flt_pending",
            "vp_cfg", "peer_ovr", "vtype_ovr", "auth", "cal_ccy", "notify", "notes_last", "st_ov",
-           "_prof_sig", "_prof_loaded"] + WIDGET_KEYS
+           "_prof_sig", "_prof_loaded", "pl_ran", "ro_ran", "pl_usable_txt"] + WIDGET_KEYS
 # Hesaba bağlı, kalıcı saklanan ayarlar (giriş yapılan her cihazda aynı; arka plan bildirimleri de bunları okur)
 PROFILE_KEYS = ["watchlist", "alerts", "draws", "saved_filters", "theme", "vp_cfg", "peer_ovr", "vtype_ovr",
-                "cal_ccy", "ch_cfg", "ch_type", "acct", "notify", "bt_saved", "st_ov"]
+                "cal_ccy", "ch_cfg", "ch_type", "acct", "notify", "bt_saved", "st_ov",
+                # v5.8 — kullanılan her şey hesaba: işlem günlüğü, filtre satırları, backtest, Pair Lab / rotasyon
+                "journal", "journal_closed", "flt_rows", "bt_extra", "bt_ran", "pl_ran", "ro_ran"]
+# v5.8 — widget ayarları da profilde ('ui'); geçici / başka yerde saklananlar hariç
+UI_SKIP = {"flt_import_txt", "acct", "w_theme", "bt_custom", "bt_pick"}
 
 
 def _qp(key, default=None):
@@ -362,6 +385,22 @@ def _profile_of_session():
             continue
         if back == ss[k]:
             prof[k] = back
+    ui = {}
+    for k in WIDGET_KEYS:                  # v5.8: ekrandaki her ayar (strateji, süreler, backtest, Pair Lab …)
+        if k in UI_SKIP or k not in ss:
+            continue
+        try:
+            back = json.loads(json.dumps(ss[k]))
+        except (TypeError, ValueError):
+            continue
+        if back == ss[k]:
+            ui[k] = back
+    if ui:
+        prof["ui"] = ui
+    try:
+        prof["last"] = {"sec": SEC, "sym": ACTIVE}      # v5.8: kaldığın yerden aç
+    except NameError:
+        pass
     return prof, hashlib.md5(json.dumps(prof, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -371,6 +410,18 @@ def _profile_load(email):
     for k in PROFILE_KEYS:
         if k in prof:
             ss[k] = copy.deepcopy(prof[k])
+    for k, v in (prof.get("ui") or {}).items():       # v5.8: ekran ayarları
+        if k in WIDGET_KEYS and k not in UI_SKIP:
+            ss[k] = copy.deepcopy(v)
+    last = prof.get("last") or {}
+    try:
+        if _qp("sec") is None and last.get("sec") in SECTIONS and last.get("sec") != SEC:
+            st.query_params["sec"] = last["sec"]
+            if last.get("sym"):
+                st.query_params["sym"] = _SYM_RE.sub("", str(last["sym"])).upper()[:24]
+            ss["_reopen"] = True
+    except Exception:
+        pass
     if "theme" in prof:
         ss.pop("w_theme", None)
     for k in [k for k in ss.keys() if str(k).startswith("calccy_")]:
@@ -415,18 +466,22 @@ BT_WIDGETS = {"bt_inst": "AAPL", "bt_custom": "", "bt_yrs": 3, "bt_ind1": "RSI",
               # v5.3: Ichimoku modu + piyasa kuralları (stratejinin kendi ayarı)
               "bt_i_mode": "classic", "bt_i_wk": True, "bt_i_adx": 0.0,
               "bt_w_n1": 10, "bt_w_n2": 21, "bt_w_os": 53, "bt_w_vol": 1.2, "bt_w_h": 8.0, "bt_w_mult": 2.5,
-              "bt_w_win": 120}
+              "bt_w_win": 120,
+              # v5.8: çoklu indikatör uyumsuzluğu
+              **{f"bt_v_{s_}": d_ for s_, d_ in DIV_W.values()}}
 BT_SP_KEYS = {"donchian2": {"n_trend": "bt_d_trend", "n_entry": "bt_d_entry", "n_exit": "bt_d_exit"},
               "flag": {"min_adv": "bt_f_adv", "pole_max": "bt_f_pole", "flag_min": "bt_f_min", "flag_max": "bt_f_max",
                        "max_depth": "bt_f_depth", "vol_x": "bt_f_vol", "tp1_r": "bt_f_tp1"},
               "ichimoku": {"tenkan": "bt_i_ten", "kijun": "bt_i_kij", "senkou": "bt_i_sen", "max_atr": "bt_i_atr",
                            "bounce": "bt_i_bounce", "wk_cloud": "bt_i_wk", "adx_min": "bt_i_adx"},
               "wavetrend": {"n1": "bt_w_n1", "n2": "bt_w_n2", "os": "bt_w_os", "vol_x": "bt_w_vol",
-                            "nw_h": "bt_w_h", "nw_mult": "bt_w_mult", "nw_win": "bt_w_win"}}
+                            "nw_h": "bt_w_h", "nw_mult": "bt_w_mult", "nw_win": "bt_w_win"},
+              "divergence": {a_: f"bt_v_{s_}" for a_, (s_, _d) in DIV_W.items()}}
 BT_STRAT_NAME = {"custom": "🧪 Custom rules — build it from indicators", "donchian2": "📈 Double Donchian (120 / 20)",
                  "flag": "🚩 Flag after a strong advance",
                  "ichimoku": "☁️ Ichimoku — gold, silver, oil, Bitcoin · long + short",
-                 "wavetrend": "🌊 WaveTrend cross + volume + NW envelope"}
+                 "wavetrend": "🌊 WaveTrend cross + volume + NW envelope",
+                 "divergence": "🔀 Divergence for many indicators · long + short"}
 for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journal_closed": [],
                "flt_rows": copy.deepcopy(en.DEFAULT_FILTER), "flt_logic": "AND",
                "flt_min": len(en.DEFAULT_FILTER) - 1, "flt_lastN": len(en.DEFAULT_FILTER),
@@ -438,6 +493,7 @@ for _k, _v in {"watchlist": list(md.DEFAULT_WATCHLIST), "journal": None, "journa
                "theme": "gece", "notes": [], "notes_seen": 0, "notes_gone": [], "ai_auto": False,
                "saved_filters": [], "flt_pending": None, "vp_cfg": {}, "peer_ovr": {}, "vtype_ovr": {},
                "ai_nonce": 0, "w_aiauto": False, "notify": dict(bk.NOTIFY_DEFAULT), "notes_last": 0, "st_ov": {},
+               "w_mc_tab": "gdp", "w_mc_scope": "g20", "w_mc_order": "desc",
                **BT_WIDGETS}.items():
     ss.setdefault(_k, copy.deepcopy(_v))
 # Streamlit, o çalıştırmada çizilmeyen widget'ın değerini siler (ör. filtre editörü kapalıyken).
@@ -643,33 +699,76 @@ def chg(x, dec=2):
 EXT_META = {"pre": ("\u2600\ufe0f", "Pre-market", "#F5B544"), "post": ("\U0001F319", "After-hours", "#8B9CF8")}
 
 
+def _ext_when(e):
+    """v5.11: zaman etiketi Almanya saatiyle (☀️ / 🌙 satırları sabit Alman saatleriyle açılır)."""
+    at = e.get("at_de") or ""
+    if e.get("carry"):
+        return " · no trades yet — last after-hours" + (f" {at}" if at else "")
+    return f" · {at}" if at else ""
+
+
+def _ext_tip(e, dec):
+    _ic, lab, _c = EXT_META.get(e.get("phase"), EXT_META["post"])
+    when = ""
+    if e.get("at_de"):
+        when = f' · last trade {e["at_de"]} German time' + (f' ({e["at"]} New York)' if e.get("at") else "")
+    elif e.get("at"):
+        when = f' · last trade {e["at"]} New York'
+    ref = f' {tr(e["ref"], dec)}' if e.get("ref") else ""
+    win = ("shown from 10:00 German time until the US open" if e.get("phase") == "pre" else
+           "shown 00:00–10:00 German time and on days without US trading")
+    return (f'{lab}{when} — {chg(e.get("chg_abs"), dec)} vs the regular close{ref} · {win}'
+            + (" · no pre-market trade yet, last after-hours price" if e.get("carry") else ""))
+
+
 def ext_html(q, label=False, size=12):
-    """v5.0 — seans dışı kotasyon satırı: güneş (seans öncesi) / ay (seans sonrası) + fiyat + renkli değişim.
-    Tek satır (white-space:nowrap), referans son normal kapanıştır. ext yoksa boş döner."""
+    """v5.0 → v5.11 — seans dışı satır: ☀️ / 🌙 + fiyat + (yüzde), örn. ☀️ 126.10 (+0.46%).
+    label=True: arkasında küçük 'Pre-market · 13:12' etiketi (Almanya saati). Referans ilgili normal kapanış.
+    Satırın ne zaman görüneceğine md.ext_window (sabit Alman saatleri) karar verir; ext yoksa boş döner."""
     e = (q or {}).get("ext") or {}
     if not e or e.get("px") is None:
         return ""
     ic, lab, icol = EXT_META.get(e["phase"], EXT_META["post"])
     dec = pdec((q or {}).get("ticker") or "", e["px"])
-    c = col(e["chg_abs"])
-    at = f' \u00b7 last trade {e["at"]} ET' if e.get("at") else ""
-    return (f'<span class="extq mono" style="font-size:{size}px" title="{lab}: trading outside the regular '
-            f'session{at} \u2014 change vs the regular close">'
+    c = col(e.get("chg_abs", e.get("chg_pct")))
+    return (f'<span class="extq mono" style="font-size:{size}px" title="{esc(_ext_tip(e, dec))}">'
             f'<span class="exti" style="color:{icol}">{ic}</span>'
-            + (f'<span class="extl">{lab}</span>' if label else "")
-            + f'<b>{tr(e["px"], dec)}</b><span style="color:{c}">{chg(e["chg_abs"], dec)} '
-              f'({pct(e["chg_pct"])})</span></span>')
+            f'<b>{tr(e["px"], dec)}</b><span style="color:{c}">({pct(e["chg_pct"])})</span>'
+            + (f'<span class="extl">{lab}{esc(_ext_when(e))}</span>' if label else "") + '</span>')
+
+
+def ext_text(q, sym=""):
+    """v5.11: düz metin (st.dataframe sütunları için): '☀️ 126.10 (+0.46%)'."""
+    e = (q or {}).get("ext") or {}
+    if not e or e.get("px") is None:
+        return ""
+    dec = pdec(sym or (q or {}).get("ticker") or "", e["px"])
+    return f'{EXT_META.get(e["phase"], EXT_META["post"])[0]} {tr(e["px"], dec)} ({pct(e["chg_pct"])})'
 
 
 def ext_row(q):
-    """Sıralanabilir liste bileşeni için ext alanı (satır içinde sağa yaslı küçük satır)."""
+    """Sıralanabilir liste bileşeni için ext alanı (satır içinde sağa yaslı küçük satır): ☀️ PRE 126.10 (+0.46%)."""
     e = (q or {}).get("ext") or {}
     if not e or e.get("px") is None:
         return None
     ic, lab, icol = EXT_META.get(e["phase"], EXT_META["post"])
     dec = pdec((q or {}).get("ticker") or "", e["px"])
-    return {"i": ic, "ic": icol, "px": tr(e["px"], dec), "t": f'{chg(e["chg_abs"], dec)} ({pct(e["chg_pct"])})',
-            "c": col(e["chg_abs"]), "lab": lab, "s": "Pre" if e["phase"] == "pre" else "After"}
+    return {"i": ic, "ic": icol, "px": tr(e["px"], dec), "t": f'({pct(e["chg_pct"])})',
+            "c": col(e.get("chg_abs", e.get("chg_pct"))), "lab": _ext_tip(e, dec),
+            "s": "Pre" if e["phase"] == "pre" else "After"}
+
+
+def px_when(sym, d):
+    """v5.11: ana fiyatın etiketi — ABD seansı açıkken 'Today', ☀️ / 🌙 satırı varken ya da ABD kapanışından sonra
+    'At close' (ana fiyat her zaman normal seansın fiyatı / resmî kapanışıdır)."""
+    if (d or {}).get("ext"):
+        return "At close"
+    try:
+        if md.ext_eligible(sym, (d or {}).get("quote_type")) and not md.us_regular_open():
+            return "At close"
+    except Exception:
+        pass
+    return "Today"
 
 
 def pdec(sym, v):
@@ -1367,6 +1466,10 @@ a.side-card .sc-b i.on{background:#3DDC97;box-shadow:0 0 0 3px rgba(61,220,151,.
  background:color-mix(in srgb,var(--c) 14%,transparent);border:1px solid color-mix(in srgb,var(--c) 40%,transparent);white-space:nowrap}
 table.bt{min-width:560px}
 table.bt td{vertical-align:middle}
+.jt.dvb,.jt.dvg{min-width:0}
+.jt.dvb td{padding-left:6px;padding-right:6px}
+.jt.dvg td{white-space:normal}
+.jt.pl{min-width:980px}
 table.bt td:first-child{white-space:normal;font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif;font-size:14px}
 table.bt .bsub{font-family:"Source Sans 3","Source Sans Pro",system-ui,sans-serif}
 .bsub{display:block;font-size:11px;color:#8D96A5;font-weight:500;font-family:inherit}
@@ -2088,8 +2191,10 @@ def notify_settings():
           f'{" · last saved " + ss["_ntf_saved"] if ss.get("_ntf_saved") else ""}.<br>Pulse checks every '
           f'{bk.TICK_SEC // 60} minutes on the server '
           f'({"running" if ms["running"] else "starts with the next page load"}, last check {last}). '
-          f'Streamlit puts the app to sleep after about 12 hours without a visit; nothing is checked while it '
-          f'sleeps.</div>')
+          + ('A 24/7 worker is running next to this app — bots, stops, limit orders and alerts keep going while the '
+             'page is closed.</div>' if (ms.get("worker") or {}).get("alive") else
+             'Streamlit puts the app to sleep after about 12 hours without a visit; nothing is checked while it '
+             'sleeps — run <code>worker.py</code> on a PC / VPS for 24/7 operation (README → v5.8).</div>'))
     new = {k: ss.get(wk) for k, wk in NTF_KEYS.items()}
     new["topic"] = topic if new.get("push") else (n.get("topic") or "")
     if new != ss.get("notify"):
@@ -2581,6 +2686,7 @@ def render_chart_panel(sym):
         return None, TF_DEF, None
     cur = d.get("currency") or "USD"
     dec = pdec(sym, d["last"])
+    d = dict(d, ext=md.get_ext(sym, d))       # v5.11: taze ☀️ / 🌙 satırı — sabit Alman saatleri, Yahoo dakika barları
     h1, h2 = st.columns([2.6, 1.15], vertical_alignment="top")
     with h1:
         H(f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{avatar(sym, 30)}'
@@ -2590,7 +2696,7 @@ def render_chart_panel(sym):
           f'<span class="mono" style="font-size:32px;font-weight:600;letter-spacing:-.03em">{tr(d["last"], dec)}</span>'
           f'<span class="mono" style="color:{col(d["change_abs"])};font-weight:600;font-size:14px">'
           f'{chg(d["change_abs"], dec)} ({pct(d["change_pct"])})</span>'
-          f'<span class="muted">{"At close" if (d.get("ext") or {}).get("phase") else "Today"} · {esc(cur)}</span>'
+          f'<span class="muted">{px_when(sym, d)} · {esc(cur)}</span>'
           + (f'</div><div class="extrow" style="margin-top:3px">{ext_html(d, label=True, size=13)}'
              if d.get("ext") else "") + '</div>')
     with h2:
@@ -3062,9 +3168,10 @@ def _mv_cap_txt(v):
 def render_movers():
     """v5.3: Top Movers — tüm işlem gören evren (small / mid / large cap, NYSE / NASDAQ + Avrupa), seans öncesi ve
     sonrası dahil; seçilen seans yüzdesinin mutlak büyüklüğüne, eşitlikte göreli hacme göre sıralı."""
-    pool_phase = md.market_phase()
-    if ss.get("w_mov_ses") not in MV_SES_LABEL:
-        ss["w_mov_ses"] = md.mv_default_session(pool_phase)
+    win_ = md.ext_window()        # v5.11: ☀️ / 🌙 görünümü sabit Alman saatleriyle kendiliğinden açılır
+    if ss.get("w_mov_ses") not in MV_SES_LABEL or ss.get("_mv_win", "?") != win_:
+        ss["w_mov_ses"] = md.mv_default_session()
+        ss["_mv_win"] = win_
     h1, h2, h3 = st.columns([1.0, 1.15, 1.75], vertical_alignment="center")
     with h1:
         H('<span class="panel-title">Top Movers</span>')
@@ -3088,10 +3195,11 @@ def render_movers():
     items = res["rows"]
     if not items:
         H('<div class="muted" style="padding:12px 2px">'
-          + ({"pre": "No pre-market prices in the pool right now — pre-market runs 04:00–09:30 New York time "
-                     "(10:00–15:30 in Germany).",
-              "post": "No after-hours prices in the pool right now — after-hours runs 16:00–20:00 New York time "
-                      "(22:00–02:00 in Germany)."}.get(ses) or "No stock matches these settings right now.")
+          + ({"pre": "No pre-market prices in the pool right now — the ☀️ view opens at 10:00 German time and runs "
+                     "until the US open (15:30).",
+              "post": "No after-hours prices in the pool right now — the 🌙 view runs from 00:00 to 10:00 German "
+                      "time and on days without US trading (last after-hours session)."}.get(ses)
+             or "No stock matches these settings right now.")
           + '</div>')
     rows = ""
     for q in items:
@@ -3140,6 +3248,83 @@ if _frag0 is not None:          # v5.3: Top Movers sayfa açıkken 90 sn'de bir 
         movers_live = render_movers
 else:
     movers_live = render_movers
+
+
+# ======================================================================
+# v5.9 — Global Macro Overview (Markets · Upcoming IPOs'un altı, Watchlist News'in solu)
+#   6 gösterge sekmesi + dünya ısı haritası + lejant + Top 10 (G20 / dünya) + ülke profili — hepsi tek bileşende,
+#   sekme / ülke tıklaması sayfayı yenilemez. Seçilen sekme / kapsam hesapta saklanır (her cihazda aynı açılır).
+# ======================================================================
+MC_SRC_TIP = ("Latest monthly / quarterly prints from the OECD (GDP growth, inflation, unemployment, industrial "
+              "production) and central-bank policy rates from the BIS. Where these are missing: IMF World Economic "
+              "Outlook (annual — current-year estimate; debt = last completed year) or World Bank annual data "
+              "(production: industry value added). Countries without data stay grey — Pulse never estimates values.")
+
+
+def _macro_fallback(data):
+    """Bileşen yüklenemezse: aynı veriyle gösterge seçimi + Top 10 listesi."""
+    names = {i["k"]: i["name"] for i in mc.INDICATORS}
+    k = seg("Indicator", MC_TABS, "w_mc_tab_fb", ss.get("w_mc_tab", "gdp"), fmt=lambda x: names.get(x, x))
+    ss["w_mc_tab"] = k
+    rows = mc.top(data, k, scope=ss.get("w_mc_scope", "g20"), n=10, order=ss.get("w_mc_order", "desc"))
+    srcs = data.get("src") or {}
+    out = ""
+    for r in rows:
+        out += (f'<div style="display:flex;gap:8px;align-items:center;padding:6px 4px;border-top:1px solid {LINE}">'
+                f'<span class="mono muted" style="width:20px;text-align:right">{r["rank"]}</span>'
+                f'<span>{mc.flag_emoji(r["a2"])}</span><b style="flex:1">{esc(r["n"])}</b>'
+                f'<span class="muted small">{esc(r["p"])} · {esc(srcs.get(r["s"], r["s"]))}</span>'
+                f'<span class="mono" style="width:84px;text-align:right;font-weight:700">{mc.fmt_pct(r["v"])}</span></div>')
+    H(f'<div class="muted small" style="margin:6px 0 4px 0">Top 10 · G20 · highest first (interactive map '
+      f'unavailable in this browser)</div>{out or "<div class=muted>No values yet.</div>"}')
+
+
+def _macro_section():
+    H(f'<div class="sec-head"><h3>Global Macro Overview</h3><span class="muted small">GDP · inflation · rates · '
+      f'unemployment · debt · production — click a country for its profile</span>'
+      f'<span class="muted small" title="{esc(MC_SRC_TIP)}" style="cursor:help;margin-left:auto">ⓘ sources</span>'
+      f'</div>')
+    if mc is None:
+        H('<div class="muted">The Global Macro module needs <code>macro.py</code> — upload it next to app.py on GitHub '
+          'and click <b>Reboot app</b>.</div>')
+        return
+    if getattr(mc, "MACRO_VERSION", "old") != APP_VERSION:
+        H(f'<div class="muted small" style="color:{WARN}">macro.py v{esc(getattr(mc, "MACRO_VERSION", "old"))} is '
+          f'outdated — upload the macro.py of v{APP_VERSION}.</div>')
+    with st.spinner("Loading global macro data (OECD · IMF · BIS · World Bank)…"):
+        try:
+            data = mc.get_macro(wait=12)
+        except Exception:           # veri katmanında beklenmedik hata → sayfanın geri kalanı etkilenmesin
+            data = None
+    if not data:
+        H('<div class="muted">The macro data sources (OECD, IMF, BIS, World Bank) are not reachable right now. Pulse '
+          'keeps retrying in the background — reload the page in a minute.</div>')
+        return
+    tab = ss.get("w_mc_tab") if ss.get("w_mc_tab") in MC_TABS else "gdp"
+    scope = ss.get("w_mc_scope") if ss.get("w_mc_scope") in ("g20", "all") else "g20"
+    order = ss.get("w_mc_order") if ss.get("w_mc_order") in ("desc", "asc") else "desc"
+    if not ch.macro_available():
+        _macro_fallback(data)
+        return
+    ev = ch.macro_map(data, key="mc_map", tab=tab, scope=scope, order=order, light=LIGHT)
+    if isinstance(ev, dict) and ev.get("t") == "state" and ev.get("n") != ss.get("_mc_n"):
+        ss["_mc_n"] = ev.get("n")
+        if ev.get("tab") in MC_TABS:
+            ss["w_mc_tab"] = ev["tab"]
+        if ev.get("scope") in ("g20", "all"):
+            ss["w_mc_scope"] = ev["scope"]
+        if ev.get("order") in ("desc", "asc"):
+            ss["w_mc_order"] = ev["order"]
+        _save_state()               # bölüm kendi kendine yenilendiğinde de seçim hesaba yazılsın
+
+
+if _frag0 is not None:              # sekme değişimi yalnızca bu bölümü yeniden çalıştırır (sayfanın tamamını değil)
+    try:
+        macro_live = _frag0(_macro_section)
+    except TypeError:
+        macro_live = _macro_section
+else:
+    macro_live = _macro_section
 
 
 def render_piyasalar():
@@ -3191,18 +3376,70 @@ def render_piyasalar():
             H(f'<div class="sec-head"><h3>Upcoming IPOs</h3><span style="margin-left:auto">'
               f'{src_chip(ipo.attrs.get("src"))}</span></div>')
             table(ipo)
+        with st.container(border=True):     # v5.9: IPO tablosunun hemen altı, News sütununun solu
+            macro_live()
     with c2:
         with st.container(border=True):
             news = md.get_watchlist_news(ss.watchlist)
             H(f'<div class="sec-head"><h3>Watchlist News</h3>'
               f'<span class="muted small">click a headline → source website</span>'
               f'<span style="margin-left:auto">{src_chip(news[0]["src"] if news else "none")}</span></div>')
-            H(news_rows(news[:8]) or '<div class="muted">No news found.</div>')
+            # v5.9: sol sütun Global Macro ile uzadı → kutu boş kalmasın, mevcut başlıkların hepsi (en çok 15)
+            H(news_rows(news[:15]) or '<div class="muted">No news found.</div>')
 
 
 # ======================================================================
 # BÖLÜM: DEĞER ANALİZİ
 # ======================================================================
+def _fill_self_vals(vals, sym, d, f, r, an, basis, band, px):
+    """v5.10: seçili hissenin çarpan satırında eksik kalan alanları kendi verisinden tamamla (fiyat, TTM / ileri
+    EPS, FAVÖK, net borç). Hesaplananlar 'calc', eğilim tahmini 'est' olarak işaretlenir."""
+    v = dict(vals.get(sym) or {"ticker": sym, "name": d.get("name") or sym, "src": "none"})
+    v["calc"], v["est"] = list(v.get("calc") or []), list(v.get("est") or [])     # önbellekteki listeye dokunma
+    try:
+        inp = en.core_inputs(f, r, an, d, basis, band, px)
+    except Exception:
+        vals[sym] = v
+        return
+    price, eps, fe = inp["price"], inp["eps_ttm"], inp["eps_fwd"]
+    kind = "est" if inp["fwd_est"] else "calc"
+
+    def put(k, x, kd="calc"):
+        """Boş alanı doldur; eğilim tahminiyle dolmuş alanı, elde gerçek girdi varsa (ör. analist EPS) değiştir."""
+        if not en._ok(x):
+            return
+        if en._ok(v.get(k)) and not (k in v["est"] and kd != "est"):
+            return
+        for lst in (v["est"], v["calc"]):
+            if k in lst:
+                lst.remove(k)
+        v[k] = float(x)
+        v[("est" if kd == "est" else "calc")].append(k)
+    mc = d.get("market_cap") if d.get("src") != "mock" else float("nan")
+    if not en._ok(mc) and en._ok(price) and en._ok(inp["shares"]):
+        mc = price * inp["shares"]
+    put("market_cap", mc)
+    if en._ok(price) and en._ok(eps) and eps > 0:
+        put("pe", price / eps)
+    if en._ok(price) and en._ok(fe) and fe > 0:
+        put("fwd_pe", price / fe, kind)
+    if en._ok(fe) and en._ok(eps) and eps > 0:
+        put("growth", (fe / eps - 1) * 100, kind)
+    if en._ok(v.get("fwd_pe")) and en._ok(v.get("growth")) and v["growth"] > 0:
+        put("peg", v["fwd_pe"] / v["growth"], "est" if ("fwd_pe" in v["est"] or "growth" in v["est"]) else "calc")
+    if en._ok(mc) and en._ok(inp["ebitda"]) and inp["ebitda"] > 0:
+        put("ev_ebitda", (mc + inp["net_debt"]) / inp["ebitda"])
+    nm = en._last_ok(f["net_m"]) if f else float("nan")
+    if not en._ok(nm):
+        ni, rv = en._bitem(basis, "ni_ttm"), en._bitem(basis, "rev_ttm")
+        nm = ni / rv * 100 if (en._ok(ni) and en._ok(rv) and rv > 0) else float("nan")
+    put("net_margin", nm)
+    put("rev_growth", inp["g_rev"])
+    if (v["calc"] or v["est"]) and v.get("src") == "none":
+        v["src"] = "calc"
+    vals[sym] = v
+
+
 @st.cache_data(ttl=1800, show_spinner="Fetching financial statements…")
 def value_bundle(sym, token, peer_ovr=()):
     """Değer analizi için gereken her şey tek yerde — hepsi gerçek veriden."""
@@ -3222,6 +3459,11 @@ def value_bundle(sym, token, peer_ovr=()):
     if not en._ok(pe_now) and f and en._ok(f["eps"][-1]) and f["eps"][-1] > 0:
         pe_now = d["last"] / f["eps"][-1]
     band = en.pe_band(px, f, pe_now) if f else None
+    try:                                    # v5.10: SEC son 12 ay (yedek girdiler için; önbellekli)
+        basis = md.get_latest_basis(sym)
+    except Exception:
+        basis = {}
+    _fill_self_vals(vals, sym, d, f, r, an, basis, band, px)
     fsc = en.piotroski(f) if f else None
     zsc = en.altman_z(f, d.get("market_cap")) if f else None
     cons = en.consistency(f) if f else None
@@ -3295,7 +3537,7 @@ def value_bundle(sym, token, peer_ovr=()):
             "wk": wk, "tnx_w": tnx_w,
             "dcf": dcfv, "rdcf": rdcf, "g_lt": g_lt, "is_cyc": is_cyc, "drop_hist": drop_hist,
             "g_yoy_rep": yoy_rep, "g_rev": g_rev,
-            "dhist": en.driver_hist(f, an, wc, rf, basis=md.get_latest_basis(sym)) if f else None,
+            "dhist": en.driver_hist(f, an, wc, rf, basis=basis) if f else None, "basis": basis,
             "eps_last": eps_last, "stm_src": stm.get("src", "none"), "pe_now": pe_now,
             "px": px.tail(1300) if px is not None else None,
             "bench": bench.tail(1300) if bench is not None else None,
@@ -3720,7 +3962,8 @@ def peer_scatter(sym, vals, peers, height=300):
             continue
         g, p, m = v.get("growth"), v.get("fwd_pe"), v.get("market_cap")
         if en._ok(g) and en._ok(p) and p > 0:
-            pts.append((t, float(g), float(p), float(m) if en._ok(m) else 1e9))
+            est_ = bool({"growth", "fwd_pe"} & set(v.get("est") or []))
+            pts.append((t, float(g), float(p), float(m) if en._ok(m) else 1e9, est_))
     if len(pts) < 3:
         return None
     xs = [p[1] for p in pts]
@@ -3739,10 +3982,13 @@ def peer_scatter(sym, vals, peers, height=300):
     fig.add_trace(go.Scatter(
         x=xs, y=ys, mode="markers+text", text=[p[0] for p in pts], textposition="middle right",
         textfont=dict(color=TXT, size=11),
-        marker=dict(size=sizes, color=cols, line=dict(width=1, color="#0A0B0D")),
-        customdata=[[big(p[3], "")] for p in pts], showlegend=False,
+        marker=dict(size=sizes, color=cols, opacity=[0.55 if p[4] else 0.95 for p in pts],
+                    line=dict(width=[2 if p[0] == sym else 1 for p in pts],
+                              color=[TXT if p[0] == sym else "#0A0B0D" for p in pts])),
+        customdata=[[big(p[3], ""), "<br>≈ trend estimate (no analyst forecast)" if p[4] else ""] for p in pts],
+        showlegend=False,
         hovertemplate="<b>%{text}</b><br>Growth %{x:.1f}%<br>Fwd P/E %{y:.1f}<br>"
-                      "Market cap %{customdata[0]}<extra></extra>"))
+                      "Market cap %{customdata[0]}%{customdata[1]}<extra></extra>"))
     fig.update_xaxes(title="Fwd EPS growth", ticksuffix="%")
     fig.update_yaxes(title="Fwd P/E", ticksuffix="x")
     return _layout(fig, height, margin=dict(l=8, r=40, t=10, b=34))
@@ -3973,17 +4219,31 @@ def render_quarters(b, path, qp, sym, dec, sel_fy, sel_q):
               f'{txt}</div>')
 
 
-def _cell(v, med, dec=1, lower_better=True, suffix=""):
-    """Medyana göre renklenen hücre."""
+def _cell(v, med, dec=1, lower_better=True, suffix="", mark=""):
+    """Medyana göre renklenen hücre (yazı + hafif zemin; ±%8 içi nötr). v5.10: negatif / sıfır medyanda mutlak fark;
+    mark: '*' = Pulse hesapladı (Yahoo alanı eksik), '≈' = eğilimden tahmin (analist tahmini yok)."""
     if not en._ok(v):
         return f'<td style="color:{MUT}">—</td>'
-    c = TXT
-    if en._ok(med) and med:
-        diff = (v / med - 1) if med > 0 else 0
-        good = (diff < -0.08) if lower_better else (diff > 0.08)
-        bad = (diff > 0.08) if lower_better else (diff < -0.08)
-        c = UP if good else DOWN if bad else TXT
-    return f'<td style="color:{c}">{tr(v, dec)}{suffix}</td>'
+    c, bg = TXT, "transparent"
+    if en._ok(med):
+        rel = (v / med - 1) if (med > 0 and v > 0) else (v - med) / max(abs(med), 1.0)
+        good = (rel < -0.08) if lower_better else (rel > 0.08)
+        bad = (rel > 0.08) if lower_better else (rel < -0.08)
+        if good:
+            c, bg = UP, UP_BG
+        elif bad:
+            c, bg = DOWN, DOWN_BG
+    mk = f'<span style="color:{MUT};font-size:10px;margin-left:2px">{mark}</span>' if mark else ""
+    return f'<td style="color:{c};background:{bg}">{tr(v, dec)}{suffix}{mk}</td>'
+
+
+def _vmark(v, k):
+    """Çarpan satırındaki alan için işaret: tahmin '≈', hesaplanan '*', Yahoo boş ''."""
+    if k in (v.get("est") or []):
+        return "≈"
+    if k in (v.get("calc") or []):
+        return "*"
+    return ""
 
 
 def render_value():
@@ -4025,6 +4285,7 @@ def render_value():
 
 def render_value_head(b, sym):
     d, g = b["d"], b["grade"]
+    d = dict(d, ext=md.get_ext(sym, d))       # v5.11: Markets başlığıyla aynı ☀️ / 🌙 satırı
     cur = d.get("currency") or "USD"
     dec = pdec(sym, d["last"])
     with st.container(border=True):
@@ -4767,11 +5028,13 @@ def _fund_rest(b, fq, fy_labels, k_y, f, r):
         rows = [("Current ratio", tr(r.get("current_ratio"), 2), "above 1.5 is comfortable"),
                 ("Net debt / EBITDA", tr(r.get("net_debt_ebitda"), 2), "above 3 is high leverage"),
                 ("Interest coverage", tr(r.get("interest_cover"), 1), "EBIT / interest expense"),
-                ("Return on assets", f'{tr(r.get("roa"), 1)}%', ""),
+                ("Return on assets", f'{tr(r.get("roa"), 1)}%', "above 10% shows strong asset efficiency"),
                 ("Cash flow / net income", tr(r.get("accrual"), 2), "below 1 means weak earnings quality"),
                 ("Share count change", f'{tr(r.get("share_chg"), 1)}%', "negative = buybacks"),
-                ("Buybacks (last year)", big(abs(r.get("buyback")) if en._ok(r.get("buyback")) else float("nan"), ""), ""),
-                ("Dividends (last year)", big(abs(r.get("dividends")) if en._ok(r.get("dividends")) else float("nan"), ""), "")]
+                ("Buybacks (last year)", big(abs(r.get("buyback")) if en._ok(r.get("buyback")) else float("nan"), ""),
+                 "capital returned via share repurchases"),
+                ("Dividends (last year)", big(abs(r.get("dividends")) if en._ok(r.get("dividends")) else float("nan"), ""),
+                 "cash distributions paid to shareholders")]
         H('<div class="panel-title">Ratios and quality</div>' + "".join(
             f'<div class="stat-row"><span class="lbl">{esc(k)}</span>'
             f'<span class="mono">{v}</span>'
@@ -4924,11 +5187,7 @@ def render_longterm():
             eq_ = md.get_ext_quotes(list(vs["Ticker"]))
 
             def _vx(t_):
-                e_ = (eq_.get(t_) or {}).get("ext") or {}
-                if not e_:
-                    return ""
-                return (f'{EXT_META[e_["phase"]][0]} {tr(e_["px"], pdec(t_, e_["px"]))}  '
-                        f'{chg(e_["chg_abs"], pdec(t_, e_["px"]))} ({pct(e_["chg_pct"])})')
+                return ext_text(eq_.get(t_), t_)          # v5.11: ☀️ 126.10 (+0.46%)
             extcol = vs["Ticker"].map(_vx)
             if extcol.str.len().sum() > 0:
                 vs = vs.copy()
@@ -5169,7 +5428,9 @@ ST_CHART_FIT = {"fit": 0.84, "hmax": 1180, "pmin": 470}
 PAT_COL = "#F5B544"
 # v4.1: her katman kendi rengini kullanır — dikdörtgen formasyonu, order block'lar ve destek-direnç
 # bantları kutu olarak çizildiği için birbirinden ayırt edilebilir olmalı.
-PAT_COLS = {"rectangle": "#22D3EE"}        # diğer formasyonlar (üçgen, merdiven, kırılım): PAT_COL
+PAT_COLS = {"rectangle": "#22D3EE", "res_breakout": "#22D3EE", "bull_flag": "#22D3EE", "bull_pennant": "#22D3EE",
+            "hs_top": "#F472B6", "triangle_desc": "#F5B544"}   # diğerleri (üçgen …): PAT_COL
+CANDLE_COL = {"bull": "#3DDC97", "bear": "#F87171"}           # v5.11: mum formasyonu işaretleri
 OB_COL = {"bull": "#A78BFA", "bear": "#F472B6"}
 
 
@@ -5217,9 +5478,24 @@ def st_overlay(payload, sym, best=None, levels=None, strat=None, params=None):
         info["geo"] = geo
         info["pat_col"] = PAT_COLS.get(geo["key"], PAT_COL)
         ov["patterns"].append({"label": geo["label"], "color": info["pat_col"], "at": _pl([geo["at"]])[0],
-                               "lines": [{"pts": _pl(ln["pts"]), "dash": bool(ln.get("dash")), "w": ln.get("w", 2)}
+                               "lines": [dict({"pts": _pl(ln["pts"]), "dash": bool(ln.get("dash")), "w": ln.get("w", 2)},
+                                              **({"c": ln["c"]} if ln.get("c") else {}))
                                          for ln in geo["lines"]],
                                "dots": _pl(geo["dots"]), "fill": _pl(geo["fill"]) if geo.get("fill") else None})
+    if daily:                     # v5.11: son 3 günlük mumdaki mum formasyonları (bonus) — nokta + etiket
+        try:
+            cds = en.candle_patterns(df.rename(columns=str), 3)
+        except Exception:
+            cds = []
+        info["candles"] = cds
+        for c_ in cds[:3]:
+            i_ = int(c_["i"])
+            if not 0 <= i_ < len(df):
+                continue
+            hi_, lo_ = float(df["High"].iloc[i_]), float(df["Low"].iloc[i_])
+            y_ = lo_ if c_["kind"] == "bull" else hi_
+            ov["patterns"].append({"label": "🕯 " + c_["name"], "color": CANDLE_COL[c_["kind"]], "at": [i_, y_],
+                                   "lines": [], "dots": [[i_, y_]], "fill": None, "soft": True})
     x0 = max(0, last - 45)
     # v4.2: işlem planı (seviye / stop / hedefler) ayrı katman — etiketleri fiyat ekseninde, çakışmasız
     for lab, y, c_ in levels or []:
@@ -5540,6 +5816,16 @@ def strat_legend(key, params=None):
         return (f'{sw(en.C_TREND)} {P["n_trend"]}-day high = direction · {sw(en.C_ENTRY)} {P["n_entry"]}-day high = '
                 f'buy trigger · {sw(en.C_STOP)} dashed {P["n_exit"]}-day low = trailing stop · {sw(en.C_ON)} shaded '
                 f'= direction is on · green / red dots = simulated buys / sells of the rule · ')
+    if key == "ichimoku":
+        return (f'{sw("#8D96A5")} Kumo (cloud) · {sw("#5B8CFF")} Tenkan · {sw(en.C_ENTRY)} Kijun = stop & trail · '
+                f'{sw(en.C_ON)} / {sw(en.C_STOP)} dots = fresh breakouts long / short · ')
+    if key == "wavetrend":
+        return (f'{sw("#8B9CF8")} Nadaraya-Watson envelope · {sw(en.C_ENTRY)} dashed mid-line = TP1 · {sw(en.C_ON)} '
+                f'dots = WaveTrend cross at the band · {sw(en.C_STOP)} dashed = stop · ')
+    if key == "divergence":
+        return (f'{sw(en.C_ON)} / {sw(en.C_STOP)} lines = bullish / bearish divergence between two swings (dashed = '
+                f'mostly hidden), the label lists the indicators · dot = signal candle · dashed levels = stop, TP1 '
+                f'(neckline) and TP2 of the latest signal · ')
     return (f'{sw(en.C_POLE)} advance (flagpole) · {sw(en.C_FLAG)} flag box · {sw(en.C_ENTRY)} dashed base high = '
             f'buy trigger · {sw(en.C_STOP)} dashed = stop below the flag · ')
 
@@ -5631,7 +5917,9 @@ def state_style(b, strat=None):
     return fg, bg, lab
 ICHI_MODE_LABEL = {"classic": "Kumo breakout + Kijun trail", "staged": "Staged Kumo entry (⅓ + ⅔)"}
 STRAT_SEG = {"ai": "🤖 Pattern breakout", "donchian2": "📈 Double Donchian", "flag": "🚩 Flag after advance",
-             "ichimoku": "☁️ Ichimoku", "wavetrend": "🌊 WaveTrend + NW"}
+             "ichimoku": "☁️ Ichimoku", "wavetrend": "🌊 WaveTrend + NW", "divergence": "🔀 Divergence",
+             "pairs": "⚖️ Pairs", "rotation": "🔄 Rotation"}
+ST_PAGES = list(en.STRAT_KEYS) + ["pairs", "rotation"]          # v5.8: çift ve rotasyon kendi sayfalarıyla
 CK_ICON = {"ok": ("✓", UP), "warn": ("~", WARN), "bad": ("✕", DOWN), "na": ("·", MUT)}
 C15_STYLE = {"confirmed": (UP, UP_BG), "pending": (WARN, WARN_BG),
              "failed": (DOWN, DOWN_BG), "no data": (MUT, NEU_BG)}
@@ -5645,32 +5933,51 @@ def ai_token():
 
 @st.cache_data(ttl=600, show_spinner="Scanning the market — NASDAQ + NYSE…")
 def run_ai_scan(token, cfg_json):
-    """Üç aşamalı tarama. Ağır iş yalnızca eleme sonrası kalan sembollerde yapılır."""
+    """Üç aşamalı tarama. Ağır iş yalnızca eleme sonrası kalan sembollerde yapılır.
+    v5.11: formasyonlar YALNIZCA Short Term listesinden (bayrak, flama, simetrik / alçalan üçgen, bant, direnç
+    kırılımı, OBO) · iki havuz: long (günlük +, EMA21 / 50 üstü, boğa formasyonu) ve short (günlük −, iki EMA'nın da
+    altı, ayı formasyonu) · işlem yönündeki mum formasyonları skora bonus."""
     cfg = json.loads(cfg_json)
     snap = md.get_market_snapshot()
     cand, steps = en.ai_prefilter(snap, cfg)
+    cand_s, steps_s = en.ai_prefilter(snap, cfg, side="short")
     idx = md.get_daily_batch(("SPY", "QQQ"))
     regime = en.ai_regime(idx, int(cfg.get("regime_ema", 50)))
-    prelim = [t for t in list(cand["ticker"].head(int(cfg.get("prelim", 60))))] if len(cand) else []
-    daily = md.get_daily_batch(tuple(prelim)) if prelim else {}
-    meta = cand.set_index("ticker").to_dict("index") if len(cand) else {}
-    passed, ema_fail = [], 0
+    n_pre = int(cfg.get("prelim", 60))
+    prelim = [t for t in list(cand["ticker"].head(n_pre))] if len(cand) else []
+    prelim_s = [t for t in (list(cand_s["ticker"].head(max(10, n_pre // 2))) if cand_s is not None and len(cand_s)
+                            else []) if t not in prelim]
+    daily = md.get_daily_batch(tuple(prelim + prelim_s)) if (prelim or prelim_s) else {}
+    meta = {}
+    for c_ in (cand_s, cand):
+        if c_ is not None and len(c_):
+            meta.update(c_.set_index("ticker").to_dict("index"))
+    passed, ema_fail, passed_s, ema_ok_s = [], 0, [], 0
     for t in prelim:
-        r = en.ai_evaluate(t, daily.get(t), meta=meta.get(t), cfg=cfg)
+        r = en.ai_evaluate(t, daily.get(t), meta=meta.get(t), cfg=cfg, side="long")
         if not r:
             continue
         if r["ema_ok"]:
             passed.append(r)
         else:
             ema_fail += 1
+    for t in prelim_s:                 # short: yalnızca ayı formasyonu olanlar listelenir
+        r = en.ai_evaluate(t, daily.get(t), meta=meta.get(t), cfg=cfg, side="short")
+        if r and r["ema_ok"]:
+            ema_ok_s += 1
+            if r["best"]:
+                passed_s.append(r)
     passed.sort(key=lambda r: -r["volume"])
-    top = passed[:int(cfg.get("top", 20))]
+    passed_s.sort(key=lambda r: -r["volume"])
+    n_top = int(cfg.get("top", 20))
+    top = passed[:n_top] + passed_s[:max(5, n_top // 2)]
     if top:
         i15 = md.get_intraday_batch(tuple(r["ticker"] for r in top))
         for r in top:
             b = r["best"]
             en.ai_apply_15m(r, en.confirm_15m(i15.get(r["ticker"]), b["level"], b["kind"]) if b else None)
     top.sort(key=lambda r: -r["score"])
+    top = top[:n_top]
     spy = idx.get("SPY") if idx else None
     for r in top:
         r["summary"] = en.ai_summary(r)
@@ -5678,14 +5985,17 @@ def run_ai_scan(token, cfg_json):
         r["df"] = d.tail(120).copy() if d is not None else None   # ayrıntı grafiği için
         r["strat"] = "ai"
         try:      # v4.9: bağımsız teyitler (çoklu zaman dilimi, göstergeler, direnç) — AI skoru aynı kalır
-            if r["best"] and r["best"]["kind"] == "bull" and d is not None:
+            if r["best"] and d is not None:
+                ok_ = bool(regime.get("dn")) if r.get("side") == "short" else bool(regime.get("ok"))
                 r["checks"] = en.strat_checks("ai", d, r["best"], r["plan"], spy["Close"] if spy is not None else None,
-                                              r.get("zones"), bool(regime.get("ok")), r.get("c15"))
+                                              r.get("zones"), ok_, r.get("c15"))
                 r["conf"] = en.checks_score(r["checks"])
         except Exception:
             pass
     return {"rows": top, "steps": steps, "regime": regime, "ema_fail": ema_fail,
             "prelim_n": len(prelim), "passed_n": len(passed),
+            "short": {"pool": steps_s.get("degisim", 0), "prelim": len(prelim_s), "ema": ema_ok_s,
+                      "pattern": len(passed_s), "shown": sum(1 for r in top if r.get("side") == "short")},
             "src": snap.attrs.get("src", "mock") if snap is not None else "none",
             "capless": bool(steps.get("capless")), "strat": "ai",
             "at": pd.Timestamp.now(tz=md.TZ).strftime("%H:%M")}
@@ -5709,7 +6019,7 @@ def run_strat_scan(token, key, cfg_json):
     meta = cand.set_index("ticker").to_dict("index") if cand is not None and len(cand) else {}
     found = []
     for t in prelim:
-        r = en.strat_evaluate(key, t, daily.get(t), meta=meta.get(t), bench=bench,
+        r = en.strat_evaluate(key, t, daily.get(t), meta=meta.get(t), bench=bench, params=cfg.get("sp"),
                               tp1_part=float(cfg.get("tp1_part", 0.40)))
         if r:
             found.append(r)
@@ -5882,6 +6192,11 @@ def render_ai_opps(strat="ai"):
         sparams = {"mode": 1 if imode == "staged" else 0}
         res = run_ichi_scan(ai_token(), sparams["mode"], ibtc)
     elif is_st:
+        if strat == "divergence":          # v5.8: ayarlar tahtanın üstünde; tarama, bot ve grafik aynı ayarı kullanır
+            with st.expander("⚙️ Divergence settings — indicators, pivots, risk", expanded=False):
+                sparams = div_settings_ui("w_dv")
+            sparams = div_params("w_dv")
+            cfg = dict(cfg, sp=sparams)
         res = run_strat_scan(ai_token(), strat, json.dumps(cfg, sort_keys=True))
     else:
         res = run_ai_scan(ai_token(), json.dumps(cfg, sort_keys=True))
@@ -5931,15 +6246,17 @@ def render_ai_opps(strat="ai"):
             c_ = UP if v["ok"] else DOWN
             return (f'<span class="badge" style="color:{c_};background:{UP_BG if v["ok"] else DOWN_BG}">'
                     f'{nm} {"✓" if v["ok"] else "✕"} 50 EMA {pct(v["pct"]) if v["pct"] is not None else ""}</span>')
-        ok = bool(reg.get("ok"))
+        ok, dn_ = bool(reg.get("ok")), bool(reg.get("dn"))
         H(f'<div class="critbar" style="margin-top:12px"><div style="display:flex;align-items:center;gap:8px;'
           f'flex-wrap:wrap"><span class="boxlbl">Regime filter</span>{_rchip("S&amp;P 500", sp)}{_rchip("Nasdaq", qq)}'
-          f'</div><div class="muted small" style="flex:1 1 300px">The strategy only looks for longs while both indices '
-          f'are above their 50-day EMA.</div></div>')
+          f'</div><div class="muted small" style="flex:1 1 300px">Longs while both indices are above their 50-day EMA, '
+          f'shorts (bearish patterns) while both are below.</div></div>')
         if not ok:      # v4.6: kendi HTML bandı — rozetlere ve alttaki kutulara asla binmez
-            H('<div class="regime-warn"><span class="rw-ic">⚠</span><span>At least one index is below its 50-day '
-              'EMA — the strategy doesn\'t look for longs in this regime. The list below is shown for information '
-              'only.</span></div>')
+            H('<div class="regime-warn"><span class="rw-ic">⚠</span><span>'
+              + ('Both indices are below their 50-day EMA — the strategy looks for shorts; long setups below are shown '
+                 'for information only.' if dn_ else
+                 'The indices are mixed (one above, one below the 50-day EMA) — longs and shorts below are shown for '
+                 'information only.') + '</span></div>')
         H(f'<div class="funnel"><div>Universe<b>{steps.get("evren", 0)}</b></div>'
           f'<div>Price ≥ $3<b>{steps.get("price", 0)}</b></div>'
           f'<div>Daily change +<b>{steps.get("degisim", 0)}</b></div>'
@@ -5947,6 +6264,12 @@ def render_ai_opps(strat="ai"):
           f'{"—" if res["capless"] else steps.get("piyasa_degeri", 0)}</b></div>'
           f'<div>Above 21 &amp; 50 EMA<b>{res["passed_n"]}</b></div>'
           f'<div>Top {cfg["top"]} by volume<b>{len(rows)}</b></div></div>')
+        sh_ = res.get("short") or {}
+        H(f'<div class="muted small" style="margin:-4px 0 6px 0">Shorts: daily change − <b>{sh_.get("pool", 0)}</b> → '
+          f'most liquid {sh_.get("prelim", 0)} → below 21 &amp; 50 EMA <b>{sh_.get("ema", 0)}</b> → with a bearish '
+          f'pattern (descending triangle, range breakdown, head &amp; shoulders) <b>{sh_.get("pattern", 0)}</b> · '
+          f'{sh_.get("shown", 0)} in the list. Patterns: only your Short Term set · a confirming candle adds a '
+          f'bonus 🕯</div>')
         if res["capless"]:
             H('<div class="muted small">The Nasdaq screener did not respond — scanned a limited universe, '
               'the market-cap filter could not be applied.</div>')
@@ -5984,14 +6307,20 @@ def render_ai_opps(strat="ai"):
             sfg, sbg, slab = state_style(b, r.get("strat"))
             cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
             sc = UP if r["score"] >= 70 else ACCENT if r["score"] >= 55 else WARN
+            pre_ = ""
+            if not is_st and b:                   # v5.11: yön rozeti + mum bonusu (🕯)
+                pre_ = _side_chip({"side": r.get("side") or "long"}) + " "
+            cnd_ = r.get("candle_pro") or []
+            cico = (f' <span title="Candle bonus: {esc(", ".join(x["name"] for x in cnd_))}">🕯</span>'
+                    if (cnd_ and b) else "")
             body += (f'<a class="opp-grid ai-grid opp-row{" sel" if r["ticker"] == sel["ticker"] else ""}" '
                      f'target="_self" href="{link(aip=r["ticker"], f="stchart")}">'
                      f'<span class="cellsym">{avatar(r["ticker"], 32)}'
                      f'<span style="min-width:0"><b style="font-size:13.5px">{esc(r["ticker"])}</b>{hype}'
                      f'<div class="nm" title="{esc(r["name"])}">{esc(r["name"])}</div></span></span>'
-                     f'<span class="cellstk"><span class="aist" style="color:{sfg};background:{sbg}">'
-                     f'{slab}</span><span class="sub" title="{esc((b or {}).get("name", "no pattern"))}">'
-                     f'{esc((b or {}).get("name", "no pattern"))}</span></span>'
+                     f'<span class="cellstk"><span>{pre_}<span class="aist" style="color:{sfg};background:{sbg}">'
+                     f'{slab}</span></span><span class="sub" title="{esc((b or {}).get("name", "no pattern"))}">'
+                     f'{esc((b or {}).get("name", "no pattern"))}{cico}</span></span>'
                      f'<span class="r"><div style="font-weight:600">{tr(r["price"])}</div>'
                      f'<div style="font-size:11px;font-weight:600;color:{col(r["chg"])}">{pct(r["chg"])}</div>'
                      f'{_ext_cell(r)}</span>'
@@ -6009,7 +6338,8 @@ def render_ai_opps(strat="ai"):
           + (f'<span>Score: 40 % setup quality + 60 % confirmation checks (weekly / daily trend, indicators, '
              f'patterns, room to the next level) — information only, no filter</span><span style="margin-left:auto">'
              f'Signals first, then setups waiting for the trigger</span></div></div>' if is_st else
-             f'<span>Score: pattern strength + breakout state + 15-minute confirmation + R/R + trend</span>'
+             f'<span>Score: pattern strength + breakout state + 15-minute confirmation + R/R + trend + candle '
+             f'bonus 🕯</span>'
              f'<span style="margin-left:auto">The top {cfg["top"]} stocks by volume are evaluated</span></div></div>'))
     with right:
         render_ai_detail(sel)
@@ -6083,11 +6413,17 @@ def render_ai_detail(r):
         # v4.4: ayrıntı satırları yok — yalnızca formasyon adı ve 15 dk durumu (rozet olarak)
         cfg_, cbg = C15_STYLE.get(c.get("state"), (MUT, NEU_BG))
         is_st_ = r.get("strat") in en.STRAT_PARAMS
+        cnd_ = [en.candle_text(x) for x in (r.get("candle_pro") or [])[:2]] if b else []
+        if b and not is_st_:                   # v5.11: 15 dakikalık mumlar da (işlem yönünde)
+            cnd_ += [en.candle_text(x, "15-min") for x in en.candles_for(c.get("candles"), b.get("kind"))[:1]]
         H('<div class="ai-tags">'
           + (f'<span class="ai-tag">{esc(b["name"])}</span>' if b else "")
           + (_side_chip(b) if is_st_ and (b or {}).get("side") else "")
+          + (_side_chip({"side": r.get("side") or "long"}) if (not is_st_ and b) else "")
           + ("" if is_st_ else
              f'<span class="aist" style="color:{cfg_};background:{cbg}">15m · {esc(c.get("state", "—"))}</span>')
+          + "".join(f'<span class="aist" style="color:{ACCENT};background:{NEU_BG}" title="Candle bonus — a '
+                    f'confirming candle in the trade\'s direction">🕯 {esc(x)}</span>' for x in cnd_)
           + '</div>')
         if b and b.get("state") == "watch":           # v5.3: Ichimoku piyasası sinyalsiz — ne beklendiği
             H(f'<div class="gtext plan-rule">{esc(b.get("note") or "")}</div>')
@@ -6120,6 +6456,8 @@ def render_ai_detail(r):
               + (f'<div class="planrow"><span class="l">TP1 based on</span>'
                  f'<span class="v" style="font-size:12px">{esc(p["tp1_src"])}</span></div>' if has_tp else ""))
             H(f'<div class="gtext plan-rule">{esc(p["rule"])}</div>')
+        if r.get("strat") == "divergence" and b and b.get("hits"):        # v5.8: indikatör indikatör
+            H(div_breakdown_html(b, r.get("params")))
         # v4.9: bağımsız teyitler — çoklu zaman dilimi, göstergeler, formasyon / direnç, piyasa
         if r.get("checks") and r.get("conf"):
             cs_ = r["conf"]
@@ -6153,8 +6491,10 @@ AI_MODE = "🤖 AI Opportunities"
 ALLOC_COLS = ["#5B8CFF", "#A78BFA", "#22D3EE", "#3DDC97", "#F5B544", "#F472B6", "#FB923C", "#94A3B8"]
 BOT_SRC_NAME = {"ai": "AI Opportunities filter", "filter": "My Filter", "donchian2": "Double Donchian",
                 "flag": "Flag after a strong advance", "ichimoku": "Ichimoku Kumo breakout",
-                "wavetrend": "WaveTrend + NW envelope"}
-BOT_UNI_NAME = {"demo": "Demo watchlist", "scan": "Whole market scan", "ichi": "Gold · Silver · Oil · Bitcoin"}
+                "wavetrend": "WaveTrend + NW envelope", "divergence": "Divergence (many indicators)",
+                "pairs": "Pairs trading", "rotation": "Momentum rotation"}
+BOT_UNI_NAME = {"demo": "Demo watchlist", "scan": "Whole market scan", "ichi": "Gold · Silver · Oil · Bitcoin",
+                "pairs": "Pair list", "rotation": "Monthly basket"}
 
 
 def _me():
@@ -6329,6 +6669,16 @@ def _demo_actions():
     """Tablolardaki linklerle gelen işlemler (izleme listesinden çıkar, pozisyonu kapat, botu durdur / sil)."""
     if not _me():
         return
+    rb_ = _consume("bot_rot")                           # v5.8: rotasyon botunu bir sonraki turda yeniden dengele
+    if rb_:
+        def _rf(a):
+            for b in a.get("bots") or []:
+                if b["id"] == rb_ and b.get("src") == "rotation":
+                    b["rot_force"] = True
+                    return b
+        b_ = bk.demo_edit(_me(), _rf)
+        if b_:
+            st.toast(f'{b_["name"]}: rebalancing at the next check (within 15 minutes, while the market is open)')
     rm, sell, tg, dl = _consume("demo_rm"), _consume("demo_sell"), _consume("bot_tg"), _consume("bot_del")
     ed = _consume("demo_edit")
     pc = _consume("demo_pcancel")                       # v5.5: bekleyen limit emrini iptal et
@@ -6372,10 +6722,13 @@ def _demo_actions():
     if dl:
         def run2(a):
             held = any(p["owner"] == dl for p in a["pos"].values())
+            kind = next((b.get("src") for b in a.get("bots") or [] if b["id"] == dl), None)
             a["bots"] = [b for b in a.get("bots") or [] if b["id"] != dl]
-            return held
-        held = bk.demo_edit(_me(), run2)
-        st.toast("Bot deleted" + (" — its open positions stay and keep their stop / targets" if held else ""))
+            return held, kind
+        held, kind = bk.demo_edit(_me(), run2)
+        st.toast("Bot deleted" + ((" — its open legs stay without a stop; close them under “Open bot positions”"
+                                   if kind in ("pairs", "rotation") else
+                                   " — its open positions stay and keep their stop / targets") if held else ""))
 
 
 def alloc_html(parts, total, cur, center_k="Equity"):
@@ -6430,12 +6783,16 @@ def render_bot_form(acct):
     """Yeni bot: strateji (AI filtresi ya da kendi filtren), evren, risk ve çıkış kuralları."""
     saved = ss.get("saved_filters") or []
     cur_name = ss.get("flt_name") or "My filter"
-    opts = ["ai"] + [f"st:{k}" for k in en.STRAT_KEYS if k != "ai"] + ["flt:__current__"] + \
+    opts = ["ai"] + [f"st:{k}" for k in en.STRAT_KEYS if k != "ai"] + ["pairs", "rotation", "flt:__current__"] + \
         [f'flt:{x["name"]}' for x in saved if x.get("name") != cur_name]
 
     def fmt(o):
         if o == "ai":
-            return "🤖 Pattern breakout — AI Opportunities filter (pattern + 15-min confirmation)"
+            return "🤖 Pattern breakout — your Short Term patterns + 15-min confirmation (candles = bonus)"
+        if o == "pairs":
+            return "⚖️ Pairs trading — long the cheap leg, short the expensive one (z-score)"
+        if o == "rotation":
+            return "🔄 Momentum rotation — the strongest of a list, rebalanced monthly"
         if o.startswith("st:"):
             i_ = en.strat_info(o[3:])
             return f'{i_["icon"]} {i_["long"]}'
@@ -6447,7 +6804,12 @@ def render_bot_form(acct):
         with c2:
             strat = st.selectbox("Strategy", opts, key="bot_strat", format_func=fmt)
         with c3:
-            if strat == "st:ichimoku":      # v5.3: Ichimoku yalnızca dört piyasada
+            if strat in ("pairs", "rotation"):      # v5.8: kendi listeleri
+                H('<div class="boxlbl" style="margin-top:4px">Where it looks</div><div class="muted small">'
+                  + ("The pair list below" if strat == "pairs" else "The rotation universe from the Rotation page")
+                  + '</div>')
+                uni = strat
+            elif strat == "st:ichimoku":      # v5.3: Ichimoku yalnızca dört piyasada
                 H('<div class="boxlbl" style="margin-top:4px">Where it looks</div><div class="muted small">Gold · '
                   'Silver · Crude oil (WTI) · Bitcoin — choose below</div>')
                 uni = "ichi"
@@ -6455,6 +6817,9 @@ def render_bot_form(acct):
                 uni = st.selectbox("Where it looks", ["demo", "scan"], key="bot_uni",
                                    format_func=lambda u: BOT_UNI_NAME[u])
         d = en.BOT_DEFAULT
+        if strat in ("pairs", "rotation"):          # v5.8: çift / rotasyon botu — kendi ayarları
+            _bot_form_special(acct, strat, name)
+            return
         n1, n2, n3 = st.columns(3)
         skey = strat[3:] if str(strat).startswith("st:") else None
         with n1:
@@ -6472,14 +6837,24 @@ def render_bot_form(acct):
             alloc = st.number_input("Max. size of one position (%)", 2.0, 100.0, float(d["max_alloc"]), 1.0,
                                     key="bot_alloc")
             days = st.number_input("Max. holding time (days)", 1, 120, int(d["max_days"]), 1, key="bot_days")
-        c15, reg, mconf = False, False, 0.0
+        c15, reg, mconf, aid = False, False, 0.0, "long"
         if not skey and not str(strat).startswith("flt:"):      # v5.3: filtreler yalnızca 1. stratejide (AI)
+            aid = st.selectbox("Direction", ["long", "both"], key="bot_aidir",
+                               format_func={"long": "Long only — bullish patterns (flag, pennant, triangle, range, "
+                                                    "resistance breakout)",
+                                            "both": "Long + short — also bearish patterns (descending triangle, range "
+                                                    "breakdown, head & shoulders)"}.get,
+                               help="v5.11: shorts are opened only on bearish Short Term patterns, below the 21- and "
+                                    "50-day EMA and — with the market filter — only while SPY and QQQ are below "
+                                    "their 50-day EMA. A cash account at the broker cannot sell short.")
             k1, k2 = st.columns([1.25, 1.35], vertical_alignment="bottom")
             with k1:
                 c15 = st.checkbox("Require the 15-minute confirmation", value=True, key="bot_c15",
-                                  help="The breakout must hold above the level on the 15-minute chart with volume.")
+                                  help="The breakout must hold beyond the level on the 15-minute chart with volume.")
             with k2:
-                reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
+                reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA" if aid == "long" else
+                                  "Trade with the market (longs above, shorts below the SPY / QQQ 50-day EMA)",
+                                  value=True, key="bot_reg")
         elif str(strat).startswith("flt:"):
             reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
         bot_params, bot_ichi = None, None
@@ -6499,6 +6874,12 @@ def render_bot_form(acct):
             H('<div class="muted" style="font-size:11.5px;line-height:1.5">Long <b>and short</b>. Each market uses its '
               'own preset: gold / silver with the weekly-cloud rule, crude oil with ADX ≥ 20, Bitcoin with the '
               'variant chosen here. Futures are traded as units in the demo account, Bitcoin in fractions.</div>')
+        if skey == "divergence":    # v5.8: tahtadaki ayarlarla aynı
+            bot_params = div_params("w_dv")
+            H(f'<div class="muted" style="font-size:11.5px;line-height:1.5">Uses the settings of the Divergence board '
+              f'(⚙️ Divergence settings): at least {bot_params["min_n"]} of {len(en.div_inds(bot_params))} indicators · '
+              f'{esc(DIV_KIND_LABEL[int(bot_params["kinds"])].lower())} · pivots {bot_params["prd"]} · stop ≤ '
+              f'{tr(bot_params["risk_atr"], 1)} ATR · long and short.</div>')
         if skey:      # v4.9: stratejinin kuralları + hangi ayarların geçerli olduğu
             H(strat_steps_html(skey, bot_params))
             H('<div class="muted" style="font-size:11.5px;line-height:1.5">No extra filters: the bot trades the '
@@ -6511,6 +6892,8 @@ def render_bot_form(acct):
                  'not used.' if skey == "ichimoku" else
                  'Mean reversion: targets are the Nadaraya-Watson mid-line (40 %) and the upper band.'
                  if skey == "wavetrend" else
+                 'Long and short: 40 % at the neckline (TP1), the rest at TP2 or by the ATR trailing stop.'
+                 if skey == "divergence" else
                  'Targets: 40 % at TP1, the rest at the measured move or by the ATR trailing stop.')
               + '</div>')
         if button("Create bot", key="bot_create", primary=True):
@@ -6531,7 +6914,7 @@ def render_bot_form(acct):
                 b = bk.bot_new(nm, "ai" if strat == "ai" else (skey or "filter"), uni,
                                {"risk_pct": risk, "max_pos": maxp, "max_alloc": alloc, "min_rr": minrr,
                                 "trail_atr": trail, "max_days": days, "need_c15": bool(c15), "regime": bool(reg),
-                                "min_conf": float(mconf)}, flt, params=bot_params, ichi=bot_ichi)
+                                "min_conf": float(mconf), "ai_dir": aid}, flt, params=bot_params, ichi=bot_ichi)
                 locked_ = bk.guard_locked(bk.demo_get(_me()))
                 if locked_:                                  # v5.4: kilitli hesapta bot duraklatılmış başlar
                     b["on"] = False
@@ -6576,7 +6959,7 @@ def _bots_body():
               f'<span class="panel-title">Active bots</span><span style="display:flex;gap:6px;flex-wrap:wrap">'
               f'<span class="bchip" style="--c:{UP if running else MUT}">{running} running</span>'
               f'<span class="bchip" style="--c:{UP if mkt else WARN}">US market {"open" if mkt else "closed"}</span>'
-              f'<span class="bchip" style="--c:{ACCENT}">next check ≈ {_bot_when(nxt)}</span></span></div>'
+              f'<span class="bchip" style="--c:{ACCENT}">next check ≈ {_bot_when(nxt)}</span>{_worker_chip()}</span></div>'
               f'<div class="muted small">Bots buy and sell on their own in your demo account <a class="lnk" '
               f'target="_self" href="{link(sec="Demo")}">“{esc(acct.get("name") or "Account")}”</a> '
               f'({money(val["equity"], cur, 0)}) · switch accounts in the Demo tab · checked every 15 minutes'
@@ -6588,7 +6971,9 @@ def _bots_body():
                 for b in bots:
                     stt = bk.bot_stats(acct, b["id"], val)
                     lc = b.get("last") or {}
-                    strat = ("AI filter" if b["src"] == "ai" else BOT_SRC_NAME[b["src"]] if b["src"] in en.STRAT_PARAMS
+                    strat = (("Pattern breakout · long + short" if (b.get("cfg") or {}).get("ai_dir") == "both"
+                              else "Pattern breakout · long") if b["src"] == "ai" else BOT_SRC_NAME[b["src"]] if (
+                        b["src"] in en.STRAT_PARAMS or b["src"] in ("pairs", "rotation"))
                              else f'Filter: {(b.get("flt") or {}).get("name", "—")}')
                     on = bool(b.get("on"))
                     note = lc.get("note") or ((str(lc.get("buys", 0)) + " bought, " + str(lc.get("sells", 0)) + " sold")
@@ -6596,7 +6981,8 @@ def _bots_body():
                     rows += (
                         f'<tr><td><span style="display:flex;align-items:center;gap:10px"><span class="bot-ic" '
                         f'style="--c:{ALLOC_COLS[bots.index(b) % len(ALLOC_COLS)]}">🤖</span><span><b>{esc(b["name"])}'
-                        f'</b><span class="bsub">{esc(strat)} · {esc(BOT_UNI_NAME[b["universe"]])}</span>'
+                        f'</b><span class="bsub">{esc(strat)} · {esc(BOT_UNI_NAME.get(b["universe"], b["universe"]))}</span>'
+                        f'{_bot_extra_html(b)}'
                         f'<span class="bsub bnote">{("Last check " + _bot_when(lc.get("ts")) + " · " + str(int(lc.get("checked") or 0)) + " checked · ") if lc else ""}'
                         f'{esc(note)}</span></span></span></td><td><div>{money(stt["value"], cur, 0)}</div>'
                         f'<div class="bsub">{stt["open"]} open · {stt["closed"]} closed</div></td>'
@@ -7708,6 +8094,763 @@ def _render_demo_body():
                   f'</tbody></table></div>')
 
 
+
+
+# ======================================================================
+# v5.8 — ÇOKLU İNDİKATÖR UYUMSUZLUĞU · PAIR LAB · MOMENTUM ROTASYONU
+# ======================================================================
+DIV_KIND_LABEL = {2: "Regular + hidden", 0: "Regular only", 1: "Hidden only"}
+DIV_GRP_COL = {"Momentum": "#C4B5FD", "Trend momentum": "#5B8CFF", "Volume": "#22D3EE"}
+
+
+def div_params(prefix):
+    """Ekrandaki uyumsuzluk ayarları → strateji parametreleri (tahta, backtest ve bot aynı sözlüğü kullanır)."""
+    sp = {}
+    for a, (sfx, dflt) in DIV_W.items():
+        v = ss.get(f"{prefix}_{sfx}", dflt)
+        if a == "inds":
+            v = ",".join(x for x in (v or []) if x in en.DIV_IND_KEYS) or ",".join(en.DIV_IND_KEYS)
+        sp[a] = v
+    return en.strat_params("divergence", sp)
+
+
+def div_settings_ui(prefix, lengths=True):
+    """Ayar paneli: kaç indikatör, tür, pivot, indikatör seçimi, risk ve uzunluklar (her biri açıklamalı)."""
+    for a, (sfx, dflt) in DIV_W.items():
+        ss.setdefault(f"{prefix}_{sfx}", copy.deepcopy(dflt))
+    ss[f"{prefix}_inds"] = [x for x in (ss.get(f"{prefix}_inds") or []) if x in en.DIV_IND_KEYS]   # eski kayıtlar
+    c1, c2, c3 = st.columns([1, 1.5, 1.3])
+    with c1:
+        st.number_input("Min. indicators", min_value=1, max_value=12, step=1, key=f"{prefix}_min",
+                        help="How many indicators must diverge at the same time. 1–2 = many but noisy signals, "
+                             "3–4 = balanced, 5+ = rare but strong.")
+    with c2:
+        H('<div class="boxlbl" style="margin-bottom:2px">Divergence type</div>')
+        seg("Divergence type", [2, 0, 1], f"{prefix}_kinds", 2, fmt=DIV_KIND_LABEL.get)
+    with c3:
+        H('<div class="boxlbl" style="margin-bottom:2px">Pivot source</div>')
+        seg("Pivot source", [0, 1], f"{prefix}_src", 0, fmt={0: "Close", 1: "High / low"}.get)
+    st.multiselect("Indicators", list(en.DIV_IND_KEYS), key=f"{prefix}_inds",
+                   format_func=lambda k_: f'{en.DIV_IND[k_]["name"]} · {en.DIV_IND[k_]["grp"]}',
+                   help="Indicators that are checked for a divergence. Volume indicators switch off by themselves on "
+                        "instruments without volume (indices, FX).")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.number_input("Pivot period (candles)", min_value=2, max_value=20, step=1, key=f"{prefix}_prd",
+                        help="A swing low / high needs this many candles on each side. Smaller = earlier but more "
+                             "pivots; it is confirmed only after this many candles (no repainting).")
+        st.number_input("Max. stop distance (ATR)", min_value=0.5, max_value=8.0, step=0.5, key=f"{prefix}_risk",
+                        format="%.1f", help="No trade if the stop beyond the divergence extreme is further away.")
+    with c2:
+        st.number_input("Max. pivots back", min_value=1, max_value=20, step=1, key=f"{prefix}_maxpp",
+                        help="How many earlier swing lows / highs each indicator is compared with.")
+        st.number_input("TP1 at least (R)", min_value=0.5, max_value=6.0, step=0.5, key=f"{prefix}_tp1",
+                        format="%.1f", help="TP1 is the neckline (the swing between the two lows / highs) — at least "
+                                            "this many times the risk away. 40 % is sold there.")
+    with c3:
+        st.number_input("Max. candles back", min_value=20, max_value=300, step=10, key=f"{prefix}_maxbars",
+                        help="Divergences that span more candles than this are ignored (stale).")
+        st.number_input("TP2 (R)", min_value=1.0, max_value=10.0, step=0.5, key=f"{prefix}_tp2", format="%.1f")
+    st.checkbox("Only in the direction of the 200-day average", key=f"{prefix}_trend",
+                help="Longs only above the 200-day SMA, shorts only below — keeps hidden (trend) divergences, drops "
+                     "most counter-trend signals.")
+    if lengths:
+        with st.expander("Indicator lengths & what each indicator measures"):
+            cols = st.columns(4)
+            spec = [("rsi", "RSI length", 2, 50), ("mf", "MACD fast", 2, 50), ("ms", "MACD slow", 5, 100),
+                    ("msig", "MACD signal", 2, 30), ("stn", "Stochastic length", 3, 50), ("stsm", "Stochastic smoothing", 1, 10),
+                    ("cci", "CCI length", 5, 50), ("mom", "Momentum length", 2, 50), ("cmf", "CMF length", 5, 60),
+                    ("mfi", "MFI length", 3, 50), ("wr", "Williams %R length", 3, 50), ("wt1", "WaveTrend channel", 4, 30),
+                    ("wt2", "WaveTrend average", 8, 60)]
+            for i, (sfx, lab, lo, hi) in enumerate(spec):
+                with cols[i % 4]:
+                    st.number_input(lab, min_value=lo, max_value=hi, step=1, key=f"{prefix}_{sfx}")
+            H(div_guide_html(div_params(prefix)))
+    return div_params(prefix)
+
+
+def div_guide_html(P):
+    """İndikatör rehberi: ne ölçer, uyumsuzluğu neden önemli, ayarı."""
+    on = set(en.div_inds(P))
+    rows = ""
+    for k_ in en.DIV_IND_KEYS:
+        t_ = en.div_ind_text(k_, P)
+        c_ = DIV_GRP_COL.get(t_["grp"], MUT)
+        rows += (f'<tr style="opacity:{1 if k_ in on else .45}"><td style="text-align:left;white-space:nowrap">'
+                 f'<b>{esc(t_["name"])}</b><div class="bsub" style="color:{c_}">{esc(t_["grp"])}'
+                 f'{"" if k_ in on else " · off"}</div></td><td style="text-align:left;font-family:inherit;'
+                 f'white-space:normal">{esc(t_["what"])}</td><td style="text-align:left;font-family:inherit;'
+                 f'white-space:normal;color:{SOFT}">{esc(t_["why"])}</td></tr>')
+    return (f'<div style="overflow-x:auto;margin-top:6px"><table class="jt bt dvg"><thead><tr><th style="text-align:left">'
+            f'Indicator</th><th style="text-align:left">What it measures</th><th style="text-align:left">Why its '
+            f'divergence matters</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+
+def div_breakdown_html(b, params=None):
+    """Seçili sinyal: hangi indikatör ne kadar uyumsuz — iki noktadaki değerler."""
+    hits = b.get("hits") or []
+    if not hits:
+        return ""
+    P = en.strat_params("divergence", params)
+    short = b.get("side") == "short"
+    rows = ""
+    for h_ in hits:
+        t_ = en.div_ind_text(h_["ind"], P)
+        c_ = DIV_GRP_COL.get(h_["grp"], MUT)
+        up_ = h_["v2"] > h_["v1"]
+        dec = 0 if max(abs(h_["v1"]), abs(h_["v2"])) >= 1000 else 2
+        rows += (f'<tr title="{esc(t_["what"] + " " + t_["why"])}"><td style="text-align:left"><b>{esc(h_["name"])}</b>'
+                 f'<div class="bsub" style="color:{c_}">{esc(h_["grp"])}</div></td><td style="text-align:left">'
+                 f'<span class="badge" style="color:{ACCENT if h_["kind"] == "reg" else VIOLET};background:'
+                 f'{ACC_BG if h_["kind"] == "reg" else "rgba(196,181,253,.14)"}">'
+                 f'{"REG" if h_["kind"] == "reg" else "HIDDEN"}</span></td>'
+                 f'<td>{tr(h_["v1"], dec)}</td><td><span style="color:{UP if up_ else DOWN}">{"▲" if up_ else "▼"}</span> '
+                 f'{tr(h_["v2"], dec)}</td></tr>')
+    off = [en.DIV_IND[k_]["name"] for k_ in en.div_inds(P) if k_ not in {h_["ind"] for h_ in hits}
+           and not (b.get("no_vol") and k_ in en.DIV_VOL_KEYS)]
+    ext = "high" if short else "low"
+    return (f'<div class="boxlbl" style="margin-top:10px">Divergence breakdown · {len(hits)} of {b.get("n_on", len(hits))} '
+            f'indicators</div><div class="muted small" style="margin:2px 0 4px 0">Price: {tr(b.get("x1"))} → '
+            f'{tr(b.get("x2"))} (swing {ext}s, {int(b.get("len") or 0)} candles apart). Each row shows the '
+            f'indicator at the first and the second swing — hover for what it measures.</div>'
+            f'<div style="overflow-x:auto"><table class="jt bt dvb"><thead><tr><th style="text-align:left">Indicator</th>'
+            f'<th style="text-align:left">Type</th><th>1st swing</th><th>2nd swing</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            + (f'<div class="muted small" style="margin-top:4px">No divergence: {esc(", ".join(off))}</div>' if off else "")
+            + ('<div class="muted small">No volume data for this instrument — OBV, VW-MACD, CMF and MFI are off.</div>'
+               if b.get("no_vol") else ""))
+
+
+def _yf_period(yrs):
+    """Test süresi + ısınma payı → yfinance dönem kodu."""
+    yrs = float(yrs)
+    return "2y" if yrs <= 2 else "5y" if yrs <= 5 else "10y" if yrs <= 10 else "max"
+
+
+# ---------------------------------------------------------------- Pair Lab
+PL_UNI = {"cand": "Curated candidates", "watch": "My watchlist", "custom": "My own pairs"}
+PL_VERDICT = {"usable": (UP, UP_BG, "USABLE"), "watch": (WARN, WARN_BG, "WATCH"), "no": (MUT, NEU_BG, "NOT USABLE")}
+PL_SIG = {"long": ("Long A · short B", UP), "short": ("Short A · long B", DOWN), "near": ("approaching", WARN),
+          "—": ("—", MUT)}
+
+
+def pl_cfg():
+    return en.pair_cfg({"win": ss.get("w_pl_win", 60), "entry": ss.get("w_pl_entry", 2.0),
+                        "exit": ss.get("w_pl_exit", 0.0), "stop": ss.get("w_pl_stop", 3.5),
+                        "max_days": ss.get("w_pl_days", 30), "yrs": ss.get("w_pl_yrs", 3),
+                        "comm": ss.get("w_pl_comm", 0.1)})
+
+
+def pl_pairs(uni, groups=None, custom="", watch=None):
+    """Taranacak çiftler: [(A, B, grup, gerekçe)] — aynı para birimi."""
+    if uni == "custom":
+        return [(a, b, "Custom", "your own pair") for a, b in en.pair_parse(custom)]
+    if uni == "watch":
+        syms = [s for s in dict.fromkeys(str(x).upper() for x in (watch or [])) if bk.inst_ccy(s)][:40]
+        out = [(a, b, "Watchlist", "same-currency combination from your watchlist")
+               for i, a in enumerate(syms) for b in syms[i + 1:] if bk.inst_ccy(a) == bk.inst_ccy(b)]
+        return out[:300]
+    return [(a, b, g, w) for a, b, g, w in en.PAIR_CANDIDATES if not groups or g in groups]
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Downloading daily prices and testing every pair — about a minute…")
+def run_pair_lab(pairs_json, cfg_json, token):
+    pairs = json.loads(pairs_json)
+    cfg = json.loads(cfg_json)
+    syms = sorted({s for a, b, _, _ in pairs for s in (a, b)})
+    daily = md.get_daily_batch(tuple(syms), period=_yf_period(cfg["yrs"] + 1)) if syms else {}
+    real = {t: df for t, df in daily.items() if df is not None and df.attrs.get("src", "real") == "real"}
+    rows, miss = [], []
+    for a, b, g, why in pairs:
+        if a not in real or b not in real:
+            miss.append(en.pair_key(a, b))
+            continue
+        try:
+            r = en.pair_analyze(real[a], real[b], cfg, a, b)
+        except Exception:
+            r = None
+        if r is None:
+            miss.append(en.pair_key(a, b))
+            continue
+        r.pop("cfg", None)
+        r.update({"group": g, "why_pair": why})
+        rows.append(r)
+    rows.sort(key=en.pair_rank_key)
+    return {"rows": rows, "miss": miss, "n": len(pairs), "syms": len(syms), "real": len(real),
+            "at": pd.Timestamp.now(tz=md.TZ).strftime("%d.%m. %H:%M"), "cfg": cfg}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def run_pair_detail(a, b, cfg_json, token):
+    cfg = json.loads(cfg_json)
+    daily = md.get_daily_batch((a, b), period=_yf_period(cfg["yrs"] + 1))
+    j = en.pair_frame(daily.get(a), daily.get(b))
+    if j is None:
+        return {"ok": False, "msg": "No common price history."}
+    bt = en.pair_backtest(j, cfg)
+    if not bt.get("ok"):
+        return bt
+    return {"ok": True, "bt": bt, "ca": j["Close_a"].iloc[bt["start"]:], "cb": j["Close_b"].iloc[bt["start"]:]}
+
+
+def _pl_token():
+    return f'{pd.Timestamp.now(tz=md.TZ):%Y-%m-%d}|{ss.get("pl_nonce", 0)}'
+
+
+def _pl_run_cb():
+    uni = ss.get("w_pl_uni", "cand")
+    pairs = pl_pairs(uni, ss.get("w_pl_groups") or [], ss.get("w_pl_custom") or "", ss.get("watchlist") or [])
+    ss.pl_ran = {"pairs": [list(x) for x in pairs], "cfg": pl_cfg(), "token": _pl_token(), "uni": uni}
+    ss.pop("w_pl_sel", None)
+
+
+def _pl_to_bot_cb(txt):
+    ss["bot_strat"] = "pairs"
+    ss["bot_pairs_txt"] = txt
+    ss["bot_name"] = "Pairs bot"
+    toast_later("Pairs bot prepared — open “➕ New bot” below and press Create bot")
+
+
+def _pl_kpi_row(k):
+    pf = k["pf"]
+    return [("Win rate", f'{tr(k["win"], 0)}%' if k["n"] else "—", f'{k["wins"]} of {k["n"]} trades',
+             UP if k["win"] >= 60 else NEU if k["win"] >= 50 else DOWN),
+            ("Profit factor", ("∞" if pf == float("inf") else tr(pf)) if k["n"] else "—", "gross profit / loss",
+             UP if pf >= 1.5 else NEU if pf >= 1 else DOWN),
+            ("Avg. trade", pct(k["avg"]) if k["n"] else "—", f'{tr(k["days"], 0)} days on average', col(k["avg"])),
+            ("Max. drawdown", f'{tr(k["mdd"], 1)}%', "of the equity curve", DOWN),
+            ("CAGR", pct(k["cagr"], 1), f'total {pct(k["ret"], 1)}', col(k["cagr"])),
+            ("Sharpe", tr(k["sharpe"]), f'in a trade {tr(k["expo"], 0)}% of the time', UP if k["sharpe"] >= 1 else NEU),
+            ("1st half", f'{tr(k["win1"], 0)}%' if k["n1"] else "—", f'{k["n1"]} trades', TXT),
+            ("2nd half", f'{tr(k["win2"], 0)}%' if k["n2"] else "—", f'{k["n2"]} trades', TXT)]
+
+
+PL_DEFAULTS = {"w_pl_win": 60, "w_pl_entry": 2.0, "w_pl_exit": 0.0, "w_pl_stop": 3.5, "w_pl_days": 30,
+               "w_pl_comm": 0.1, "w_pl_mint": 0}
+RO_DEFAULTS = {"w_ro_uni": "ucits", "w_ro_top": 3, "w_ro_buf": 1, "w_ro_w1": 0.0, "w_ro_w3": 1.0, "w_ro_w6": 1.0,
+               "w_ro_w12": 1.0, "w_ro_comm": 0.1, "w_ro_abs": True, "w_ro_mkt": True, "w_ro_skip": False,
+               "w_ro_vol": False}
+
+
+def render_pair_lab():
+    """v5.8 — Pairs trading: aday çiftleri gerçek verilerle test eder, isabet oranına göre sıralar, 'kullanılabilir'
+    olanları işaretler; seçilen çiftin spread'i, işlemleri ve güncel sinyali."""
+    anchor("ai")
+    for k_, v_ in PL_DEFAULTS.items():
+        ss.setdefault(k_, v_)
+    H('<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px"><span style="font-size:20px;'
+      'font-weight:800">⚖️ Pairs trading · Pair Lab</span></div><div class="muted small" style="margin-top:3px;'
+      'max-width:980px">Two instruments with the same business drift apart and come back. When the spread is '
+      'stretched (z-score beyond ±2) the cheap one is bought and the expensive one sold short — dollar-neutral, so '
+      'the market direction hardly matters. Both legs are closed together when the spread is back at its mean.</div>')
+    with st.container(border=True):
+        c1, c2 = st.columns([1.6, 2.4], vertical_alignment="top")
+        with c1:
+            H('<div class="boxlbl">Pairs to test</div>')
+            uni = seg("Pairs to test", list(PL_UNI), "w_pl_uni", "cand", fmt=PL_UNI.get)
+            if uni == "cand":
+                ss["w_pl_groups"] = [g_ for g_ in (ss.get("w_pl_groups") or []) if g_ in en.PAIR_GROUPS]
+                st.multiselect("Groups", list(en.PAIR_GROUPS), key="w_pl_groups", placeholder="all groups",
+                               help="US stocks of the same industry, ETFs, futures, crypto and German stocks — "
+                                    "%d hypotheses in total." % len(en.PAIR_CANDIDATES))
+            elif uni == "custom":
+                st.text_area("Your pairs", key="w_pl_custom", height=82, placeholder="KO/PEP, V/MA, BMW.DE/MBG.DE",
+                             help="One pair per line or separated by commas; A/B, A-B is not allowed (tickers contain "
+                                  "dashes) — use A/B or A B.")
+            else:
+                n_w = len([s for s in ss.get("watchlist") or [] if bk.inst_ccy(s)])
+                H(f'<div class="muted small">All same-currency combinations of your {n_w} watchlist symbols '
+                  f'(max. 300 pairs).</div>')
+        with c2:
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                H('<div class="boxlbl" style="margin-bottom:2px">Test period</div>')
+                seg("Test period", [1, 3, 5], "w_pl_yrs", 3, fmt=lambda v: f"{v} yr")
+                st.number_input("Window (days)", min_value=20, max_value=250, step=5, key="w_pl_win",
+                                help="Rolling window for the hedge ratio β and the z-score — recomputed every day "
+                                     "from past data only.")
+            with k2:
+                st.number_input("Entry |z|", min_value=1.0, max_value=4.0, step=0.25, key="w_pl_entry", format="%.2f")
+                st.number_input("Exit |z| (0 = mean)", min_value=-1.0, max_value=1.5, step=0.25, key="w_pl_exit", format="%.2f")
+            with k3:
+                st.number_input("Stop |z|", min_value=2.0, max_value=8.0, step=0.25, key="w_pl_stop", format="%.2f",
+                                help="The spread kept widening — the relationship may have broken.")
+                st.number_input("Max. days in a trade", min_value=3, max_value=250, step=1, key="w_pl_days")
+            with k4:
+                st.number_input("Commission % (per leg)", min_value=0.0, max_value=1.0, step=0.05, key="w_pl_comm", format="%.2f")
+                H("<div style='height:6px'></div>")
+                st.button("▶  Run analysis", key="pl_run", type="primary", on_click=_pl_run_cb, **_wkw(st.button))
+    U = en.PAIR_USABLE
+    H(f'<div class="muted small" style="margin:2px 0 8px 0">“Usable” = cointegrated (Engle–Granger p ≤ '
+      f'{tr(U["p"] * 100, 0)} % over the last year or the whole test), half-life {tr(U["hl_min"], 0)}–'
+      f'{tr(U["hl_max"], 0)} days, at least {U["trades"]} trades, win rate ≥ {tr(U["win"], 0)} %, profit factor ≥ '
+      f'{tr(U["pf"], 1)} and drawdown above {tr(U["mdd"], 0)} %. “Watch” = good backtest but the statistical link '
+      f'is weak (or the reverse). The test is honest: hedge ratio and z-score are recomputed every day from past '
+      f'data, trades happen at the next open, costs on both legs.</div>')
+    ran = ss.get("pl_ran")
+    if not ran:
+        H(f'<div class="muted" style="padding:14px 0">Press <b>Run analysis</b> — Pulse downloads the daily prices of '
+          f'all pairs and backtests each one (the {len(en.PAIR_CANDIDATES)} curated pairs take about a minute the '
+          f'first time, then the result is cached for 6 hours).</div>')
+        return
+    res = run_pair_lab(json.dumps(ran["pairs"]), json.dumps(ran["cfg"], sort_keys=True), ran["token"])
+    rows = res["rows"]
+    if not rows:
+        H(f'<div class="muted" style="padding:14px 0">No price data for these pairs ({len(res["miss"])} without '
+          f'data). Check the symbols or try again later.</div>')
+        return
+    us = [r for r in rows if r["verdict"] == "usable"]
+    wt = [r for r in rows if r["verdict"] == "watch"]
+    sig_now = [r for r in rows if r["sig"] in ("long", "short") and r["verdict"] != "no"]
+    best = max(rows, key=lambda r: (r["kpi"]["win"] if r["kpi"]["n"] >= U["trades"] else -1, r["kpi"]["pf"]))
+    cs = st.columns(4, gap="small")
+    for c_, (a_, b_, s_, cl_) in zip(cs, (
+            ("Usable pairs", str(len(us)), f'of {len(rows)} tested · {len(wt)} to watch', UP if us else NEU),
+            ("Best win rate", f'{tr(best["kpi"]["win"], 0)}%', f'{best["key"]} · {best["kpi"]["n"]} trades', UP),
+            ("Signals now", str(len(sig_now)), "usable / watch pairs beyond ±%s" % tr(ran["cfg"]["entry"], 1),
+             WARN if sig_now else NEU),
+            ("Data", f'{res["real"]} / {res["syms"]}', f'symbols with real prices · {res["at"]}', TXT))):
+        with c_:
+            H(_kpi(a_, b_, s_, cl_))
+    f1, f2, f3 = st.columns([1.6, 1, 1.2], vertical_alignment="center")
+    with f1:
+        show = seg("Show", ["usable", "watch", "all"], "w_pl_show", "watch",
+                   fmt={"usable": "Usable", "watch": "Usable + watch", "all": "All pairs"}.get)
+    with f2:
+        mint = st.number_input("Min. trades", min_value=0, max_value=50, step=1, key="w_pl_mint")
+    shown = [r for r in rows if (show == "all" or r["verdict"] == "usable" or (show == "watch" and
+                                                                                r["verdict"] == "watch"))
+             and r["kpi"]["n"] >= int(mint or 0)]
+    with f3:
+        csv = pd.DataFrame([{
+            "Pair": r["key"], "A": r["a"], "B": r["b"], "Group": r["group"], "Why this pair": r["why_pair"],
+            "Verdict": r["verdict_txt"], "Reasons": "; ".join(r["why"]), "Win rate %": round(r["kpi"]["win"], 1),
+            "Trades": r["kpi"]["n"], "Profit factor": round(r["kpi"]["pf"], 3) if r["kpi"]["pf"] != float("inf")
+            else "inf", "Avg trade %": round(r["kpi"]["avg"], 3), "Avg days": round(r["kpi"]["days"], 1),
+            "Max drawdown %": round(r["kpi"]["mdd"], 2), "CAGR %": round(r["kpi"]["cagr"], 2),
+            "Sharpe": round(r["kpi"]["sharpe"], 2), "Win rate 1st half %": round(r["kpi"]["win1"], 1)
+            if r["kpi"]["n1"] else "", "Win rate 2nd half %": round(r["kpi"]["win2"], 1) if r["kpi"]["n2"] else "",
+            "EG p (1y)": round(r["p1y"], 4), "EG p (test period)": round(r["pfull"], 4),
+            "Half-life (days)": round(r["hl"], 1) if r["hl"] == r["hl"] and r["hl"] != float("inf") else "",
+            "Return correlation (1y)": round(r["corr"], 3) if r["corr"] == r["corr"] else "",
+            "Hedge beta": round(r["beta"], 4) if r["beta"] == r["beta"] else "", "z now": round(r["z"], 3)
+            if r["z"] == r["z"] else "", "Signal now": PL_SIG.get(r["sig"], ("—", MUT))[0], "Last day": r["last"]}
+            for r in rows]).to_csv(index=False).encode("utf-8")
+        st.download_button("⬇ Download the full dataset (CSV)", csv, file_name="pulse_pair_lab.csv", mime="text/csv",
+                           key="pl_csv", **_wkw(st.download_button))
+    body = ""
+    for i, r in enumerate(shown[:80], 1):
+        k = r["kpi"]
+        vf, vb, vl = PL_VERDICT[r["verdict"]]
+        sl, sc = PL_SIG.get(r["sig"], ("—", MUT))
+        pf = k["pf"]
+        hl = r["hl"]
+        body += (f'<tr><td style="color:{MUT}">{i}</td><td style="text-align:left;white-space:nowrap"><b>{esc(r["a"])} / '
+                 f'{esc(r["b"])}</b><div class="bsub">{esc(r["group"])} · {esc(r["why_pair"])}</div></td>'
+                 f'<td style="text-align:left"><span class="badge" style="color:{vf};background:{vb}" '
+                 f'title="{esc("; ".join(r["why"]) or "all criteria met")}">{vl}</span></td>'
+                 f'<td style="font-weight:700;color:{UP if k["win"] >= 60 else SOFT}">{tr(k["win"], 0)}%</td>'
+                 f'<td>{k["n"]}</td><td>{"∞" if pf == float("inf") else tr(pf)}</td>'
+                 f'<td style="color:{col(k["avg"])}">{pct(k["avg"])}</td><td style="color:{DOWN}">{tr(k["mdd"], 1)}%</td>'
+                 f'<td style="color:{col(k["cagr"])}">{pct(k["cagr"], 1)}</td>'
+                 f'<td style="color:{UP if r["p1y"] <= U["p"] else MUT}">{tr(r["p1y"] * 100, 1)}%</td>'
+                 f'<td>{tr(hl, 0) if hl == hl and hl != float("inf") else "∞"}</td>'
+                 f'<td class="mono">{tr(r["z"], 2)}</td><td style="text-align:left;color:{sc};white-space:nowrap">'
+                 f'{esc(sl)}</td></tr>')
+    H(f'<div style="overflow-x:auto;max-height:520px;margin-top:6px"><table class="jt bt pl"><thead><tr><th>#</th>'
+      f'<th style="text-align:left">Pair · why it should work</th><th style="text-align:left">Verdict</th><th>Win rate'
+      f'</th><th>Trades</th><th>PF</th><th>Avg.</th><th>Max DD</th><th>CAGR</th><th>EG p (1y)</th><th>Half-life</th>'
+      f'<th>z now</th><th style="text-align:left">Signal now</th></tr></thead><tbody>{body}</tbody></table></div>'
+      + ('<div class="muted" style="padding:10px 0">No pair passes this filter — show “All pairs”.</div>'
+         if not shown else "")
+      + (f'<div class="muted small" style="margin-top:4px">No usable data for {len(res["miss"])} pairs: '
+         f'{esc(", ".join(res["miss"][:12]))}{" …" if len(res["miss"]) > 12 else ""}</div>' if res["miss"] else ""))
+    if us:
+        txt = ", ".join(r["key"] for r in us[:12])
+        st.button(f"🤖 Create a pairs bot with the {min(len(us), 12)} usable pairs", key="pl_tobot",
+                  on_click=_pl_to_bot_cb, args=(txt,), **_wkw(st.button))
+    ss["pl_usable_txt"] = ", ".join(r["key"] for r in us[:12])
+    opts = [r["key"] for r in (shown or rows)]
+    if ss.get("w_pl_sel") not in opts:                  # kayıtlı seçim bu listede yoksa (filtre / yeni tarama)
+        ss.pop("w_pl_sel", None)
+    sel_key = st.selectbox("Pair details", opts, key="w_pl_sel",
+                           format_func=lambda k_: next((f'{r["key"]} · {r["verdict_txt"]} · win {tr(r["kpi"]["win"], 0)}% '
+                                                        f'· {r["kpi"]["n"]} trades' for r in rows if r["key"] == k_), k_))
+    r = next((x for x in rows if x["key"] == sel_key), rows[0])
+    render_pair_detail(r, ran)
+
+
+def render_pair_detail(r, ran):
+    det = run_pair_detail(r["a"], r["b"], json.dumps(ran["cfg"], sort_keys=True), ran["token"])
+    with st.container(border=True):
+        vf, vb, vl = PL_VERDICT[r["verdict"]]
+        H(f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{avatar(r["a"], 30)}{avatar(r["b"], 30)}'
+          f'<b style="font-size:17px">{esc(r["a"])} / {esc(r["b"])}</b><span class="badge" style="color:{vf};'
+          f'background:{vb}">{vl}</span><span class="muted small">{esc(r["why_pair"])}</span></div>'
+          + (f'<div class="muted small" style="margin-top:4px">Why not usable: {esc("; ".join(r["why"]))}</div>'
+             if r["why"] else ""))
+        if not det.get("ok"):
+            H(f'<div class="muted">{esc(det.get("msg") or "No data")}</div>')
+            return
+        bt, cfg = det["bt"], ran["cfg"]
+        k = bt["kpi"]
+        kp = _pl_kpi_row(k)
+        for row in (kp[:4], kp[4:]):
+            cs = st.columns(4, gap="small")
+            for c_, (a_, b_, s_, cl_) in zip(cs, row):
+                with c_:
+                    H(_kpi(a_, b_, s_, cl_))
+            H("<div style='height:6px'></div>")
+        z_now, b_now = r["z"], r["beta"]
+        sl, sc = PL_SIG.get(r["sig"], ("—", MUT))
+        gross = 10000.0
+        na = gross / (1 + b_now) if b_now == b_now and b_now > 0 else gross / 2
+        hl_s = tr(r["hl"], 1) if r["hl"] == r["hl"] and r["hl"] != float("inf") else "∞"
+        H(f'<div class="planrow"><span class="l">Now</span><span class="v">z {tr(z_now, 2)} · hedge β {tr(b_now, 2)} · '
+          f'<b style="color:{sc}">{esc(sl)}</b></span></div>'
+          f'<div class="planrow"><span class="l">Cointegration</span><span class="v">p {tr(r["p1y"] * 100, 1)}% (last '
+          f'year) · {tr(r["pfull"] * 100, 1)}% (test period) · half-life {hl_s} days · '
+          f'return correlation {tr(r["corr"], 2)}</span></div>'
+          f'<div class="planrow"><span class="l">Sizing example</span><span class="v">$10,000 gross: '
+          f'{"short" if z_now > 0 else "long"} {r["a"]} {money(na, "USD", 0)} · '
+          f'{"long" if z_now > 0 else "short"} {r["b"]} {money(gross - na, "USD", 0)} (β-weighted)'
+          f'</span></div>')
+        z = bt["z"]
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.5, 0.5], vertical_spacing=0.05)
+        ca, cb = det["ca"], det["cb"]
+        fig.add_trace(go.Scatter(x=ca.index, y=ca / float(ca.iloc[0]) * 100, mode="lines", name=r["a"],
+                                 line=dict(color=ACCENT, width=1.5)), 1, 1)
+        fig.add_trace(go.Scatter(x=cb.index, y=cb / float(cb.iloc[0]) * 100, mode="lines", name=r["b"],
+                                 line=dict(color=WARN, width=1.5)), 1, 1)
+        fig.add_trace(go.Scatter(x=z.index, y=z, mode="lines", name="Spread z-score", line=dict(color=SOFT, width=1.2)),
+                      2, 1)
+        for y_, c_, d_ in ((cfg["entry"], WARN, "dash"), (-cfg["entry"], WARN, "dash"), (cfg["stop"], DOWN, "dot"),
+                           (-cfg["stop"], DOWN, "dot"), (0.0, "#3A404A", "solid")):
+            fig.add_hline(y=y_, line=dict(color=c_, width=1, dash=d_), row=2, col=1)
+        T = bt["trades"]
+        for side_, c_, nm in ((1, UP, "Long A · short B"), (-1, DOWN, "Short A · long B")):
+            tt = [t for t in T if t["d"] == side_]
+            if tt:
+                fig.add_trace(go.Scatter(x=[t["ed"] for t in tt], y=[t["z0"] for t in tt], mode="markers", name=nm,
+                                         marker=dict(color=c_, size=8)), 2, 1)
+        if T:
+            fig.add_trace(go.Scatter(x=[t["xd"] for t in T], y=[t["z1"] for t in T], mode="markers", name="Exit",
+                                     marker=dict(color=PANEL, size=7, line=dict(color=TXT, width=2))), 2, 1)
+        fig.update_yaxes(title_text="rebased 100", row=1, col=1)
+        fig.update_yaxes(title_text="z", row=2, col=1)
+        plot(_layout(fig, 420, legend=True), config=CHART_CFG, key="pl_chart")
+        if T:
+            why_ = {"Mean": ("Back at the mean", UP), "Stop": ("Spread stop", DOWN), "Time": ("Time exit", WARN),
+                    "Hedge": ("Hedge invalid", WARN), "Open": ("Still open", NEU)}
+            rows_ = "".join(
+                f'<tr><td style="text-align:left;color:{SOFT}">{t["ed"].strftime("%b %d, %y")}</td>'
+                f'<td style="text-align:left;color:{SOFT}">{t["xd"].strftime("%b %d, %y")}</td>'
+                f'<td style="text-align:left"><span class="badge" style="color:{UP if t["d"] > 0 else DOWN};background:'
+                f'{UP_BG if t["d"] > 0 else DOWN_BG}">{"LONG A / SHORT B" if t["d"] > 0 else "SHORT A / LONG B"}'
+                f'</span></td><td class="mono">{tr(t["z0"], 2)} → {tr(t["z1"], 2)}</td><td>{t["days"]}d</td>'
+                f'<td style="text-align:left"><span style="color:{why_.get(t["why"], ("", MUT))[1]}">'
+                f'{why_.get(t["why"], (t["why"], MUT))[0]}</span></td><td style="font-weight:700;color:{col(t["ret"])}">'
+                f'{pct(t["ret"])}</td><td style="color:{col(t["pnl"])}">{money(t["pnl"], "USD")}</td></tr>'
+                for t in reversed(T[-40:]))
+            H(f'<div style="overflow-x:auto;max-height:320px"><table class="jt bt"><thead><tr><th style="text-align:left">'
+              f'Entry</th><th style="text-align:left">Exit</th><th style="text-align:left">Direction</th><th>z in → out'
+              f'</th><th>Days</th><th style="text-align:left">Reason</th><th>Return</th><th>P/L ($10k)</th></tr></thead>'
+              f'<tbody>{rows_}</tbody></table></div>')
+
+
+# ---------------------------------------------------------------- Momentum rotation
+RO_UNI_LABEL = dict({k_: v_["name"] for k_, v_ in en.ROT_UNIVERSES.items()}, watch="My watchlist",
+                    custom="Custom list")
+
+
+def ro_cfg():
+    return en.rot_cfg({"top": ss.get("w_ro_top", 3), "w1": ss.get("w_ro_w1", 0.0), "w3": ss.get("w_ro_w3", 1.0),
+                       "w6": ss.get("w_ro_w6", 1.0), "w12": ss.get("w_ro_w12", 1.0),
+                       "skip": int(bool(ss.get("w_ro_skip", False))), "abs": int(bool(ss.get("w_ro_abs", True))),
+                       "mkt": int(bool(ss.get("w_ro_mkt", True))), "buffer": ss.get("w_ro_buf", 1),
+                       "vol_adj": int(bool(ss.get("w_ro_vol", False))), "comm": ss.get("w_ro_comm", 0.1),
+                       "yrs": ss.get("w_ro_yrs", 5)})
+
+
+def ro_universe():
+    key = ss.get("w_ro_uni", "ucits")
+    custom = [s for s in re.split(r"[\s,;]+", str(ss.get("w_ro_custom") or "").upper()) if s]
+    return en.rot_universe(key, watch=ss.get("watchlist") or [], custom=custom)
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Downloading prices and simulating the monthly rotation…")
+def run_rotation(uni_json, cfg_json, token):
+    uni, cfg = json.loads(uni_json), json.loads(cfg_json)
+    want = list(dict.fromkeys(uni["syms"] + [x for x in (uni.get("bench"), uni.get("safe")) if x]))
+    if not want:
+        return {"ok": False, "msg": "The universe is empty — add symbols."}
+    daily = md.get_daily_batch(tuple(want), period=_yf_period(cfg["yrs"] + 1.5))
+    real = {t: df for t, df in daily.items() if df is not None and df.attrs.get("src", "real") == "real"}
+    fr = en.rot_frame(real, want)
+    if fr is None or len(fr) < 300:
+        return {"ok": False, "msg": "Not enough real price history for this universe (at least 300 days)."}
+    bt = en.rot_backtest(fr, uni, cfg)
+    held = bt["hist"][-1]["pick"] if bt.get("ok") and bt.get("hist") else []
+    rk = en.rot_rank(fr, uni, cfg, held=held)
+    return {"ok": True, "bt": bt, "rank": rk, "missing": [s for s in want if s not in real],
+            "at": pd.Timestamp.now(tz=md.TZ).strftime("%d.%m. %H:%M")}
+
+
+def _ro_to_bot_cb():
+    ss["bot_strat"] = "rotation"
+    ss["bot_name"] = "Rotation bot"
+    toast_later("Rotation bot prepared with these settings — open “➕ New bot” below and press Create bot")
+
+
+def render_rotation():
+    """v5.8 — Momentum rotasyonu: bugünkü sıralama + aylık geçmiş testi (gösterge endekse karşı)."""
+    anchor("ai")
+    for k_, v_ in RO_DEFAULTS.items():
+        ss.setdefault(k_, v_)
+    H('<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px"><span style="font-size:20px;'
+      'font-weight:800">🔄 Momentum rotation</span></div><div class="muted small" style="margin-top:3px;max-width:980px">'
+      'Once a month the list is ranked by its 3-, 6- and 12-month return and the strongest are held with equal '
+      'weight; what drops out is sold. Absolute momentum keeps losers out, the market filter moves everything to the '
+      'safe haven when the benchmark falls below its 200-day average. Few trades, no stops — the trend does the '
+      'work.</div>')
+    with st.container(border=True):
+        c1, c2 = st.columns([1.7, 2.3], vertical_alignment="top")
+        with c1:
+            H('<div class="boxlbl">Universe</div>')
+            if ss.get("w_ro_uni") not in RO_UNI_LABEL:
+                ss["w_ro_uni"] = "ucits"
+            st.selectbox("Universe", list(RO_UNI_LABEL), key="w_ro_uni", format_func=RO_UNI_LABEL.get,
+                         label_visibility="collapsed")
+            if ss.get("w_ro_uni") == "custom":
+                st.text_input("Symbols", key="w_ro_custom", placeholder="EUNL.DE, SXRV.DE, 4GLD.DE, IS3N.DE",
+                              help="Up to 40 symbols, comma separated. Benchmark: MSCI World (EUR lists) or SPY.")
+            uni = ro_universe()
+            haven = (" · safe haven <b>" + esc(uni["safe"]) + "</b>") if uni.get("safe") else " · safe haven: cash"
+            H(f'<div class="muted small" style="margin-top:4px">{esc(uni["note"])} Benchmark '
+              f'<b>{esc(uni.get("bench") or "—")}</b>{haven} · {len(uni["syms"])} symbols.</div>')
+        with c2:
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                st.number_input("Hold top N", min_value=1, max_value=10, step=1, key="w_ro_top")
+                st.number_input("Buffer (ranks)", min_value=0, max_value=5, step=1, key="w_ro_buf",
+                                help="A holding is kept while it ranks within top N + buffer — fewer, cheaper trades.")
+            with k2:
+                st.number_input("Weight 1 month", min_value=0.0, max_value=5.0, step=0.5, key="w_ro_w1", format="%.1f")
+                st.number_input("Weight 3 months", min_value=0.0, max_value=5.0, step=0.5, key="w_ro_w3", format="%.1f")
+            with k3:
+                st.number_input("Weight 6 months", min_value=0.0, max_value=5.0, step=0.5, key="w_ro_w6", format="%.1f")
+                st.number_input("Weight 12 months", min_value=0.0, max_value=5.0, step=0.5, key="w_ro_w12", format="%.1f")
+            with k4:
+                H('<div class="boxlbl" style="margin-bottom:2px">Test period</div>')
+                seg("Rotation test period", [3, 5, 10], "w_ro_yrs", 5, fmt=lambda v: f"{v} yr")
+                st.number_input("Commission %", min_value=0.0, max_value=1.0, step=0.05, key="w_ro_comm", format="%.2f")
+            t1, t2, t3, t4 = st.columns(4)
+            with t1:
+                st.checkbox("Absolute momentum", key="w_ro_abs", help="Only assets with a positive score are bought; "
+                                                                     "free slots go to the safe haven / cash.")
+            with t2:
+                st.checkbox("Market filter (200-day)", key="w_ro_mkt", help="Benchmark below its 200-day average → "
+                                                                           "everything to the safe haven / cash.")
+            with t3:
+                st.checkbox("Skip last month", key="w_ro_skip", help="Classic 12-1 momentum: the most recent month is "
+                                                                    "left out (short-term reversal).")
+            with t4:
+                st.checkbox("Volatility-adjusted", key="w_ro_vol", help="Score divided by the 3-month volatility — "
+                                                                       "calm trends rank higher.")
+    cfg = ro_cfg()
+    res = run_rotation(json.dumps(uni, sort_keys=True), json.dumps(cfg, sort_keys=True),
+                       f'{pd.Timestamp.now(tz=md.TZ):%Y-%m-%d}|{ss.get("ro_nonce", 0)}')
+    ss.ro_ran = {"uni": uni["key"], "cfg": cfg}
+    if not res.get("ok"):
+        H(f'<div class="muted" style="padding:14px 0">{esc(res.get("msg"))}</div>')
+        return
+    bt, rk = res["bt"], res["rank"]
+    k = bt["kpi"]
+    ron = rk["risk_on"]
+    ron_txt = ("Benchmark above its 200-day average — the strongest assets are held." if ron else
+               "Benchmark below its 200-day average — the rotation sits in the safe haven / cash.")
+    H(f'<div class="critbar" style="margin-top:6px"><span class="badge" style="color:{UP if ron else DOWN};background:'
+      f'{UP_BG if ron else DOWN_BG}">{"RISK ON" if ron else "RISK OFF"}</span><span class="muted small" '
+      f'style="flex:1 1 300px">{ron_txt}'
+      f' Ranking as of {esc(rk["date"])} · data {res["at"]}'
+      f'{" · missing: " + esc(", ".join(res["missing"][:6])) if res["missing"] else ""}</span>'
+      f'<span class="badge" style="color:{ACCENT};background:{ACC_BG}">Target: '
+      f'{esc(", ".join(rk["pick"]) or "—")}{(" + " + esc(rk["safe"])) if rk["safe"] and rk["free"] > 0 else ""}'
+      f'</span></div>')
+    left, right = st.columns([1.25, 1], gap="medium")
+    with left:
+        with st.container(border=True):
+            H('<span class="panel-title">Ranking now</span> <span class="muted small">score = weighted return · '
+              '✓ above the 200-day average</span>')
+            body = ""
+            for r in rk["rows"][:25]:
+                act_c = {"Buy": UP, "Hold": ACCENT, "Sell": DOWN}.get(r["act"], MUT)
+                body += (f'<tr{" class=sel" if r["pick"] else ""}><td style="color:{MUT}">{r["rank"] or "—"}</td>'
+                         f'<td style="text-align:left;white-space:nowrap"><span style="display:flex;align-items:center;'
+                         f'gap:8px">{avatar(r["sym"], 24)}<b>{esc(r["sym"])}</b></span></td>'
+                         + "".join(f'<td style="color:{col(r[x_]) if r[x_] == r[x_] else MUT}">'
+                                   f'{pct(r[x_] * 100, 1) if r[x_] == r[x_] and r[x_] is not None else "—"}</td>'
+                                   for x_ in ("r1", "r3", "r6", "r12"))
+                         + f'<td style="font-weight:700;color:{col(r["score"])}">{tr(r["score"], 1)}</td>'
+                           f'<td>{"✓" if r["above200"] else "·"}</td><td><span class="badge" style="color:{act_c};'
+                           f'background:{NEU_BG}">{esc(r["act"])}</span></td></tr>')
+            H(f'<div style="overflow-x:auto"><table class="jt bt"><thead><tr><th>#</th><th style="text-align:left">'
+              f'Symbol</th><th>1 m</th><th>3 m</th><th>6 m</th><th>12 m</th><th>Score</th><th>200d</th><th>Action</th>'
+              f'</tr></thead><tbody>{body}</tbody></table></div><div class="muted small" style="margin-top:4px">'
+              f'Action compares with last month\'s basket of the backtest. A rotation bot does the same at the start '
+              f'of every month with live prices.</div>')
+        st.button("🤖 Create a rotation bot with these settings", key="ro_tobot", on_click=_ro_to_bot_cb,
+                  **_wkw(st.button))
+    with right:
+        cs = st.columns(2, gap="small")
+        kp = [("CAGR", pct(k["cagr"], 1), "benchmark " + (pct(k["b_cagr"], 1) if "b_cagr" in k else "—"),
+               col(k["cagr"])),
+              ("Max. drawdown", f'{tr(k["mdd"], 1)}%', "benchmark " + (f'{tr(k["b_mdd"], 1)}%' if "b_mdd" in k else "—"),
+               DOWN),
+              ("Sharpe", tr(k["sharpe"]), f'volatility {tr(k["vol"], 0)}% p.a.', UP if k["sharpe"] >= 1 else NEU),
+              ("Winning months", f'{tr(k["mwin"], 0)}%', f'{k["months"]} months · best {pct(k["best_m"], 1)}', TXT),
+              ("Turnover", f'{tr(k["turn"], 0)}%', f'per rebalance · {k["rebal"]} rebalances', TXT),
+              ("In the safe haven", f'{tr(k["safe_pct"], 0)}%', "of the days", TXT)]
+        for i, (a_, b_, s_, cl_) in enumerate(kp):
+            with cs[i % 2]:
+                H(_kpi(a_, b_, s_, cl_))
+    with st.container(border=True):
+        H(f'<span class="panel-title">Backtest · {esc(uni["name"])}</span> <span class="muted small">'
+          f'{bt["range"][0]:%b %Y} – {bt["range"][1]:%b %Y} · monthly, trades at the first close of the month · '
+          f'commission {tr(cfg["comm"], 2)} % per change</span>')
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.04)
+        if bt["bh"] is not None:
+            fig.add_trace(go.Scatter(x=bt["bh"].index, y=bt["bh"], mode="lines", name=f'Benchmark ({uni.get("bench")})',
+                                     line=dict(color="#6B7383", width=1.5, dash="dash")), 1, 1)
+        fig.add_trace(go.Scatter(x=bt["eq"].index, y=bt["eq"], mode="lines", name="Rotation", fill="tozeroy",
+                                 fillcolor="rgba(91,140,255,.08)", line=dict(color=ACCENT, width=2)), 1, 1)
+        fig.add_trace(go.Scatter(x=bt["dd"].index, y=bt["dd"], mode="lines", name="Drawdown %", fill="tozeroy",
+                                 fillcolor="rgba(248,113,113,.4)", line=dict(color="rgba(248,113,113,.7)", width=1)),
+                      2, 1)
+        plot(_layout(fig, 330, legend=True), config=CHART_CFG, key="ro_eq")
+        hist = list(reversed(bt["hist"][-12:]))
+
+        def _rest(h_):
+            w_ = h_["safe"] if uni.get("safe") else h_["cash"]
+            if w_ <= 1e-9:
+                return ""
+            return (" + " if h_["pick"] else "") + esc(uni.get("safe") or "cash") + " " + tr(w_ * 100, 0) + "%"
+        if hist:
+            rows_ = "".join(
+                f'<tr><td style="text-align:left;color:{SOFT}">{h_["d"]:%b %d, %Y}</td><td style="text-align:left">'
+                f'<b>{esc(", ".join(h_["pick"]))}</b>{_rest(h_)}'
+                f'</td><td>{"✓" if h_["risk_on"] else "✕"}</td><td style="text-align:left;color:{MUT};font-family:inherit">'
+                f'{esc(" · ".join(f"{s_} {tr(v_, 1)}" for s_, v_ in h_["top"][:5]))}</td></tr>' for h_ in hist)
+            H(f'<div style="overflow-x:auto;max-height:300px;margin-top:6px"><table class="jt bt"><thead><tr>'
+              f'<th style="text-align:left">Rebalanced</th><th style="text-align:left">Held</th><th>Risk on</th>'
+              f'<th style="text-align:left">Top scores then</th></tr></thead><tbody>{rows_}</tbody></table></div>')
+
+
+def _worker_chip():
+    """v5.8: bot başlığında 7/24 durumu."""
+    try:
+        w = bk.worker_info() if bk.SHARED else None
+    except Exception:
+        w = None
+    if w and w.get("alive"):
+        return f'<span class="bchip" style="--c:{UP}">24/7 worker ✓</span>'
+    return (f'<span class="bchip" style="--c:{MUT}" title="Bots run inside this app while the server is awake. Start '
+            f'worker.py (PULSE_SHARED=1) on a PC / VPS for 24/7.">runs while the app is awake</span>')
+
+
+def _bot_extra_html(b):
+    """v5.8: çift botunun açık çiftleri / rotasyon botunun sepeti (bot satırının altında)."""
+    if b.get("src") == "pairs":
+        pt = b.get("pt") or {}
+        lst = (b.get("pairs") or {}).get("list") or []
+        pc = en.pair_cfg((b.get("pairs") or {}).get("p"))
+        head = (f'{len(lst)} pairs · entry ±{tr(pc["entry"], 2)} · exit {tr(pc["exit"], 2)} · stop ±'
+                f'{tr(pc["stop"], 2)} z')
+        if not pt:
+            return f'<span class="bsub">{esc(head)} · no open pair</span>'
+        items = " · ".join(f'{k_} {"long A / short B" if int(t_["d"]) > 0 else "short A / long B"} from z '
+                           f'{tr(t_.get("z0"), 2)}' for k_, t_ in pt.items())
+        return f'<span class="bsub">{esc(head)}</span><span class="bsub" style="color:{ACCENT}">Open: {esc(items)}</span>'
+    if b.get("src") == "rotation":
+        ro = b.get("rot") or {}
+        rc = en.rot_cfg(ro.get("p"))
+        rl = b.get("rot_last") or {}
+        uni = RO_UNI_LABEL.get(ro.get("uni"), ro.get("uni") or "—")
+        basket = ", ".join(rl.get("pick") or []) or "—"
+        when = (pd.Timestamp(rl["ts"], unit="s", tz="UTC").tz_convert(md.TZ).strftime("%d.%m.%y")
+                if rl.get("ts") else "not yet")
+        return (f'<span class="bsub">{esc(uni)} · top {rc["top"]} · last rebalance {when}: {esc(basket)}'
+                f'{(" + " + esc(rl["safe"])) if rl.get("safe") else ""}</span><span class="bsub"><a class="lnk" '
+                f'target="_self" href="{link(bot_rot=b["id"], f="bots")}">Rebalance now</a></span>')
+    return ""
+
+
+def _bot_form_special(acct, strat, name):
+    """v5.8: çift / rotasyon botu oluşturma — ayarlar Pair Lab / Rotation sayfasındakiyle aynı."""
+    d = en.BOT_DEFAULT
+    if strat == "pairs":
+        ss.setdefault("bot_pairs_txt", ss.get("pl_usable_txt") or "KO/PEP, V/MA, XOM/CVX")
+        st.text_area("Pairs (A/B, comma separated — max. 20)", key="bot_pairs_txt", height=70,
+                     help="Prefilled with the usable pairs of your last Pair Lab run. Leg A is bought when the spread "
+                          "is low (z ≤ −entry) and sold short when it is high.")
+        pc = pl_cfg()
+        n1, n2 = st.columns(2)
+        with n1:
+            maxp = st.number_input("Max. open pairs", 1, 10, 3, 1, key="bot_pmax")
+        with n2:
+            alloc = st.number_input("Size per pair (% of account, both legs)", 2.0, 50.0, 20.0, 1.0, key="bot_palloc")
+        H(f'<div class="muted" style="font-size:11.5px;line-height:1.5">Pair settings from the Pair Lab: window '
+          f'{pc["win"]} days · entry |z| ≥ {tr(pc["entry"], 2)} · exit at |z| ≤ {tr(pc["exit"], 2)} · stop |z| ≥ '
+          f'{tr(pc["stop"], 2)} · max. {pc["max_days"]} trading days. Both legs are opened together (long A + short B, '
+          f'β-weighted, dollar-neutral) and closed together — no stop on the legs, the spread decides. A symbol is used '
+          f'by one open pair at a time. Live z uses the latest 15-minute price.</div>')
+        prs = en.pair_parse(ss.get("bot_pairs_txt") or "")
+        if button("Create bot", key="bot_create", primary=True):
+            if len(acct.get("bots") or []) >= bk.BOT_MAX:
+                st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
+            elif not prs:
+                st.warning("Enter at least one pair, e.g. KO/PEP.")
+            else:
+                nm = (name or "").strip() or "Pairs bot"
+                b = bk.bot_new(nm, "pairs", "pairs", {"max_pos": int(maxp), "max_alloc": float(alloc),
+                                                      "risk_pct": d["risk_pct"]},
+                               pairs={"list": [list(x) for x in prs], "p": pc})
+                _bot_add(b, nm)
+        return
+    rc = ro_cfg()
+    uni = ro_universe()
+    alloc = st.number_input("Share of the account for the rotation (%)", 5.0, 100.0, 60.0, 5.0, key="bot_ralloc",
+                            help="Split equally across the top N; the rest of the account stays free.")
+    H(f'<div class="muted" style="font-size:11.5px;line-height:1.5">Rotation settings from the Rotation page: '
+      f'{esc(uni["name"])} ({len(uni["syms"])} symbols) · hold the top {rc["top"]} (buffer {rc["buffer"]}) · weights '
+      f'1 / 3 / 6 / 12 months = {tr(rc["w1"], 1)} / {tr(rc["w3"], 1)} / {tr(rc["w6"], 1)} / {tr(rc["w12"], 1)} · '
+      f'absolute momentum {"on" if rc["abs"] else "off"} · market filter {"on" if rc["mkt"] else "off"}. The first '
+      f'basket is bought at the next check, then at the start of every month (each order while its market is '
+      f'open). No stops — the monthly ranking decides.</div>')
+    if button("Create bot", key="bot_create", primary=True):
+        if len(acct.get("bots") or []) >= bk.BOT_MAX:
+            st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
+        elif not uni["syms"]:
+            st.warning("The universe is empty — pick another one on the Rotation page.")
+        else:
+            nm = (name or "").strip() or "Rotation bot"
+            b = bk.bot_new(nm, "rotation", "rotation", {"max_alloc": float(alloc), "max_pos": rc["top"] + 1},
+                           rot={"uni": uni["key"], "syms": uni["syms"] if uni["key"] in ("watch", "custom") else [],
+                                "p": rc})
+            _bot_add(b, nm)
+
+
+def _bot_add(b, nm):
+    locked_ = bk.guard_locked(bk.demo_get(_me()))
+    if locked_:                                  # v5.4: kilitli hesapta bot duraklatılmış başlar
+        b["on"] = False
+        b["guard_paused"] = True
+    bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b))
+    st.toast(f"{nm} created but paused — the account is breached (loss limit)" if locked_ else
+             f"{nm} is running — first check within 15 minutes")
+    st.rerun()
+
+
 def render_short():
     """Short Term: hazır yapay zeka stratejisi ya da kullanıcının kendi filtresi."""
     now0 = pd.Timestamp.now(tz=md.TZ)
@@ -7718,8 +8861,13 @@ def render_short():
     if mode == AI_MODE:
         # v4.9: hangi hazır strateji taransın — aynı seçenekler botlarda ve Backtest'te de var
         H('<div class="strat-pick-l">Strategy</div>')
-        strat = seg("Strategy", en.STRAT_KEYS, "w_strat", "ai", fmt=lambda k: STRAT_SEG.get(k, k))
-        render_ai_opps(strat or "ai")
+        strat = seg("Strategy", ST_PAGES, "w_strat", "ai", fmt=lambda k: STRAT_SEG.get(k, k))
+        if strat == "pairs":            # v5.8
+            render_pair_lab()
+        elif strat == "rotation":
+            render_rotation()
+        else:
+            render_ai_opps(strat or "ai")
         render_bots_section(md.get_universe_history()["hist"])     # v4.3: botlar "My Open Trades"in yerinde
         return
     render_own_filter()
@@ -7912,7 +9060,7 @@ def render_own_filter():
                 H('<div class="muted">No opportunity selected.</div>')
 
     if sel:
-        pats = en.setup_patterns(hist[sel["ticker"]]) if sel["ticker"] in hist else []
+        pats = en.st_patterns(hist[sel["ticker"]]) if sel["ticker"] in hist else []   # v5.11: Short Term-Muster
         sfg, sbg = SETUP_STYLE[sel["setup"]]
         render_st_focus(sel["ticker"], sel["name"], pats[0] if pats else None,
                         [("Entry", sel["mid"], ACCENT), ("Stop", sel["stop"], DOWN), ("Target", sel["target"], UP)],
@@ -7928,31 +9076,42 @@ def render_journal(hist):
     if ss.journal is None:
         ss.journal = _seed_journal(hist)
     jr = ss.journal
-    q = md.get_quotes([j["t"] for j in jr]) if jr else {}
+    q = md.get_ext_quotes([j["t"] for j in jr]) if jr else {}     # v5.11: + ☀️ / 🌙 satırı
     today = pd.Timestamp.today().normalize()
     tot_r, rows = 0.0, ""
     for i, j in enumerate(jr):
         last = q.get(j["t"], {}).get("last", j["entry"])
-        risk = max(j["entry"] - j["stop"], 1e-9)
-        trail = max(j["stop"], last - 2 * j["atr"]) if j.get("atr") == j.get("atr") and last > j["entry"] else j["stop"]
-        p_ = (last / j["entry"] - 1) * 100
-        R = (last - j["entry"]) / risk
+        sh = str(j.get("dir") or "LONG").upper() == "SHORT"       # v5.11: short kayıtlar aynalanır
+        sg = -1.0 if sh else 1.0
+        risk = max(sg * (j["entry"] - j["stop"]), 1e-9)
+        ok_atr = j.get("atr") == j.get("atr")
+        if sh:
+            trail = min(j["stop"], last + 2 * j["atr"]) if ok_atr and last < j["entry"] else j["stop"]
+        else:
+            trail = max(j["stop"], last - 2 * j["atr"]) if ok_atr and last > j["entry"] else j["stop"]
+        p_ = sg * (last / j["entry"] - 1) * 100
+        R = sg * (last - j["entry"]) / risk
         tot_r += R
-        prog = max(0.0, min(100.0, (last - j["stop"]) / max(j["target"] - j["stop"], 1e-9) * 100))
+        prog = max(0.0, min(100.0, (last - j["stop"]) / (j["target"] - j["stop"]) * 100
+                            if abs(j["target"] - j["stop"]) > 1e-9 else 0.0))
         days = int(np.busday_count(pd.Timestamp(j["date"]).date(), today.date()))
         ex = ' <span class="badge" style="color:#8D96A5;background:#1A1D23;font-size:10px">sample</span>' \
             if j.get("example") else ""
+        sc_, sb_ = (DOWN, DOWN_BG) if sh else (UP, UP_BG)
         rows += (f'<tr><td><span style="display:flex;align-items:center;gap:10px">{avatar(j["t"], 30)}<b>{esc(j["t"])}'
-                 f'</b>{ex}</span></td><td style="text-align:left"><span class="badge" style="color:{UP};'
-                 f'background:{UP_BG}">LONG</span></td><td style="color:{SOFT}">{tr(j["entry"])}</td>'
-                 f'<td style="font-weight:600">{tr(last)}</td><td style="color:{SOFT}">{tr(trail)}</td>'
+                 f'</b>{ex}</span></td><td style="text-align:left"><span class="badge" style="color:{sc_};'
+                 f'background:{sb_}">{"SHORT" if sh else "LONG"}</span></td><td style="color:{SOFT}">{tr(j["entry"])}</td>'
+                 f'<td style="font-weight:600">{tr(last)}{_ext_sub(q.get(j["t"]))}</td>'
+                 f'<td style="color:{SOFT}">{tr(trail)}</td>'
                  f'<td style="color:{MUT}">{days}d</td><td style="font-weight:600;color:{col(p_)}"><div>{pct(p_)}</div>'
                  f'<div style="font-size:11px">{chg(R, 1)}R</div></td><td style="text-align:left"><span class="prog">'
                  f'<span style="left:calc({prog:.0f}% - 7px)"></span></span></td><td><a class="lnk small" '
                  f'target="_self" href="{link(close_tr=str(i), f="journal")}">Close</a></td></tr>')
     month = today.strftime("%Y-%m")
     closed = [c for c in ss.journal_closed if str(c.get("closed", "")).startswith(month)]
-    hit = (f'{len(closed)} · {tr(100 * sum(1 for c in closed if c["exit"] > c["entry"]) / len(closed), 0)}% hit rate'
+    def _won(c):        # v5.11: short kayıtta kazanç = çıkış girişin altında
+        return (c["exit"] < c["entry"]) if str(c.get("dir") or "LONG").upper() == "SHORT" else (c["exit"] > c["entry"])
+    hit = (f'{len(closed)} · {tr(100 * sum(1 for c in closed if _won(c)) / len(closed), 0)}% hit rate'
            if closed else "—")
     body = (f'<div style="overflow-x:auto"><table class="jt"><thead><tr><th>Symbol</th><th style="text-align:left">'
             f'Side</th><th>Entry</th><th>Last</th><th>Trailing stop</th><th>Days</th><th>P/L</th><th style="text-align:'
@@ -8042,7 +9201,13 @@ def _bt_load(cfg):
     if k in en.STRAT_PARAMS:
         for a, w in BT_SP_KEYS[k].items():
             if a in (cfg.get("sp") or {}):
-                ss[w] = type(BT_WIDGETS[w])(cfg["sp"][a])
+                v_ = cfg["sp"][a]
+                if isinstance(BT_WIDGETS[w], list):      # v5.8: indikatör listesi "rsi,macd" olarak saklanır
+                    ss[w] = [x for x in str(v_).split(",") if x in en.DIV_IND_KEYS]
+                elif isinstance(BT_WIDGETS[w], bool):
+                    ss[w] = bool(v_)
+                else:
+                    ss[w] = type(BT_WIDGETS[w])(v_)
         if k == "ichimoku":
             ss["bt_i_mode"] = "staged" if int((cfg.get("sp") or {}).get("mode") or 0) == 1 else "classic"
     code = next((c for c, s, _ in md.BT_QUICK if s == cfg.get("sym")), None)
@@ -8195,6 +9360,8 @@ def _bt_strategy_rules(k):
         st.checkbox("Compare the three Bitcoin variants (9/26/52 · 10/30/60 · 20/60/120)", key="bt_ichi_cmp",
                     help="Runs the backtest three times with the same rules and shows the results side by side. "
                          "Binance Academy's point: no single setting is best everywhere — check it yourself.")
+    elif k == "divergence":                 # v5.8
+        div_settings_ui("bt_v")
     elif k == "wavetrend":
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -8240,7 +9407,12 @@ def _bt_strategy_rules(k):
                         key="bt_f_tp1", format="%.1f")
     H('<div class="hdr-line" style="margin:10px 0"></div>')
     step_head(5, "Side & time limit")
-    if k in ("donchian2", "ichimoku"):
+    if k == "divergence":                   # v5.8: boğa → long, ayı → short
+        seg("Side", ["long", "short", "both"], "bt_dir", "both",
+            fmt={"long": "Long only", "short": "Short only", "both": "Both"}.get)
+        st.caption("Bullish divergences open longs, bearish divergences open shorts (targets mirrored below the "
+                   "entry).")
+    elif k in ("donchian2", "ichimoku"):
         seg("Side", ["long", "short", "both"], "bt_dir", "both" if k == "ichimoku" else "long",
             fmt={"long": "Long only", "short": "Short only", "both": "Both"}.get)
         st.caption("Short side is the mirror image: " + ("a close below the direction channel's low switches it on, "
@@ -8419,6 +9591,23 @@ def _bt_results():
               'period with the same capital, risk and confirmations. Pick the variant that holds up across '
               'periods, not the one with the single best number.</div>')
 
+    if res.get("div_stats"):                 # v5.8: hangi indikatörün uyumsuzluğu işe yaradı
+        with st.container(border=True):
+            H('<div class="sec-head"><h3>Which indicators worked on this symbol</h3><span class="muted">every trade '
+              'counts for each indicator that was part of its divergence (partial exits combined)</span></div>')
+            rows_d = "".join(
+                f'<tr><td style="text-align:left"><b>{esc(d_["name"])}</b><div class="bsub" style="color:'
+                f'{DIV_GRP_COL.get(d_["grp"], MUT)}">{esc(d_["grp"])}</div></td><td class="r">{d_["n"]}</td>'
+                f'<td class="r" style="font-weight:700;color:{UP if d_["win"] >= 55 else SOFT if d_["win"] >= 45 else DOWN}">'
+                f'{tr(d_["win"], 0)}%</td><td class="r">{"∞" if d_["pf"] == float("inf") else tr(d_["pf"], 2)}</td>'
+                f'<td class="r mono" style="color:{col(d_["pnl"])}">{money(d_["pnl"], cur, 0)}</td></tr>'
+                for d_ in res["div_stats"])
+            H('<table class="pos cmp"><thead><tr><th>Indicator</th><th class="r">Trades</th><th class="r">Win rate</th>'
+              '<th class="r">Profit factor</th><th class="r">Net</th></tr></thead><tbody>' + rows_d + '</tbody></table>'
+              '<div class="muted" style="font-size:11px;margin-top:6px">Few trades per indicator = weak evidence. '
+              'Switch off indicators that keep losing on your symbols in ⚙️ Divergence settings — and re-test on '
+              'other symbols before trusting it.</div>')
+
     # Sermaye eğrisi + drawdown
     with st.container(border=True):
         H(f'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px">'
@@ -8563,7 +9752,9 @@ def _bt_results():
           + (' With a first target, 40 % of the position is sold there and listed as its own row; the stop on the '
              'rest moves to the entry.' if res.get("strat") == "flag" else
              ' The channel stop is recalculated every day and only ever moves in the trade\'s favour.'
-             if res.get("strat") == "donchian2" else "")
+             if res.get("strat") == "donchian2" else
+             ' Divergences are judged on confirmed swings only (no repainting); 40 % is sold at the neckline and listed '
+             'as its own row, the stop on the rest moves to the entry.' if res.get("strat") == "divergence" else "")
           + ' Past performance does not guarantee future results.</div>')
 
 
@@ -9769,6 +10960,8 @@ def main():
         return
     if not ss.get("_prof_loaded"):      # yeni oturum: hesabın kayıtlı ayarları (her cihazda aynı)
         _profile_load(ss.auth["user"])
+        if ss.pop("_reopen", False):    # v5.8: en son açık olan bölüme dön
+            st.rerun()
     ss.auth["last"] = time.time()           # hareketsizlik süresi sıfırlanır
     if ss.pop("_cred_store", False):
         components.html(_CRED_STORE_JS, height=0)
@@ -9938,6 +11131,51 @@ def timing_html(t):
     return h
 
 
+def fair_value_html(bl, ms_all, inp, pm, price, dec, wacc):
+    """v5.10: adil değer kartı — değer, Undervalued / Overvalued rozeti, yöntemler (değer + ağırlık),
+    kullanılan girdiler ve devreye giren yedekler."""
+    up = bl.get("upside", 0.0)
+    lab, sgn = en.value_label(up)
+    lc = UP if sgn > 0 else DOWN if sgn < 0 else WARN
+    badge = (f'<span class="badge" style="color:{lc};background:{lc}1F">{esc(lab)} {tr(abs(up), 0)}%</span>'
+             if lab and lab != "Fairly valued" else
+             (f'<span class="badge" style="color:{lc};background:{lc}1F">Fairly valued</span>' if lab else ""))
+    h = (f'<div style="display:flex;align-items:baseline;gap:10px;margin-top:6px;flex-wrap:wrap">'
+         f'<span class="mono" style="font-size:30px;font-weight:600">{tr(bl["value"], dec)}</span>'
+         f'<span class="mono" style="color:{col(up)};font-weight:700">{pct(up)}</span>{badge}</div>'
+         f'<div class="muted small">range {tr(bl["low"], dec)} – {tr(bl["high"], dec)} · today {tr(price, dec)}'
+         f'</div>')
+    used = [m for m in ms_all if m and m.get("weight", 0) > 0 and not m.get("excluded")]
+    for m in used:
+        w = bl["weights"].get(m["name"])
+        h += (f'<div class="planrow" title="{esc(m.get("note") or "")}"><span class="l">{esc(m["name"])}</span>'
+              f'<span class="v">{tr(m["base"], dec)} · {w}%</span></div>')
+    out_ = [m["name"] for m in ms_all if m and m.get("excluded")]
+    if out_:
+        h += (f'<div class="muted small">Left out (more than 6× away from today\'s price): '
+              f'{esc(", ".join(out_))}</div>')
+    bits = []
+    if en._ok(inp.get("fcf")):
+        bits.append(f'FCF {big(inp["fcf"], "")} ({inp.get("fcf_src") or "—"})')
+    if en._ok(inp.get("eps_ttm")):
+        bits.append(f'EPS TTM {tr(inp["eps_ttm"], 2)} ({inp.get("eps_src") or "—"})')
+    if en._ok(inp.get("eps_fwd")):
+        bits.append(f'forward EPS {tr(inp["eps_fwd"], 2)} ({inp.get("fwd_src") or "—"})')
+    if en._ok(inp.get("g_eps")):
+        bits.append(f'EPS growth {tr(inp["g_eps"], 1)}%')
+    bits.append(f'WACC {tr(wacc, 1)}% (CAPM)')
+    h += f'<div class="muted small" style="margin-top:6px">Inputs: {esc(" · ".join(bits))}</div>'
+    notes = []
+    if inp.get("fwd_est"):
+        notes.append("No analyst forecast came back, so forward EPS is estimated from the earnings trend.")
+    if not any(en._ok((pm or {}).get(k)) for k in ("fwd_pe", "ev_ebitda", "peg")):
+        notes.append("No peer multiples were available, so the multiples use the company's own history or "
+                     "market averages.")
+    if notes:
+        h += f'<div class="muted small" style="margin-top:4px;color:{WARN}">{esc(" ".join(notes))}</div>'
+    return h
+
+
 def render_value_model(b, sym):
     d, f, r, an = b["d"], b["f"], b["r"], b["an"]
     price = d["last"]
@@ -9977,25 +11215,26 @@ def render_value_model(b, sym):
     else:
         ms, checks, extra = en.capital_models(f, r, d, b["pm"], b["px"], wacc, price, an)
     ms = [m for m in ms if m]
-    bl = en.blend(ms, price)
+    # v5.10: çekirdek hat (DCF · ileri F/K · FD/FAVÖK · PEG) — tek kaynak boş dönse de adil değer hesaplanır
+    try:
+        core = en.core_models(f, r, an, d, b.get("basis"), b["band"], b["px"], b["pm"], wacc, price)
+    except Exception:
+        core = {"methods": [], "inputs": {}}
+    ms_all = en.merge_methods(vt, ms, core["methods"], price)
+    bl = en.blend(ms_all, price)
     with c2:
         with st.container(border=True):
             H('<div class="panel-title">Blended Fair Value</div>')
             if bl:
                 up = bl.get("upside", 0.0)
-                H(f'<div style="display:flex;align-items:baseline;gap:10px;margin-top:6px">'
-                  f'<span class="mono" style="font-size:30px;font-weight:600">{tr(bl["value"], dec)}</span>'
-                  f'<span class="mono" style="color:{col(up)};font-weight:700">{pct(up)}</span></div>'
-                  f'<div class="muted small">range {tr(bl["low"], dec)} – {tr(bl["high"], dec)} · today {tr(price, dec)}</div>'
-                  + "".join(f'<div class="planrow"><span class="l">{esc(k)}</span><span class="v">{v}%</span></div>'
-                            for k, v in bl["weights"].items()))
+                H(fair_value_html(bl, ms_all, core.get("inputs") or {}, b["pm"], price, dec, wacc))
                 if en._ok(an.get("target_mean")):
                     H(f'<div class="muted small" style="margin-top:6px">Analyst mean target {tr(an["target_mean"], dec)}'
                       f' ({pct((an["target_mean"] / price - 1) * 100)})</div>')
                 if vt == "defensive" and not (b.get("divst") or {}).get("d0"):
                     H('<div class="muted small" style="margin-top:6px">No dividend — the dividend methods are '
                       'skipped.</div>')
-            elif any(m.get("excluded") for m in ms):
+            elif any(m.get("excluded") for m in ms_all):
                 H('<div class="muted" style="margin-top:6px">Every method landed more than 6× away from today\'s '
                   'price, which points to unreliable inputs for this stock — no blended value is shown.</div>')
             else:
@@ -10463,7 +11702,7 @@ def render_value_peers(b, sym):
             H('<div class="sec-head"><h3 style="font-size:15px">Multiples Comparison</h3>'
               '<span class="muted small" style="margin-left:auto">Coloured against the peer median</span>'
               '</div>')
-            rows = ""
+            rows, marks_ = "", set()
             for t in [sym] + list(peers):
                 v = vals.get(t)
                 if not v:
@@ -10475,13 +11714,18 @@ def render_value_peers(b, sym):
                          f'{avatar(t, 26, nm)}<span><b>{esc(t)}</b><div class="muted small">'
                          f'{esc(nm) + " · " if nm and nm != t else ""}{big(v.get("market_cap"), "USD")}</div>'
                          f'</span></span></td>'
-                         + _cell(v.get("pe"), pm.get("pe"))
-                         + _cell(v.get("fwd_pe"), pm.get("fwd_pe"))
-                         + _cell(v.get("peg"), pm.get("peg"), 2)
-                         + _cell(v.get("ev_ebitda"), pm.get("ev_ebitda"))
-                         + _cell(v.get("growth"), pm.get("growth"), 0, False, "%")
-                         + _cell(v.get("net_margin"), pm.get("net_margin"), 0, False, "%")
+                         + _cell(v.get("pe"), pm.get("pe"), mark=_vmark(v, "pe"))
+                         + _cell(v.get("fwd_pe"), pm.get("fwd_pe"), mark=_vmark(v, "fwd_pe"))
+                         + _cell(v.get("peg"), pm.get("peg"), 2, mark=_vmark(v, "peg"))
+                         + _cell(v.get("ev_ebitda"), pm.get("ev_ebitda"), mark=_vmark(v, "ev_ebitda"))
+                         + _cell(v.get("growth"), pm.get("growth"), 0, False, "%", mark=_vmark(v, "growth"))
+                         + _cell(v.get("net_margin"), pm.get("net_margin"), 0, False, "%",
+                                 mark=_vmark(v, "net_margin"))
                          + "</tr>")
+                for k_ in ("pe", "fwd_pe", "peg", "ev_ebitda", "growth", "net_margin"):
+                    mk_ = _vmark(v, k_)
+                    if mk_:
+                        marks_.add(mk_)
             med = ("<tr class='med'><td>Peer median</td>"
                    + "".join(f'<td>{tr(pm.get(k), 2 if k == "peg" else (0 if k in ("growth", "net_margin") else 1))}'
                              f'{"%" if k in ("growth", "net_margin") else ""}</td>'
@@ -10490,6 +11734,13 @@ def render_value_peers(b, sym):
             H(f'<div style="overflow-x:auto"><table class="ptab"><thead><tr><th>Company</th><th>P/E</th>'
               f'<th>Fwd P/E</th><th>PEG</th><th>EV/EBITDA</th><th title="Analysts\' next fiscal-year EPS estimate ÷ trailing 12-month EPS">Fwd EPS growth</th><th>Net margin</th></tr></thead>'
               f'<tbody>{rows}{med}</tbody></table></div>')
+            leg_ = [f'<span style="color:{UP}">green</span> = cheaper / stronger than the peer median, '
+                    f'<span style="color:{DOWN}">red</span> = more expensive / weaker (±8% counts as in line)']
+            if "*" in marks_:
+                leg_.append("* computed by Pulse from SEC filings and the live price (Yahoo field missing)")
+            if "≈" in marks_:
+                leg_.append("≈ estimated from the earnings trend (no analyst forecast came back)")
+            H(f'<div class="muted small" style="margin-top:6px">{" · ".join(leg_)}</div>')
             me = vals.get(sym, {})
             note = "Not enough peer multiples for a comparison."
             if en._ok(me.get("fwd_pe")) and en._ok(pm.get("fwd_pe")) and pm["fwd_pe"]:
@@ -10523,8 +11774,17 @@ def render_value_peers(b, sym):
         order = sorted(names, key=lambda t: vals[t].get("fwd_pe") if en._ok(vals[t].get("fwd_pe")) else 1e9)
         plot(bar_fig(order, [("Fwd P/E", [vals[t].get("fwd_pe") for t in order],
                               [ACCENT if t == sym else "#4A515C" for t in order])],
-                     height=260, suffix="x", hline=pm.get("fwd_pe"), hl_label="median",
+                     height=260, suffix="x", hline=pm.get("fwd_pe"), hl_label="peer median",
                      legend=False, text=True), key="v_pfwd")
+        est_ = [t for t in order if "fwd_pe" in (vals[t].get("est") or [])]
+        miss_ = [t for t in order if not en._ok(vals[t].get("fwd_pe"))]
+        if est_ or miss_:
+            bits_ = []
+            if est_:
+                bits_.append("≈ trend estimate (no analyst forecast): " + ", ".join(est_))
+            if miss_:
+                bits_.append("no forward P/E (losses or no data): " + ", ".join(miss_))
+            H(f'<div class="muted small">{esc(" · ".join(bits_))}</div>')
 
 
 def render_value_cycle(b):
