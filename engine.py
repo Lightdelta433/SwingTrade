@@ -21,7 +21,7 @@ import re
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "5.11"
+ENGINE_VERSION = "5.12"
 NAN = float("nan")
 
 
@@ -5806,10 +5806,16 @@ BOT_DEFAULT = {
     "cooldown_days": 1,    # stop olduktan sonra aynı hisseye bekleme
     "min_conf": 0.0,       # v4.9: hazır stratejilerde en az teyit skoru (0 = kapalı)
     "ai_dir": "long",      # v5.11: formasyon botu — 'long' yalnızca boğa formasyonları · 'both' ayı formasyonlarında short
+    "strat_pct": 0.0,      # v5.12: Max. size of strategy (%) — botun TOPLAMDA kullanabileceği hesap payı.
+                           #   0 = eski bot: max_alloc (tek pozisyon payı) × max_pos'tan hesaplanır (davranış aynı kalır)
 }
 BOT_LIMITS = {"risk_pct": (0.1, 5.0), "max_pos": (1, 20), "max_alloc": (2.0, 100.0), "min_rr": (0.5, 6.0),
               "trail_atr": (0.5, 6.0), "max_days": (1, 120), "tp1_part": (0.1, 0.9), "max_chase": (0.0, 5.0),
-              "cooldown_days": (0, 30), "min_conf": (0.0, 100.0)}
+              "cooldown_days": (0, 30), "min_conf": (0.0, 100.0), "strat_pct": (0.0, 100.0)}
+# v5.12 — formdan kalkan alanların sabit değerleri (bot bunları kendisi kullanır, kullanıcıya sorulmaz)
+BOT_AUTO = {"risk_pct": 1.0, "max_pos": 5, "trail_atr": 2.0, "max_days": 15, "min_rr": 1.5}
+BOT_STRAT_OPTS = [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100]      # Max. size of strategy (%) — seçenekler
+BOT_STRAT_DEFAULT = 100
 
 
 def bot_cfg(over=None):
@@ -5828,6 +5834,8 @@ def bot_cfg(over=None):
             lo, hi = BOT_LIMITS[k]
             v = type(BOT_DEFAULT[k])(min(max(v, lo), hi))
         c[k] = v
+    if c["strat_pct"] <= 0:                 # v5.12: eski bot → aynı davranış (5 × %20 = %100 …)
+        c["strat_pct"] = float(min(100.0, c["max_alloc"] * c["max_pos"]))
     return c
 
 
@@ -5899,17 +5907,28 @@ def bot_signal_filter(o, cfg=None):
                                                                fmt_num(rr, 1))}, "signal")
 
 
-def bot_size(equity, cash, price, stop, fx=1.0, cfg=None, frac=False):
-    """Adet: (hesap × risk %) / |giriş − stop|; tek pozisyon payı ve nakit ile sınırlı. fx: enstrüman → hesap kuru.
+def bot_slot(cfg, equity):
+    """v5.12: bir pozisyonun (ya da bir çiftin) en büyük değeri = strateji payı ÷ pozisyon sayısı."""
+    c = bot_cfg(cfg)
+    return max(0.0, float(equity)) * c["strat_pct"] / 100.0 / max(1, int(c["max_pos"]))
+
+
+def bot_size(equity, cash, price, stop, fx=1.0, cfg=None, frac=False, used=0.0):
+    """Adet. v5.12 — 'Max. size of strategy (%)': bot TOPLAMDA hesabın strat_pct'si kadar kullanır.
+    Tek pozisyon en fazla: strateji payı ÷ pozisyon sayısı · hesabın risk %'si (stopa kadar) · stratejide kalan pay
+    (used = botun açık pozisyonlarının hesap parasıyla değeri) · nakit. fx: enstrüman → hesap kuru.
     v5.3: short'ta stop girişin üstündedir (mesafe mutlak alınır) · frac=True: kripto için kesirli adet (4 hane)."""
     c = bot_cfg(cfg)
     risk_per = abs(float(price) - float(stop)) * fx
     if not (risk_per > 0 and price > 0 and equity > 0):
         return 0
+    unit = float(price) * fx
+    budget = float(equity) * c["strat_pct"] / 100.0
     q_risk = equity * c["risk_pct"] / 100.0 / risk_per
-    q_alloc = equity * c["max_alloc"] / 100.0 / (price * fx)
-    q_cash = max(0.0, cash) / (price * fx)
-    q = max(0.0, min(q_risk, q_alloc, q_cash))
+    q_slot = bot_slot(c, equity) / unit
+    q_left = max(0.0, budget - max(0.0, float(used or 0.0))) / unit
+    q_cash = max(0.0, cash) / unit
+    q = max(0.0, min(q_risk, q_slot, q_left, q_cash))
     if frac:
         return float(np.floor(q * 10000 + 1e-9) / 10000)
     return int(np.floor(q + 1e-9))
@@ -6138,7 +6157,9 @@ def strat_info(key, params=None):
                           ("Stop", "The stop sits at the %d-day low and moves up with it day by day — it never "
                                    "moves down." % P["n_exit"], C_STOP),
                           ("Exit", "No price target: the trade ends when price falls to the trailing %d-day low. "
-                                   "Winners are allowed to run." % P["n_exit"], C_ON)]}
+                                   "Winners are allowed to run." % P["n_exit"], C_ON),
+                          ("Targets", "None on purpose — the trend decides. Big winners pay for the many small "
+                                      "losses; the bot never sells early at a fixed price.", C_FLAG)]}
     if key == "flag":
         P = strat_params(key, params)
         return {"key": key, "name": "Flag after a strong advance", "icon": "🚩", "targets": True,
@@ -6252,10 +6273,10 @@ def strat_info(key, params=None):
                       ("Pattern", "Longs: bull flag, bull pennant (also falling-wedge shaped), symmetrical triangle, "
                                   "rectangle / range or resistance breakout. Shorts: descending triangle, range "
                                   "breakdown or head & shoulders below the neckline.", C_FLAG),
-                      ("Candles", "Hammer, shooting star, bullish / bearish engulfing, morning / evening star, dragonfly "
-                                  "doji, three white soldiers, rising / falling three methods in the trade's direction "
-                                  "on the last candles = bonus. None = no bonus, no penalty.", C_POLE),
-                      ("Entry", "Breakout or retest of the pattern line, confirmed on the 15-minute chart.", C_ENTRY),
+                      ("Entry", "Breakout or retest of the pattern line, confirmed on the 15-minute chart. A "
+                                "confirming candle in the trade's direction (hammer, engulfing, morning / evening "
+                                "star, dragonfly doji, three soldiers, rising / falling three methods) is a bonus — "
+                                "none = no bonus, no penalty.", C_ENTRY),
                       ("Stop", "Beyond the last daily candle, the nearest band or the breakout level.", C_STOP),
                       ("Exit", "40% at TP1 (next band), the rest at TP2 or by the trailing stop.", C_ON)]}
 
