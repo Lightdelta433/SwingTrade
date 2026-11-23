@@ -15,10 +15,13 @@ filtre editörü, arama ve backtest onu otomatik olarak tanır.
 ========================================================================
 """
 
+import bisect
+import re
+
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "5.7"
+ENGINE_VERSION = "5.11"
 NAN = float("nan")
 
 
@@ -1710,13 +1713,571 @@ def setup_patterns(df, lookback=140, left=3, right=3, limit=4):
     return out[:int(limit)]
 
 
+# ======================================================================
+# v5.11 — Short Term formasyonları: YALNIZCA kullanıcının seçtiği grafik formasyonları
+#   Boğa bayrağı · boğa flaması (düşen kama biçimi dahil) · simetrik üçgen · alçalan üçgen · dikdörtgen / yatay
+#   bant (yukarı ve aşağı kırılım) · yatay direnç kırılımı · omuz-baş-omuz (boyun çizgisi kırılımı).
+#   Her formasyon, kırılımdan BİR ÖNCEKİ mumda biten pencerede aranır (k = 0 … ST_PAT_K mum önce): kırılımdan
+#   sonraki mumlar formasyonu bozmaz. k = 0 → oluşuyor (fiyat hâlâ içeride) · k ≥ 1 → kırılım e+1. mumda.
+#   Çıktı setup_patterns ile aynı biçimde (+ 'geo' grafik çizimi, 'side', 'target' ölçülü hedef).
+# ======================================================================
+ST_PAT_NAMES = {"bull_flag": "Bull flag", "bull_pennant": "Bull pennant", "triangle_sym": "Symmetrical triangle",
+                "triangle_desc": "Descending triangle", "rectangle": "Rectangle (range)",
+                "res_breakout": "Resistance breakout", "hs_top": "Head and shoulders"}
+ST_PAT_KEYS = list(ST_PAT_NAMES)
+ST_PAT_K = 10             # en fazla kaç mum önceki kırılım hâlâ listelenir
+ST_PAT_BASE = {"bull_flag": 0.62, "bull_pennant": 0.62, "triangle_sym": 0.58, "triangle_desc": 0.6,
+               "rectangle": 0.58, "res_breakout": 0.56, "hs_top": 0.62}
+
+
+def _touches(mask, gap=3):
+    """True değerlerden kaç ayrı temas var (aralarında en az `gap` mum)."""
+    n_, last_ = 0, -10 ** 6
+    for i, m in enumerate(mask):
+        if m:
+            if i - last_ > gap:
+                n_ += 1
+            last_ = i
+    return n_
+
+
+def _touch_idx(mask, gap=3):
+    """Her temas grubunun ilk mumu."""
+    out, last_ = [], -10 ** 6
+    for i, m in enumerate(mask):
+        if m:
+            if i - last_ > gap:
+                out.append(i)
+            last_ = i
+    return out
+
+
+def _prior_trend(C, s, back=30, pct=0.04):
+    """Formasyondan önceki eğilim: +1 yükseliş, −1 düşüş, 0 belirsiz."""
+    s0 = max(0, s - back)
+    if s - s0 < 8 or not C[s0]:
+        return 0
+    ch = C[s] / C[s0] - 1
+    return 1 if ch >= pct else -1 if ch <= -pct else 0
+
+
+def _st_done(A, key, kind, e, up, dn, conf, note, start, geo, target=None):
+    """Ortak bitiş: kırılım geçerli mi (k ≥ 1 ise e+1. mum), şimdiki durum, kaç mum önce, hacim, seviye."""
+    C, V, a, last = A["C"], A["V"], A["a"], A["n"] - 1
+    lvl = up if kind == "bull" else dn
+    oth = dn if kind == "bull" else up
+    if e >= last:
+        st_, since, j = "forming", 0, last
+        px = C[last]
+        if (kind == "bull" and px > lvl(last) + 0.25 * a) or (kind == "bear" and px < lvl(last) - 0.25 * a):
+            return None                       # bugünkü mum zaten kırdı → k = 1 penceresinde yakalanır
+    else:
+        j = e + 1
+        brk = C[j] > lvl(j) + 0.25 * a if kind == "bull" else C[j] < lvl(j) - 0.25 * a
+        if not brk:
+            return None
+        st_ = _state(float(C[last]), float(lvl(last)), a, kind)
+        if st_ == "forming":                   # kırılım geri döndü (başarısız) → gösterilmez
+            return None
+        since = last - j
+    base = V[max(0, j - 20):j]
+    vx = float(V[j] / base.mean()) if len(base) and base.mean() > 0 else 1.0
+    if st_ != "forming":
+        conf += 0.10 + (0.06 if vx >= 1.5 else 0.0)
+    off = A["off"]
+    return {"key": key, "name": ST_PAT_NAMES[key], "kind": kind, "side": "long" if kind == "bull" else "short",
+            "level": float(lvl(last)), "lower": float(oth(last)), "state": st_, "bars_since": int(since),
+            "conf": round(float(min(1.0, max(0.2, conf))), 2), "vol_x": round(vx, 2), "start": int(start) + off,
+            "note": note, "target": (float(target) if target is not None and target == target else None),
+            "geo": geo, "end": int(e) + off}
+
+
+def _gp(A, i, p):
+    return (int(i) + A["off"], float(p))
+
+
+def _st_rect(A, e):
+    """Dikdörtgen / yatay bant: düz tavan (≥ 2 tepe) + düz taban (≥ 2 dip), tüm mumlar bandın içinde, eğilimsiz.
+    Temaslar pivot tepe / diplerden sayılır — pencerenin kenarına denk gelen yarım hareketler temas sayılmaz."""
+    H, L, C, a = A["H"], A["L"], A["C"], A["a"]
+    best = None
+    for w in (12, 16, 20, 25, 30, 40, 50, 60):
+        s = e - w + 1
+        if s < 1:
+            break
+        ph = [i for i in A["hi"] if s <= i <= e]
+        pl = [i for i in A["lo"] if s <= i <= e]
+        if len(ph) < 2 or len(pl) < 2:
+            continue
+        top, bot = float(max(H[i] for i in ph)), float(min(L[i] for i in pl))
+        hgt, mid = top - bot, (top + bot) / 2
+        if mid <= 0 or not (0.025 <= hgt / mid <= 0.30 and 1.5 * a <= hgt <= 12 * a):
+            continue
+        if float(H[s:e + 1].max()) > top + 0.35 * a or float(L[s:e + 1].min()) < bot - 0.35 * a:
+            continue                           # bandın dışına taşan mum var
+        tt, tb = max(0.3 * a, 0.012 * top), max(0.3 * a, 0.012 * bot)
+        th = [i for i in ph if H[i] >= top - tt]
+        tl = [i for i in pl if L[i] <= bot + tb]
+        if len(th) < 2 or len(tl) < 2:
+            continue
+        sl, _b = _fit(np.arange(w), C[s:e + 1])
+        if abs(sl) * w > 0.45 * hgt:
+            continue
+        sc = len(th) + len(tl) + w / 25.0
+        if best is None or sc > best[0]:
+            best = (sc, s, top, bot, th, tl)
+    if not best:
+        return None
+    _sc, s, top, bot, th, tl = best
+    nt, nb = len(th), len(tl)
+    last = A["n"] - 1
+    tr_ = _prior_trend(C, s)
+    if e < last:
+        kind = "bull" if C[e + 1] > top else "bear"
+    else:
+        kind = "bull" if tr_ > 0 else "bear" if tr_ < 0 else ("bull" if C[e] >= (top + bot) / 2 else "bear")
+    conf = ST_PAT_BASE["rectangle"] + min(0.12, 0.03 * (nt + nb - 4)) + \
+        (0.06 if (tr_ > 0 and kind == "bull") or (tr_ < 0 and kind == "bear") else 0.0)
+    up, dn = (lambda x: top), (lambda x: bot)
+    hgt = top - bot
+    geo = {"lines": [{"pts": [_gp(A, s, top), _gp(A, last, top)], "w": 2},
+                     {"pts": [_gp(A, s, bot), _gp(A, last, bot)], "w": 2}],
+           "dots": [_gp(A, i, H[i]) for i in th] + [_gp(A, i, L[i]) for i in tl],
+           "fill": [_gp(A, s, top), _gp(A, e, top), _gp(A, e, bot), _gp(A, s, bot)],
+           "at": _gp(A, (s + e) // 2, top)}
+    note = "%s – %s range, %d / %d touches, height %s%%" % (fmt_num(bot, 2), fmt_num(top, 2), nt, nb,
+                                                            fmt_num(hgt / ((top + bot) / 2) * 100, 1))
+    return _st_done(A, "rectangle", kind, e, up, dn, conf, note, s, geo,
+                    target=(top + hgt) if kind == "bull" else (bot - hgt))
+
+
+def _st_res(A, e):
+    """Yatay direnç kırılımı: aynı tavana ≥ 2 pivot tepe, mumlar tavanın altında, taban serbest (yükselen dipler de
+    olabilir); kırılım güçlü bir mumla (görseldeki büyük yeşil mum)."""
+    H, L, C, O, a = A["H"], A["L"], A["C"], A["O"], A["a"]
+    best = None
+    for w in (15, 20, 30, 40, 60):
+        s = e - w + 1
+        if s < 1:
+            break
+        ph = [i for i in A["hi"] if s <= i <= e]
+        if len(ph) < 2:
+            continue
+        R = float(max(H[i] for i in ph))
+        if float(H[s:e + 1].max()) > R + 0.35 * a:
+            continue
+        tt = max(0.25 * a, 0.01 * R)
+        th = [i for i in ph if H[i] >= R - tt]
+        if len(th) < 2 or th[-1] - th[0] < 5:
+            continue
+        depth = (R - float(L[s:e + 1].min())) / R if R else 0
+        if not (0.02 <= depth <= 0.30):
+            continue
+        # gerçek direnç: temaslar arasında fiyat belirgin geri çekilmeli (düzgün yükselen trendde ardışık tepeler
+        # direnç sayılmaz) ve temaslar yatay olmalı
+        if float(L[th[0]:th[-1] + 1].min()) > R - max(1.5 * a, 0.025 * R):
+            continue
+        if abs(_fit(th, [H[i] for i in th])[0]) * (th[-1] - th[0]) > tt:
+            continue
+        sc = len(th) + w / 30.0
+        if best is None or sc > best[0]:
+            best = (sc, s, R, th)
+    if not best:
+        return None
+    _sc, s, R, th = best
+    nt = len(th)
+    last = A["n"] - 1
+    if e < last:
+        j = e + 1
+        rg = H[j] - L[j]
+        if rg <= 0 or (C[j] - L[j]) / rg < 0.5 or C[j] <= O[j]:
+            return None                        # kırılım mumu zayıf
+    elif C[e] < R - 1.0 * a:
+        return None                            # dirence yaklaşmadı — henüz kurulum yok
+    up = (lambda x: R)
+    lo_ = float(L[s:e + 1].min())
+    dn = (lambda x: lo_)
+    conf = ST_PAT_BASE["res_breakout"] + min(0.12, 0.04 * (nt - 2)) + (0.05 if _prior_trend(C, s) > 0 else 0.0)
+    dots = [_gp(A, i, H[i]) for i in th]
+    if e < last:
+        dots.append(_gp(A, e + 1, C[e + 1]))
+    geo = {"lines": [{"pts": [_gp(A, s, R), _gp(A, last, R)], "w": 2}], "dots": dots, "fill": None,
+           "at": _gp(A, th[0], R)}
+    note = "resistance %s, %d touches" % (fmt_num(R, 2), nt)
+    return _st_done(A, "res_breakout", "bull", e, up, dn, conf, note, s, geo, target=R + (R - lo_))
+
+
+def _seq(idx, arr, kind, a):
+    """Son 3 (ya da 2) pivot: 'dn' alçalan · 'up' yükselen · 'flat' yatay."""
+    for m in (3, 2):
+        if len(idx) < m:
+            continue
+        xs = idx[-m:]
+        ys = [float(arr[i]) for i in xs]
+        if kind == "dn" and all(ys[k + 1] < ys[k] - 0.25 * a for k in range(m - 1)):
+            return xs
+        if kind == "up" and all(ys[k + 1] > ys[k] + 0.25 * a for k in range(m - 1)):
+            return xs
+        if kind == "flat" and max(ys) - min(ys) <= max(0.5 * a, 0.015 * np.mean(ys)):
+            return xs
+    return None
+
+
+def _st_tri(A, e, desc=False):
+    """Simetrik üçgen (alçalan tepeler + yükselen dipler) · alçalan üçgen (alçalan tepeler + yatay taban)."""
+    H, L, C, a, r = A["H"], A["L"], A["C"], A["a"], A["r"]
+    hi = [i for i in A["hi"] if e - 120 <= i <= e - r]
+    lo = [i for i in A["lo"] if e - 120 <= i <= e - r]
+    hx = _seq(hi, H, "dn", a)
+    lx = _seq(lo, L, "flat" if desc else "up", a)
+    if not hx or not lx:
+        return None
+    x0 = min(hx[0], lx[0])
+    if not (12 <= e - x0 <= 120) or max(hx[0], lx[0]) >= min(hx[-1], lx[-1]):
+        return None                            # tepeler ve dipler iç içe olmalı
+    sh, bh = _fit(hx, [H[i] for i in hx])
+    if desc:
+        S = float(np.mean([L[i] for i in lx]))
+        sl, bl = 0.0, S
+    else:
+        sl, bl = _fit(lx, [L[i] for i in lx])
+    up = (lambda x: sh * x + bh)
+    dn = (lambda x: sl * x + bl)
+    w0, w1 = up(x0) - dn(x0), up(e) - dn(e)
+    if w0 <= 0 or w1 <= 0 or w1 > w0 * (0.8 if desc else 0.75) or sh >= 0:
+        return None
+    if w0 < max(2.0 * a, 0.03 * float(C[e])):
+        return None                            # çok küçük — gürültü, formasyon değil
+    if not desc and (sl <= 0 or not (0.25 <= (-sh) / sl <= 4.0)):
+        return None
+    cc = C[x0:e + 1]
+    xs = np.arange(x0, e + 1)
+    if np.any(cc > up(xs) + 0.4 * a) or np.any(cc < dn(xs) - 0.4 * a):
+        return None
+    last = A["n"] - 1
+    tr_ = _prior_trend(C, x0)
+    key = "triangle_desc" if desc else "triangle_sym"
+    if e < last:
+        kind = "bull" if C[e + 1] > up(e + 1) else "bear"
+        if desc and kind == "bull":
+            return None                        # alçalan üçgen yalnızca aşağı kırılımla (görsel)
+    else:
+        kind = "bear" if desc else ("bull" if tr_ >= 0 else "bear")
+    conf = ST_PAT_BASE[key] + (0.08 if w1 < w0 * 0.55 else 0.03) + \
+        (0.06 if (tr_ > 0 and kind == "bull") or (tr_ < 0 and kind == "bear") else 0.0) + \
+        (0.04 if len(hx) >= 3 and len(lx) >= 3 else 0.0)
+    geo = {"lines": [{"pts": [_gp(A, x0, up(x0)), _gp(A, last, up(last))], "w": 2},
+                     {"pts": [_gp(A, x0, dn(x0)), _gp(A, last, dn(last))], "w": 2}],
+           "dots": [_gp(A, i, H[i]) for i in hx] + [_gp(A, i, L[i]) for i in lx],
+           "fill": [_gp(A, x0, up(x0)), _gp(A, e, up(e)), _gp(A, e, dn(e)), _gp(A, x0, dn(x0))],
+           "at": _gp(A, (x0 + e) // 2, max(up(x0), up(e)))}
+    note = ("horizontal support %s, lower highs" % fmt_num(dn(e), 2) if desc else
+            "band narrowed %s%%" % fmt_num((1 - w1 / w0) * 100, 0))
+    target = (dn(last) - w0) if kind == "bear" else (up(last) + w0)
+    return _st_done(A, key, kind, e, up, dn, conf, note, x0, geo, target=target)
+
+
+def _env_line(xs, ys, upper, a):
+    """Noktalardan geçen doğru (en küçük kareler), sonra zarf: tüm noktalar çizginin altında (üst) / üstünde (alt)."""
+    xs = np.asarray(xs, float)
+    ys = np.asarray(ys, float)
+    m, b = _fit(xs, ys) if len(xs) >= 2 else (0.0, float(ys[0]) if len(ys) else 0.0)
+    b = float(np.max(ys - m * xs)) if upper else float(np.min(ys - m * xs))
+    return m, b
+
+
+def _st_flag(A, e):
+    """Boğa bayrağı / flaması: sert yükseliş (direk) + sıkı, yukarı eğimsiz konsolidasyon. Üst çizgi direğin
+    tepesinden başlar ve alçalan ara tepelerden geçer; alt çizgi konsolidasyonun diplerinden. Paralel → bayrak,
+    daralan → flama (iki çizgi de aşağı eğimliyse düşen kama biçimi)."""
+    H, L, C, a = A["H"], A["L"], A["C"], A["a"]
+    best = None
+    for fl in range(4, 21):
+        pe = e - fl
+        if pe < 6:
+            break
+        if H[pe] < float(H[pe + 1:e + 1].max()):
+            continue                           # bayrak direğin tepesini aşmamalı
+        w_lo = np.arange(max(0, pe - 20), pe - 2)
+        if not len(w_lo):
+            continue
+        p0 = int(w_lo[np.argmin(L[w_lo])])
+        hgt = float(H[pe] - L[p0])
+        if hgt <= 0 or L[p0] <= 0:
+            continue
+        # direğin başı: dipten sonra fiyatın dip + %15 yükseklik bandında kaldığı SON mum (yatay taban direğe sayılmaz)
+        ps = max(k for k in range(p0, pe) if L[k] <= L[p0] + 0.15 * hgt)
+        plen = pe - ps
+        gain = hgt / float(L[p0])
+        if plen < 2 or hgt < 2.5 * a or gain < 0.06 or gain / max(plen, 1) < 0.006 or fl > 1.5 * plen + 6:
+            continue
+        fx = np.arange(pe + 1, e + 1)
+        retr = (float(H[pe]) - float(L[fx].min())) / hgt
+        if retr > 0.5:
+            continue
+        rng_f, rng_p = float((H[fx] - L[fx]).mean()), float((H[ps:pe + 1] - L[ps:pe + 1]).mean())
+        if rng_p <= 0 or rng_f > 1.0 * rng_p:
+            continue
+        sh_ = [i for i in fx[:-1] if H[i] >= H[i - 1] and H[i] >= H[i + 1]]
+        sl_ = [i for i in fx if (i == fx[-1] or L[i] <= L[i + 1]) and L[i] <= L[i - 1]]
+        ux = [pe] + sh_ if sh_ else [pe, int(fx[np.argmax(H[fx])])]
+        su, bu = _env_line(ux, [H[i] for i in ux], True, a)
+        lx_ = sl_ if len(sl_) >= 2 else list(fx)
+        sl, bl = _env_line(lx_, [L[i] for i in lx_], False, a)
+        bl = min(bl, float(np.min(L[fx] - sl * fx)))
+        bu = max(bu, float(np.max(H[fx] - su * fx)))
+        w0 = (su * fx[0] + bu) - (sl * fx[0] + bl)
+        w1 = (su * fx[-1] + bu) - (sl * fx[-1] + bl)
+        if w0 <= 0 or w1 <= 0 or su > 0.08 * a:
+            continue
+        ratio = w1 / w0
+        if ratio <= 0.65 and su < 0 and sl > su:
+            key = "bull_pennant"
+        elif ratio <= 1.35 and sl <= 0.08 * a:
+            key = "bull_flag"
+        else:
+            continue
+        sc = gain * 10 + (1 - retr) + min(fl, 12) / 12.0 + (1 - rng_f / rng_p)
+        if best is None or sc > best[0]:
+            best = (sc, key, ps, pe, su, bu, sl, bl, gain, retr, rng_f / rng_p, hgt)
+    if not best:
+        return None
+    _sc, key, ps, pe, su, bu, sl, bl, gain, retr, tight, hgt = best
+    up = (lambda x: su * x + bu)
+    dn = (lambda x: sl * x + bl)
+    last = A["n"] - 1
+    conf = ST_PAT_BASE[key] + min(0.12, gain) + (0.06 if retr <= 0.33 else 0.0) + (0.04 if tight <= 0.6 else 0.0)
+    xe = max(e, min(last, e + 3))
+    geo = {"lines": [{"pts": [_gp(A, ps, L[ps]), _gp(A, pe, H[pe])], "w": 2, "c": "#3DDC97"},
+                     {"pts": [_gp(A, pe, up(pe)), _gp(A, xe, up(xe))], "w": 2},
+                     {"pts": [_gp(A, pe + 1, dn(pe + 1)), _gp(A, xe, dn(xe))], "w": 2}],
+           "dots": [_gp(A, ps, L[ps]), _gp(A, pe, H[pe])],
+           "fill": [_gp(A, pe, up(pe)), _gp(A, e, up(e)), _gp(A, e, dn(e)), _gp(A, pe + 1, dn(pe + 1))],
+           "at": _gp(A, pe, H[pe])}
+    wedge = key == "bull_pennant" and sl < 0
+    note = "%s%% pole in %d days, %s pullback %s%%%s" % (
+        fmt_num(gain * 100, 0), pe - ps, "pennant" if key == "bull_pennant" else "flag", fmt_num(retr * 100, 0),
+        " · falling-wedge shape" if wedge else "")
+    return _st_done(A, key, "bull", e, up, dn, conf, note, ps, geo, target=up(last) + hgt)
+
+
+def _st_hs(A, e):
+    """Omuz-baş-omuz (tepe): sol omuz < baş > sağ omuz, omuzlar benzer; boyun çizgisi iki dipten geçer."""
+    H, L, C, a, r = A["H"], A["L"], A["C"], A["a"], A["r"]
+    hi = [i for i in A["hi"] if e - 140 <= i <= e - r]
+    if len(hi) < 3:
+        return None
+    last = A["n"] - 1
+    trip = [(hi[-3], hi[-2], hi[-1])] + ([(hi[-4], hi[-3], hi[-2])] if len(hi) >= 4 else [])
+    for ls, hd, rs in trip:
+        if hd - ls < 4 or rs - hd < 4 or rs - ls > 120:
+            continue
+        if not (H[hd] > H[ls] + 0.5 * a and H[hd] > H[rs] + 0.5 * a):
+            continue
+        if abs(H[ls] - H[rs]) > max(1.2 * a, 0.05 * H[hd]):
+            continue
+        t1 = ls + int(np.argmin(L[ls:hd + 1]))
+        t2 = hd + int(np.argmin(L[hd:rs + 1]))
+        if t2 <= t1:
+            continue
+        m = (L[t2] - L[t1]) / (t2 - t1)
+        if abs(m) > 0.3 * a:
+            continue
+        neck = (lambda x, m=m, t1=t1: L[t1] + m * (x - t1))
+        if H[ls] < neck(ls) + 1.0 * a or H[rs] < neck(rs) + 1.0 * a:
+            continue
+        if H[hd] - neck(hd) < max(2.0 * a, 0.03 * float(H[hd])):
+            continue                           # baş boyun çizgisinin yeterince üstünde değil
+        xs = np.arange(rs, e + 1)
+        if np.any(C[xs] < neck(xs) - 0.25 * a) or H[rs + 1:e + 1].max(initial=-np.inf) > H[hd]:
+            continue                           # e'den önce kırılmış ya da baş aşılmış
+        tr_ = _prior_trend(C, ls)
+        conf = ST_PAT_BASE["hs_top"] + (0.06 if tr_ > 0 else 0.0) + \
+            (0.05 if abs(H[ls] - H[rs]) <= 0.6 * a else 0.0)
+        top = (lambda x: H[rs])
+        hh = float(H[hd] - neck(hd))
+        geo = {"lines": [{"pts": [_gp(A, ls, H[ls]), _gp(A, t1, L[t1]), _gp(A, hd, H[hd]), _gp(A, t2, L[t2]),
+                                  _gp(A, rs, H[rs])], "w": 1.6, "dash": True},
+                         {"pts": [_gp(A, max(0, t1 - 3), neck(max(0, t1 - 3))), _gp(A, last, neck(last))], "w": 2}],
+               "dots": [_gp(A, ls, H[ls]), _gp(A, hd, H[hd]), _gp(A, rs, H[rs])], "fill": None,
+               "at": _gp(A, hd, H[hd])}
+        note = "neckline %s%s" % (fmt_num(neck(last), 2), " broken" if e < last else " — right shoulder formed")
+        return _st_done(A, "hs_top", "bear", e, top, neck, conf, note, ls, geo, target=neck(last) - hh)
+    return None
+
+
+_ST_DETECT = [("bull_flag", _st_flag), ("triangle_sym", lambda A, e: _st_tri(A, e, False)),
+              ("triangle_desc", lambda A, e: _st_tri(A, e, True)), ("rectangle", _st_rect),
+              ("res_breakout", _st_res), ("hs_top", _st_hs)]
+
+
+def st_patterns(df, lookback=160, limit=4, keys=None):
+    """v5.11 — Short Term: yalnızca kullanıcının formasyonları. Döner: [{key,name,kind,side,level,lower,state,
+    bars_since,conf,vol_x,note,start,end,target,geo}] — önce kırılım / geri test, sonra güven."""
+    if df is None or len(df) < 45:
+        return []
+    d = df.tail(int(lookback))
+    n = len(d)
+    A = {"H": d["High"].to_numpy(float), "L": d["Low"].to_numpy(float), "C": d["Close"].to_numpy(float),
+         "O": d["Open"].to_numpy(float), "V": pd.to_numeric(d["Volume"], errors="coerce").fillna(0.0).to_numpy(float),
+         "n": n, "off": len(df) - n, "r": 3}
+    if not np.isfinite(A["C"]).all() or A["C"][-1] <= 0:
+        A["C"] = np.nan_to_num(A["C"], nan=float(np.nanmean(A["C"])))
+    A["a"] = _last(atr(d, 14)) or float(A["C"][-1]) * 0.02
+    if not A["a"] or A["a"] != A["a"]:
+        A["a"] = float(A["C"][-1]) * 0.02
+    A["hi"], _ = pivot_points(d["High"], 3, 3)
+    _, A["lo"] = pivot_points(d["Low"], 3, 3)
+    found = {}
+    for k in list(range(1, ST_PAT_K + 1)) + [0]:      # önce kırılımlar (en yeni önce), sonra oluşan formasyon
+        e = n - 1 - k
+        if e < 30:
+            break
+        for key, fn in _ST_DETECT:
+            if key in found or (key == "bull_flag" and "bull_pennant" in found):
+                continue
+            if keys and key not in keys and not (key == "bull_flag" and "bull_pennant" in keys):
+                continue
+            try:
+                p = fn(A, e)
+            except Exception:
+                p = None
+            if p:
+                found[p["key"]] = p
+    out = list(found.values())
+    rect = found.get("rectangle")
+    if rect and "res_breakout" in found and abs(found["res_breakout"]["level"] - rect["level"]) <= 0.5 * A["a"]:
+        out = [p for p in out if p["key"] != "res_breakout"]       # aynı tavan: dikdörtgen yeterli
+    out.sort(key=lambda p: (-(p["state"] in ("breakout", "retest")), -p["conf"], p["bars_since"]))
+    return out[:int(limit)]
+
+
+def st_geometry(df, key):
+    """v5.11 — seçili formasyonun çizimi (setup_geometry biçimi) — st_patterns ile aynı tespitten."""
+    try:
+        p = next((x for x in st_patterns(df, limit=8) if x["key"] == key), None)
+    except Exception:
+        p = None
+    if not p or not p.get("geo"):
+        return None
+    g = dict(p["geo"])
+    g.update(key=key, label=p["name"] + (" ▼" if p["kind"] == "bear" else ""))
+    return g
+
+
+# ---------------------------------------------------------------- v5.11 — mum formasyonları (bonus)
+CANDLES = {"hammer": ("Hammer", "bull"), "shooting_star": ("Shooting star", "bear"),
+           "bull_engulf": ("Bullish engulfing", "bull"), "bear_engulf": ("Bearish engulfing", "bear"),
+           "morning_star": ("Morning star", "bull"), "evening_star": ("Evening star", "bear"),
+           "dragonfly": ("Dragonfly doji", "bull"), "three_soldiers": ("Three white soldiers", "bull"),
+           "rising_three": ("Rising three methods", "bull"), "falling_three": ("Falling three methods", "bear")}
+CANDLE_PTS = 6.0          # AI skoru: işlem yönünde mum varsa bonus (yoksa ceza YOK)
+CANDLE_PTS_15 = 3.0       # 15 dakikalık grafikte de varsa ek bonus
+
+
+def candle_patterns(df, lookback=3):
+    """v5.11 — 10 mum formasyonu; son `lookback` mumdan birinde BİTENLER. Döner: [{key,name,kind,i,ago,bars}]
+    (en yeni önce). Dönüş formasyonları kısa bir geri çekilme / yükseliş bağlamı ister, devam formasyonları istemez."""
+    if df is None or len(df) < 12:
+        return []
+    d = df.tail(40)
+    O, H, L, C = (d[c].to_numpy(float) for c in ("Open", "High", "Low", "Close"))
+    n, off = len(C), len(df) - len(d)
+    body = np.abs(C - O)
+    rng = H - L
+    upw = H - np.maximum(O, C)
+    low = np.minimum(O, C) - L
+    out = []
+
+    def add(key, i, bars):
+        nm, kd = CANDLES[key]
+        out.append({"key": key, "name": nm, "kind": kd, "i": int(i) + off, "ago": int(n - 1 - i), "bars": bars})
+
+    def dip(i):
+        return L[i] <= np.min(L[max(0, i - 5):i + 1]) * 1.002 or C[i - 1] < C[max(0, i - 4)]
+
+    def peak(i):
+        return H[i] >= np.max(H[max(0, i - 5):i + 1]) * 0.998 or C[i - 1] > C[max(0, i - 4)]
+
+    for i in range(max(6, n - int(lookback)), n):
+        ab = float(np.mean(body[i - 10:i])) if i >= 10 else float(np.mean(body[:i]))
+        ar = float(np.mean(rng[i - 10:i])) if i >= 10 else float(np.mean(rng[:i]))
+        R = rng[i]
+        if ab <= 0 or ar <= 0 or R <= 0:
+            continue
+        bull_i, bear_i = C[i] > O[i], C[i] < O[i]
+        # tek mum
+        if body[i] <= 0.35 * R and low[i] >= 2 * body[i] and low[i] >= 0.55 * R and upw[i] <= 0.15 * R \
+                and R >= 0.6 * ar and dip(i):
+            add("hammer", i, 1)
+        if body[i] <= 0.35 * R and upw[i] >= 2 * body[i] and upw[i] >= 0.55 * R and low[i] <= 0.15 * R \
+                and R >= 0.6 * ar and peak(i):
+            add("shooting_star", i, 1)
+        if body[i] <= 0.1 * R and upw[i] <= 0.1 * R and low[i] >= 0.65 * R and R >= 0.5 * ar and dip(i):
+            add("dragonfly", i, 1)
+        # iki mum
+        p = i - 1
+        if C[p] < O[p] and bull_i and O[i] <= C[p] and C[i] >= O[p] and body[i] > body[p] \
+                and body[i] >= 0.5 * ab and (C[p] < C[max(0, p - 2)] or dip(p)):
+            add("bull_engulf", i, 2)
+        if C[p] > O[p] and bear_i and O[i] >= C[p] and C[i] <= O[p] and body[i] > body[p] \
+                and body[i] >= 0.5 * ab and (C[p] > C[max(0, p - 2)] or peak(p)):
+            add("bear_engulf", i, 2)
+        # üç mum
+        a1, a2 = i - 2, i - 1
+        if C[a1] < O[a1] and body[a1] >= max(0.6 * rng[a1], ab) and body[a2] <= 0.35 * body[a1] \
+                and max(O[a2], C[a2]) <= C[a1] + 0.1 * body[a1] and bull_i and C[i] > (O[a1] + C[a1]) / 2 \
+                and body[i] >= 0.5 * body[a1]:
+            add("morning_star", i, 3)
+        if C[a1] > O[a1] and body[a1] >= max(0.6 * rng[a1], ab) and body[a2] <= 0.35 * body[a1] \
+                and min(O[a2], C[a2]) >= C[a1] - 0.1 * body[a1] and bear_i and C[i] < (O[a1] + C[a1]) / 2 \
+                and body[i] >= 0.5 * body[a1]:
+            add("evening_star", i, 3)
+        tw = (a1, a2, i)
+        if all(C[k] > O[k] and body[k] >= 0.5 * ab and body[k] >= 0.5 * rng[k] and upw[k] <= 0.35 * body[k]
+               for k in tw) and C[a2] > C[a1] and C[i] > C[a2] and O[a1] < O[a2] <= C[a1] and O[a2] < O[i] <= C[a2]:
+            add("three_soldiers", i, 3)
+        # beş mum: yükselen / düşen üç metot
+        if i >= 4:
+            f, mid = i - 4, (i - 3, i - 2, i - 1)
+            if C[f] > O[f] and body[f] >= max(1.2 * ab, 0.6 * rng[f]) and bull_i and C[i] > C[f] \
+                    and body[i] >= 0.8 * ab and all(body[k] <= 0.6 * body[f] and H[k] <= H[f] and L[k] >= L[f]
+                                                    for k in mid) and sum(C[k] < O[k] for k in mid) >= 2:
+                add("rising_three", i, 5)
+            if C[f] < O[f] and body[f] >= max(1.2 * ab, 0.6 * rng[f]) and bear_i and C[i] < C[f] \
+                    and body[i] >= 0.8 * ab and all(body[k] <= 0.6 * body[f] and H[k] <= H[f] and L[k] >= L[f]
+                                                    for k in mid) and sum(C[k] > O[k] for k in mid) >= 2:
+                add("falling_three", i, 5)
+    out.sort(key=lambda c: (c["ago"], -c["bars"]))
+    return out
+
+
+def candles_for(cands, kind):
+    """İşlem yönündeki mumlar (bull → long, bear → short)."""
+    return [c for c in (cands or []) if c.get("kind") == kind]
+
+
+def candle_text(c, tf="daily"):
+    """'Bullish engulfing (daily, today)' · '(15-min, 2 candles ago)'."""
+    ago = int(c.get("ago") or 0)
+    if tf == "daily":
+        when = "today" if ago == 0 else "yesterday" if ago == 1 else "%d days ago" % ago
+    else:
+        when = "last candle" if ago == 0 else "%d candle%s ago" % (ago, "" if ago == 1 else "s")
+    return "%s (%s, %s)" % (c["name"], tf, when)
+
+
 def confirm_15m(df15, level, kind="bull", vol_n=20, window=26):
     """Günlük kırılımın 15 dakikalık grafikte tutup tutmadığı.
     teyitli = seviyenin üstünde + hacimli kesiş + EMA9>EMA21 · bekleniyor = zayıf · bozuldu = altına döndü."""
     out = {"state": "no data", "ok": False, "vol_x": None, "bars_since": None,
-           "note": "Could not load 15-minute data", "last": None}
+           "note": "Could not load 15-minute data", "last": None, "candles": []}
     if df15 is None or len(df15) < 12 or level is None or not _ok(level):
         return out
+    try:                                          # v5.11: son 15 dakikalık mumlarda da mum formasyonları
+        out["candles"] = candle_patterns(df15, 4)
+    except Exception:
+        out["candles"] = []
     c = df15["Close"].to_numpy(float)
     v = df15["Volume"].astype(float).to_numpy()
     px = float(c[-1])
@@ -1878,11 +2439,16 @@ def ai_regime(idx, n=50):
                   "pct": ((px / e - 1) * 100) if (_ok(e) and e) else None}
         ok = ok and good
     out["ok"] = bool(ok and idx)
+    # v5.11: short tarafı için ayna kapı — iki endeks de 50 günlük EMA'nın ALTINDA
+    vals = [v for k_, v in out.items() if k_ not in ("ok", "dn")]
+    out["dn"] = bool(idx and vals and all(v is not None and v["ema"] is not None and v["price"] < v["ema"]
+                                           for v in vals))
     return out
 
 
-def ai_prefilter(snap, cfg=None):
-    """Anlık görüntüde ucuz filtreler; hacme göre azalan sırada döndürür."""
+def ai_prefilter(snap, cfg=None, side="long"):
+    """Anlık görüntüde ucuz filtreler; hacme göre azalan sırada döndürür.
+    v5.11: side='short' → günlük değişim NEGATİF (ayna); fiyat ve piyasa değeri aynı."""
     c = ai_cfg(cfg)
     steps = {"evren": 0, "price": 0, "degisim": 0, "piyasa_degeri": 0, "capless": True}
     if snap is None or len(snap) == 0:
@@ -1892,7 +2458,10 @@ def ai_prefilter(snap, cfg=None):
     steps["evren"] = len(d)
     d = d[d["last"].astype(float) >= c["min_price"]]
     steps["price"] = len(d)
-    d = d[d["change_pct"].astype(float) > c["min_change"]]
+    if side == "short":
+        d = d[d["change_pct"].astype(float) < -c["min_change"]]
+    else:
+        d = d[d["change_pct"].astype(float) > c["min_change"]]
     steps["degisim"] = len(d)
     if not capless:
         cap = pd.to_numeric(d["market_cap"], errors="coerce")
@@ -1924,8 +2493,11 @@ def strat_universe(snap, n=ST_UNIVERSE_N):
     return d, steps
 
 
-def ai_evaluate(ticker, df, df15=None, zones=None, cfg=None, meta=None):
-    """Tek sembol: EMA kapısı, formasyon, 15dk teyidi ve işlem planı."""
+def ai_evaluate(ticker, df, df15=None, zones=None, cfg=None, meta=None, side=None):
+    """Tek sembol: EMA kapısı, formasyon, 15dk teyidi ve işlem planı.
+    v5.11: formasyonlar YALNIZCA st_patterns (kullanıcının Short Term formasyonları) · side 'long' (boğa formasyonu,
+    fiyat EMA21 / EMA50 üstünde) ya da 'short' (ayı formasyonu, fiyat ikisinin de altında) — verilmezse EMA'lardan.
+    Mumlar (Hammer, Engulfing, Morning Star …) işlem yönündeyse skora bonus; yoksa ceza yok."""
     c = ai_cfg(cfg)
     if df is None or len(df) < 60:
         return None
@@ -1934,19 +2506,36 @@ def ai_evaluate(ticker, df, df15=None, zones=None, cfg=None, meta=None):
     ef, es = _last(ema(close, c["ema_fast"])), _last(ema(close, c["ema_slow"]))
     if not (_ok(ef) and _ok(es)):
         return None
-    ema_ok = bool(px > ef and px > es)
+    above, below = bool(px > ef and px > es), bool(px < ef and px < es)
+    side = side if side in ("long", "short") else ("short" if below else "long")
+    ema_ok = above if side == "long" else below
+    want = "bull" if side == "long" else "bear"
     zones = ranked_sr_zones(df) if zones is None else zones
-    pats = setup_patterns(df)
-    best = pats[0] if pats else None
-    plan = swing_plan(df, zones, level=(best or {}).get("level"),
-                      kind=(best or {}).get("kind", "bull"), tp1_part=c["tp1_part"])
+    pats = st_patterns(df)
+    mine = [dict(p, side=side) for p in pats if p["kind"] == want]
+    against = [p for p in pats if p["kind"] != want]
+    best = mine[0] if mine else None
+    plan = swing_plan(df, zones, level=(best or {}).get("level"), kind=want, tp1_part=c["tp1_part"])
+    if plan and side == "short":
+        plan["side"] = "short"
+        plan["rule"] = plan["rule"].replace("Sell %d%%" % round(plan["part1"] * 100),
+                                            "Cover %d%%" % round(plan["part1"] * 100)).replace("moves up", "moves down")
     c15 = confirm_15m(df15, best["level"], best["kind"]) if (df15 is not None and best) else None
+    try:
+        cands = candle_patterns(df, 3)
+    except Exception:
+        cands = []
+    pro = candles_for(cands, want)
     score = 0.0
     if best:
         score += 40.0 * float(best["conf"])
         score += AI_STATE_PTS.get(best["state"], 0.0)
         if best["vol_x"] and best["vol_x"] >= 1.5:
             score += 5.0
+        if pro:                                   # v5.11: mum işlem yönünde → avantaj
+            score += CANDLE_PTS
+    if any(p["state"] in ("breakout", "retest") for p in against):
+        score -= 6.0                              # karşı yönde kırılmış formasyon
     if c15:
         score += AI_C15_PTS.get(c15["state"], 0.0)
     if plan:
@@ -1957,8 +2546,9 @@ def ai_evaluate(ticker, df, df15=None, zones=None, cfg=None, meta=None):
     return {"ticker": ticker, "name": m.get("name") or ticker, "price": px,
             "chg": _day_chg(df, m), "volume": float(m.get("volume") or 0.0),
             "market_cap": m.get("market_cap"), "sector": m.get("sector") or "",
-            "ema_ok": ema_ok, "ema_fast": float(ef), "ema_slow": float(es),
-            "patterns": pats, "best": best, "plan": plan, "c15": c15,
+            "ema_ok": ema_ok, "ema_fast": float(ef), "ema_slow": float(es), "side": side,
+            "patterns": pats, "best": best, "plan": plan, "c15": c15, "against": against[:2],
+            "candles": cands, "candle_pro": pro,
             "zones": (zones or [])[:6], "score": round(min(100.0, max(0.0, score)), 1)}
 
 
@@ -1977,7 +2567,8 @@ def _day_chg(df, m):
 def ai_fresh_breakout(r, max_bars=1):
     """Bildirime düşecek kadar taze ve teyitli bir kırılım mı?"""
     b, c15 = r.get("best"), r.get("c15")
-    if not b or b["state"] != "breakout" or b["kind"] != "bull":
+    want = "bear" if r.get("side") == "short" else "bull"      # v5.11: kısa tarafta aşağı kırılım da bildirilir
+    if not b or b["state"] != "breakout" or b["kind"] != want:
         return False
     if int(b.get("bars_since") or 0) > max_bars:
         return False
@@ -1990,7 +2581,11 @@ def ai_apply_15m(r, c15):
         return r
     r["c15"] = c15
     if c15:
-        r["score"] = round(min(100.0, r["score"] + AI_C15_PTS.get(c15.get("state"), 0.0)), 1)
+        bonus = AI_C15_PTS.get(c15.get("state"), 0.0)
+        b_ = r.get("best") or {}
+        if b_ and candles_for(c15.get("candles"), b_.get("kind")):     # v5.11: 15 dk grafikte de teyit mumu
+            bonus += CANDLE_PTS_15
+        r["score"] = round(min(100.0, r["score"] + bonus), 1)
     return r
 
 
@@ -2005,14 +2600,18 @@ def ai_summary(r):
                  "forming": "still forming"}.get(b["state"], b["state"])
         bits.append("%s — %s (%s)" % (b["name"], durum, b["note"]))
     else:
-        bits.append("No clear pattern, it only passed the trend and volume conditions")
+        bits.append("None of the Short Term patterns (flag, pennant, symmetrical / descending triangle, range, "
+                    "resistance breakout, head and shoulders) — it only passed the trend and volume conditions")
     if c:
         bits.append("15-minute confirmation: %s — %s" % (c["state"], c["note"]))
+    pro = r.get("candle_pro") or []
+    if b and pro:
+        bits.append("Candle bonus: %s" % ", ".join(candle_text(x) for x in pro[:2]))
     if p:
-        bits.append("Entry %s · stop %s (%s, −%s%%) · TP1 %s (%s, R/R 1:%s)"
-                    % (fmt_num(p["entry"], 2), fmt_num(p["stop"], 2), p["stop_src"],
-                       fmt_num(p["risk_pct"], 1), fmt_num(p["tp1"], 2), p["tp1_src"],
-                       fmt_num(p["rr1"], 2)))
+        bits.append("%s %s · stop %s (%s, %s%s%%) · TP1 %s (%s, R/R 1:%s)"
+                    % ("Short entry" if r.get("side") == "short" else "Entry", fmt_num(p["entry"], 2),
+                       fmt_num(p["stop"], 2), p["stop_src"], "+" if r.get("side") == "short" else "−",
+                       fmt_num(p["risk_pct"], 1), fmt_num(p["tp1"], 2), p["tp1_src"], fmt_num(p["rr1"], 2)))
         bits.append(p["rule"])
     return " ".join(bits)
 
@@ -4989,6 +5588,8 @@ def setup_geometry(df, key, lookback=140, left=3, right=3):
     'fill':[(i, fiyat)…],'at':(i, fiyat)}  — setup_patterns ile aynı pivotlardan. Bulunamazsa None."""
     if df is None or len(df) < 45 or not key:
         return None
+    if key in ST_PAT_KEYS:                    # v5.11: Short Term formasyonları kendi çizimiyle
+        return st_geometry(df, key)
     d = df.tail(int(lookback))
     n, off = len(d), len(df) - len(d)
     H = d["High"].to_numpy(float)
@@ -5204,6 +5805,7 @@ BOT_DEFAULT = {
     "max_chase": 1.0,      # fiyat girişin en fazla N × risk üstündeyse hâlâ alınır
     "cooldown_days": 1,    # stop olduktan sonra aynı hisseye bekleme
     "min_conf": 0.0,       # v4.9: hazır stratejilerde en az teyit skoru (0 = kapalı)
+    "ai_dir": "long",      # v5.11: formasyon botu — 'long' yalnızca boğa formasyonları · 'both' ayı formasyonlarında short
 }
 BOT_LIMITS = {"risk_pct": (0.1, 5.0), "max_pos": (1, 20), "max_alloc": (2.0, 100.0), "min_rr": (0.5, 6.0),
               "trail_atr": (0.5, 6.0), "max_days": (1, 120), "tp1_part": (0.1, 0.9), "max_chase": (0.0, 5.0),
@@ -5214,6 +5816,9 @@ def bot_cfg(over=None):
     c = dict(BOT_DEFAULT)
     for k, v in (over or {}).items():
         if k not in c:
+            continue
+        if k == "ai_dir":
+            c[k] = v if v in ("long", "both") else "long"
             continue
         try:
             v = type(BOT_DEFAULT[k])(v)
@@ -5226,38 +5831,49 @@ def bot_cfg(over=None):
     return c
 
 
-def bot_signal_ai(r, cfg=None, regime_ok=True):
+def bot_signal_ai(r, cfg=None, regime_ok=True, regime_dn=False):
     """ai_evaluate sonucu (15 dk teyidi işlenmiş) → (sinyal | None, neden).
-    sinyal: {'entry','stop','tp1','tp2','atr','why'}"""
+    sinyal: {'entry','stop','tp1','tp2','atr','why','side'}
+    v5.11: short — ayı formasyonu (alçalan üçgen, OBO, bant aşağı kırılımı …), fiyat EMA21 / EMA50 altında, rejim
+    kapısı aynalı (SPY ve QQQ 50 günlük EMA'nın ALTINDA). Yalnızca botun yönü 'both' ise."""
     c = bot_cfg(cfg)
     if not r:
         return None, "not enough price history"
-    if c["regime"] and not regime_ok:
+    short = r.get("side") == "short"
+    if short and c.get("ai_dir") != "both":
+        return None, "short setup — this bot trades long only"
+    if c["regime"] and short and not regime_dn:
+        return None, "market filter: shorts only while SPY and QQQ are below the 50-day EMA"
+    if c["regime"] and not short and not regime_ok:
         return None, "market filter off (SPY / QQQ below the 50-day EMA)"
     b, p, c15 = r.get("best"), r.get("plan"), r.get("c15")
     if not r.get("ema_ok"):
-        return None, "price below the 21 / 50 EMA"
-    if not b or b.get("kind") != "bull":
-        return None, "no bullish pattern"
+        return None, "price above the 21 / 50 EMA" if short else "price below the 21 / 50 EMA"
+    if not b or b.get("kind") != ("bear" if short else "bull"):
+        return None, "no bearish pattern" if short else "no bullish pattern"
     if b.get("state") not in ("breakout", "retest"):
         return None, "pattern is still %s" % b.get("state")
     if c["need_c15"] and not (c15 and c15.get("state") == "confirmed"):
         return None, "15-minute confirmation: %s" % ((c15 or {}).get("state") or "missing")
     if not p:
         return None, "no trade plan"
-    px, risk = float(r["price"]), float(p["entry"]) - float(p["stop"])
+    px = float(r["price"])
+    risk = (float(p["stop"]) - float(p["entry"])) if short else (float(p["entry"]) - float(p["stop"]))
     if risk <= 0:
-        return None, "stop is not below the entry"
+        return None, "stop is not above the entry" if short else "stop is not below the entry"
     if p["rr1"] < c["min_rr"]:
         return None, "reward / risk 1:%s is below 1:%s" % (fmt_num(p["rr1"], 1), fmt_num(c["min_rr"], 1))
-    if px > float(p["entry"]) + c["max_chase"] * risk:
+    if (not short and px > float(p["entry"]) + c["max_chase"] * risk) or \
+            (short and px < float(p["entry"]) - c["max_chase"] * risk):
         return None, "price already ran away from the entry"
-    if px <= float(p["stop"]):
-        return None, "price is at / below the stop"
+    if (not short and px <= float(p["stop"])) or (short and px >= float(p["stop"])):
+        return None, "price is at / %s the stop" % ("above" if short else "below")
+    cnd = r.get("candle_pro") or []
     return ({"entry": px, "stop": float(p["stop"]), "tp1": float(p["tp1"]), "tp2": float(p["tp2"]),
-             "atr": float(p.get("atr") or 0.0),
-             "why": "%s — %s, 15-min %s, R/R 1:%s" % (b.get("name"), b.get("state"),
-                                                       (c15 or {}).get("state") or "n/a", fmt_num(p["rr1"], 1))},
+             "atr": float(p.get("atr") or 0.0), "side": "short" if short else "long",
+             "why": "%s%s — %s, 15-min %s, R/R 1:%s%s" % ("Short · " if short else "", b.get("name"), b.get("state"),
+                                                         (c15 or {}).get("state") or "n/a", fmt_num(p["rr1"], 1),
+                                                         (" · candle: " + cnd[0]["name"]) if cnd else "")},
             "signal")
 
 
@@ -5386,7 +6002,7 @@ def bot_manage(pos, bars, cfg=None, now=None):
 #   hedef), checks (çoklu zaman dilimi + gösterge + formasyon teyitleri), skor. Böylece Short Term listesi,
 #   botlar, grafik çizimi ve backtest aynı tanımdan beslenir.
 # ======================================================================
-STRAT_KEYS = ["ai", "donchian2", "flag", "ichimoku", "wavetrend"]
+STRAT_KEYS = ["ai", "donchian2", "flag", "ichimoku", "wavetrend", "divergence"]
 STRAT_PARAMS = {
     "donchian2": {"n_trend": 120, "n_entry": 20, "n_exit": 20},
     "flag": {"min_adv": 30.0, "pole_max": 40, "flag_min": 5, "flag_max": 15, "max_depth": 25.0,
@@ -5398,6 +6014,14 @@ STRAT_PARAMS = {
                  "adx_min": 0.0},
     # v5.1 — WaveTrend kesişimi + hacim + Nadaraya-Watson bandı (uç nokta yöntemi, geleceğe bakmaz)
     "wavetrend": {"n1": 10, "n2": 21, "os": 53, "vol_x": 1.2, "nw_h": 8.0, "nw_mult": 2.5, "nw_win": 120},
+    # v5.8 — çoklu indikatör uyumsuzluğu (LonesomeTheBlue yöntemi): prd = pivot periyodu · src 0 kapanış / 1 dip-tepe ·
+    #        kinds 0 düzenli / 1 gizli / 2 ikisi · min_n = en az kaç indikatör · maxpp / maxbars = geriye kaç pivot / bar ·
+    #        trend 1 = yalnızca 200 günlük ortalama yönünde · risk_atr = stop en fazla N × ATR · tp1_r / tp2_r (R)
+    "divergence": {"prd": 5, "src": 0, "kinds": 2, "min_n": 3, "maxpp": 10, "maxbars": 100,
+                   "inds": "rsi,macd,hist,stoch,cci,mom,obv,vwmacd,cmf,mfi,willr,wt", "trend": 0, "risk_atr": 3.0,
+                   "tp1_r": 1.5, "tp2_r": 3.0, "rsi_n": 14, "macd_f": 12, "macd_s": 26, "macd_sig": 9,
+                   "stoch_n": 14, "stoch_sm": 3, "cci_n": 10, "mom_n": 10, "cmf_n": 21, "mfi_n": 14, "willr_n": 14,
+                   "wt_n1": 10, "wt_n2": 21},
 }
 STRAT_LIMITS = {"n_trend": (40, 300), "n_entry": (5, 100), "n_exit": (5, 100), "min_adv": (10.0, 200.0),
                 "pole_max": (5, 80), "flag_min": (3, 15), "flag_max": (5, 40), "max_depth": (5.0, 45.0),
@@ -5405,7 +6029,12 @@ STRAT_LIMITS = {"n_trend": (40, 300), "n_entry": (5, 100), "n_exit": (5, 100), "
                 "tenkan": (5, 60), "kijun": (10, 120), "senkou": (20, 240), "max_atr": (0.5, 6.0),
                 "bounce": (0, 1), "n1": (4, 30), "n2": (8, 60), "os": (30, 80),
                 "nw_h": (2.0, 20.0), "nw_mult": (1.0, 4.0), "nw_win": (40, 400),
-                "mode": (0, 1), "wk_cloud": (0, 1), "adx_min": (0.0, 40.0)}
+                "mode": (0, 1), "wk_cloud": (0, 1), "adx_min": (0.0, 40.0),
+                "prd": (2, 20), "src": (0, 1), "kinds": (0, 2), "min_n": (1, 12), "maxpp": (1, 20),
+                "maxbars": (20, 300), "trend": (0, 1), "risk_atr": (0.5, 8.0), "tp2_r": (1.0, 10.0),
+                "rsi_n": (2, 50), "macd_f": (2, 50), "macd_s": (5, 100), "macd_sig": (2, 30), "stoch_n": (3, 50),
+                "stoch_sm": (1, 10), "cci_n": (5, 50), "mom_n": (2, 50), "cmf_n": (5, 60), "mfi_n": (3, 50),
+                "willr_n": (3, 50), "wt_n1": (4, 30), "wt_n2": (8, 60)}
 # v5.3 — Ichimoku piyasa ön ayarları: aynı kural seti, her piyasanın kendi ayarı ve kuralları; hepsi long + short.
 #   Altın / gümüş: haftalık kapanış haftalık bulutun üstünde (short: altında) · petrol: ADX ≥ 20 ·
 #   Bitcoin: üç süre varyantı (Binance Academy: tek bir ayar her yerde en iyisi değil — backtest karşılaştırır).
@@ -5480,6 +6109,17 @@ def strat_params(key, over=None):
             base["senkou"] = base["kijun"] + 1
     if key == "wavetrend" and base["n2"] <= base["n1"]:
         base["n2"] = base["n1"] + 1
+    if key == "divergence":
+        on = [k for k in ("rsi", "macd", "hist", "stoch", "cci", "mom", "obv", "vwmacd", "cmf", "mfi", "willr", "wt")
+              if k in set(re.findall(r"[a-z]+", str(base["inds"]).lower()))]
+        base["inds"] = ",".join(on or ["rsi", "macd", "obv"])
+        base["min_n"] = int(min(base["min_n"], len(base["inds"].split(","))))
+        if base["macd_s"] <= base["macd_f"]:
+            base["macd_s"] = base["macd_f"] + 1
+        if base["wt_n2"] <= base["wt_n1"]:
+            base["wt_n2"] = base["wt_n1"] + 1
+        if base["tp2_r"] <= base["tp1_r"]:
+            base["tp2_r"] = base["tp1_r"] + 0.5
     return base
 
 
@@ -5577,16 +6217,47 @@ def strat_info(key, params=None):
                                       "the upper band.", C_ON),
                           ("Stop", "Below the low of the dip — and out early if WaveTrend crosses down again "
                                    "above zero.", C_STOP)]}
+    if key == "divergence":
+        P = strat_params(key, params)
+        on = div_inds(P)
+        kinds = {0: "regular", 1: "hidden", 2: "regular or hidden"}[int(P["kinds"])]
+        return {"key": key, "name": "Divergence (many indicators)", "icon": "🔀", "targets": True,
+                "long": "Divergence for many indicators — at least %d of %d" % (P["min_n"], len(on)),
+                "tagline": "Price makes a new low (high) but the oscillators and volume indicators do not: the move is "
+                           "running out of steam. The more indicators disagree at the same time, the stronger the "
+                           "signal. Long and short, confirmed pivots only — nothing repaints.",
+                "steps": [("Pivots", "Swing lows / highs of the %s with %d candles on each side; only pivots that are "
+                                     "already confirmed count — up to %d pivots and %d candles back."
+                           % ("close" if not int(P["src"]) else "candle lows / highs", P["prd"], P["maxpp"],
+                              P["maxbars"]), C_TREND),
+                          ("Divergence", "Each of the %d indicators (%s) is checked for a %s divergence: price makes a "
+                                         "lower low but the indicator a higher low (bearish: mirrored), and nothing in "
+                                         "between crosses the line." % (len(on), ", ".join(DIV_IND[k]["name"] for k in on),
+                                                                      kinds), C_FLAG),
+                          ("Signal", "At least %d indicators diverge at the same time and the indicator or the close has "
+                                     "turned on the last candle%s." % (P["min_n"], " — only in the direction of the "
+                                                                       "200-day average" if int(P["trend"]) else ""),
+                           C_ENTRY),
+                          ("Stop", "Just beyond the divergence extreme (0.2 ATR buffer) — no trade if that is more than "
+                                   "%s ATR away." % fmt_num(P["risk_atr"], 1), C_STOP),
+                          ("Targets", "Sell 40 %% at the neckline (the swing between the two lows / highs, at least "
+                                      "%sR); the rest runs to %sR." % (fmt_num(P["tp1_r"], 1), fmt_num(P["tp2_r"], 1)),
+                           C_ON)]}
     return {"key": "ai", "name": "Pattern breakout", "icon": "🤖", "targets": True,
             "long": "Pattern breakout (AI Opportunities)",
-            "tagline": "Triangles, rectangles, staircases and 20/55-day breakouts above the 21 and 50 EMA, "
-                       "confirmed on the 15-minute chart.",
-            "steps": [("Trend", "Price is above the 21 and the 50-day EMA.", C_TREND),
-                      ("Pattern", "A triangle, rectangle, staircase or N-day breakout gives the level.", C_FLAG),
-                      ("Entry", "Breakout or retest of that level, confirmed on the 15-minute chart.", C_ENTRY),
-                      ("Stop", "Below the last daily candle, the support band or the breakout level.", C_STOP),
-                      ("Exit", "Sell 40% at TP1 (next resistance), the rest at TP2 or by the trailing stop.",
-                       C_ON)]}
+            "tagline": "Only your Short Term patterns — bull flag, bull pennant, symmetrical and descending triangle, "
+                       "rectangle / range, resistance breakout and head & shoulders — confirmed on the 15-minute "
+                       "chart. A confirming candle adds a bonus.",
+            "steps": [("Trend", "Longs: price above the 21- and 50-day EMA. Shorts: below both.", C_TREND),
+                      ("Pattern", "Longs: bull flag, bull pennant (also falling-wedge shaped), symmetrical triangle, "
+                                  "rectangle / range or resistance breakout. Shorts: descending triangle, range "
+                                  "breakdown or head & shoulders below the neckline.", C_FLAG),
+                      ("Candles", "Hammer, shooting star, bullish / bearish engulfing, morning / evening star, dragonfly "
+                                  "doji, three white soldiers, rising / falling three methods in the trade's direction "
+                                  "on the last candles = bonus. None = no bonus, no penalty.", C_POLE),
+                      ("Entry", "Breakout or retest of the pattern line, confirmed on the 15-minute chart.", C_ENTRY),
+                      ("Stop", "Beyond the last daily candle, the nearest band or the breakout level.", C_STOP),
+                      ("Exit", "40% at TP1 (next band), the rest at TP2 or by the trailing stop.", C_ON)]}
 
 
 # ---------------------------------------------------------------- Doppelter Donchian
@@ -6381,6 +7052,26 @@ def strat_plan(key, df, sig, params=None, tp1_part=0.40):
                              % (below, kj, above if short else below))})
         return out
     part = float(min(0.9, max(0.1, tp1_part)))
+    if key == "divergence":                  # v5.8: TP1 = boyun çizgisi (en az tp1_r), TP2 = tp2_r × risk
+        nk = float(sig.get("neck") or entry)
+        if short:
+            tp1 = min(nk, entry - float(P["tp1_r"]) * risk)
+            tp2 = min(entry - float(P["tp2_r"]) * risk, tp1 - risk)
+        else:
+            tp1 = max(nk, entry + float(P["tp1_r"]) * risk)
+            tp2 = max(entry + float(P["tp2_r"]) * risk, tp1 + risk)
+        neck_used = abs(tp1 - nk) < 1e-9
+        out.update({"tp1": round(tp1, 4), "tp2": round(tp2, 4), "rr1": round(abs(tp1 - entry) / risk, 2),
+                    "rr2": round(abs(tp2 - entry) / risk, 2), "part1": part, "part2": round(1 - part, 2),
+                    "stop_src": "%s the divergence %s" % (("above", "high") if short else ("below", "low")),
+                    "tp1_src": (("neckline (swing between the two %s)" % ("highs" if short else "lows"))
+                                if neck_used else "%sR target" % fmt_num(P["tp1_r"], 1)),
+                    "tp2_src": "%sR target" % fmt_num(P["tp2_r"], 1),
+                    "rule": ("%s %d%% at TP1 (%s) and move the stop on the rest to the entry; the remaining %d%% runs "
+                             "to TP2 (%s) or is closed by the trailing stop."
+                             % ("Cover" if short else "Sell", round(part * 100), fmt_num(tp1, 2),
+                                round((1 - part) * 100), fmt_num(tp2, 2)))})
+        return out
     if key == "wavetrend":
         tp1 = float(sig.get("nw_mid") or (entry + 1.5 * risk))
         tp2 = float(sig.get("nw_up") or (entry + 3.0 * risk))
@@ -6486,7 +7177,9 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
                        "The bigger picture should point the same way as the trade."))
         hi52, lo52 = float(df["High"].tail(252).max()), float(df["Low"].tail(252).min())
         pos = (px - lo52) / (hi52 - lo52) * 100 if hi52 > lo52 else 50.0
-        if short:
+        if key == "divergence":               # v5.8: dönüş sinyali — 52 haftalık konum kırılım ölçütü değil
+            pass
+        elif short:
             out.append(_ck(G[0], "Position in the 52-week range", "%s%% of the range" % fmt_num(pos, 0),
                            "ok" if pos <= 25 else "warn" if pos <= 50 else "bad", 8,
                            "Breakdowns work best near the yearly low — little support below."))
@@ -6520,7 +7213,12 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
                        "ok" if ax >= 25 else "warn" if ax >= 18 else "bad", 10,
                        "Above 25 = a real trend, below 18 = sideways market."))
     r = _last(rsi(close, 14))
-    if _ok(r):
+    if _ok(r) and key == "divergence":       # v5.8: dönüşte RSI aşırı bölgeden geliyorsa iyi
+        stt = ("ok" if r >= 55 else "warn" if r >= 45 else "bad") if short else \
+            ("ok" if r <= 45 else "warn" if r <= 55 else "bad")
+        out.append(_ck(G[1], "RSI (14) at the turn", fmt_num(r, 0), stt, 8,
+                       "A turn from stretched territory (long: below 45, short: above 55) has more room to run."))
+    elif _ok(r):
         if short:
             stt = "ok" if 22 <= r <= 45 else "warn" if (45 < r <= 50 or r < 22) else "bad"
             out.append(_ck(G[1], "RSI (14) momentum", fmt_num(r, 0), stt, 8,
@@ -6548,7 +7246,8 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
                        "ok" if vr <= 0.8 else "warn" if vr <= 1.05 else "bad", 10,
                        "Volume should dry up while the flag forms."))
     elif sig["state"] in ("breakout", "retest"):
-        out.append(_ck(G[1], "Breakout volume", "%s× the 20-day average" % fmt_num(vx, 1),
+        out.append(_ck(G[1], "Volume on the signal day" if key == "divergence" else "Breakout volume",
+                       "%s× the 20-day average" % fmt_num(vx, 1),
                        "ok" if vx >= 1.5 else "warn" if vx >= 1.0 else "bad", 10,
                        "A breakout on high volume shows real buying."))
     else:
@@ -6565,30 +7264,46 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
         out.append(_ck(G[1], "Stop distance", "%s%% %s the entry" % (fmt_num(rp, 1), "above" if short else "below"),
                        "ok" if rp <= 8 else "warn" if rp <= 15 else "bad", 6,
                        "A wide stop means a small position for the same risk."))
-    # ---- 3) formasyon ve seviyeler
+    # ---- 3) formasyon ve seviyeler — v5.11: yalnızca Short Term formasyonları (st_patterns) + mum bonusu
     try:
-        pats = [p for p in setup_patterns(df) if p["key"] not in ("breakout", "breakdown")]
+        pats = [p for p in st_patterns(df, limit=6) if not (key == "ai" and p["key"] == sig.get("key"))]
     except Exception:
         pats = []
     bull = [p for p in pats if p["kind"] == "bull" and p["state"] in ("breakout", "retest")]
-    bear = [p for p in pats if p["kind"] == "bear"]
-    try:
-        cp = chart_patterns(df)
-    except Exception:
-        cp = []
-    cbear = [p for p in cp if p["kind"] == "bear"]
-    cbull = [p for p in cp if p["kind"] == "bull"]
-    pro, con = ((bear or cbear), (bull or cbull)) if short else ((bull or (cbull and not cbear and not bear)),
-                                                                   (bear or cbear))
+    bear = [p for p in pats if p["kind"] == "bear" and p["state"] in ("breakout", "retest")]
+    bull_f = [p for p in pats if p["kind"] == "bull" and p["state"] == "forming"]
+    bear_f = [p for p in pats if p["kind"] == "bear" and p["state"] == "forming"]
+    pro, con = ((bear, bull) if short else (bull, bear))
+    pro_f, con_f = ((bear_f, bull_f) if short else (bull_f, bear_f))
     if pro:
-        nm = ((bear or cbear) if short else (bull or cbull))[0]["name"]
-        out.append(_ck(G[2], "Chart patterns", nm, "ok", 8, "An independent pattern points the same way."))
+        out.append(_ck(G[2], "Chart patterns", "%s (%s)" % (pro[0]["name"], pro[0]["state"]), "ok", 8,
+                       "Another of the Short Term patterns points the same way."))
     elif con:
-        nm = ((bull or cbull) if short else (bear or cbear))[0]["name"]
-        out.append(_ck(G[2], "Chart patterns", nm, "bad", 8, "A pattern in the other direction argues against the "
-                                                             "trade."))
+        out.append(_ck(G[2], "Chart patterns", "%s (%s)" % (con[0]["name"], con[0]["state"]), "bad", 8,
+                       "A pattern in the other direction argues against the trade."))
+    elif pro_f or con_f:
+        x_ = (pro_f or con_f)[0]
+        out.append(_ck(G[2], "Chart patterns", "%s forming" % x_["name"], "warn" if con_f and not pro_f else "ok", 8,
+                       "A pattern is still forming — " + ("same direction." if pro_f else "watch it, it points the "
+                                                                                          "other way.")))
     else:
         out.append(_ck(G[2], "Chart patterns", "none nearby", "warn", 8, "No second pattern confirms or contradicts."))
+    try:
+        cds = candle_patterns(df, 3)
+    except Exception:
+        cds = []
+    want = "bear" if short else "bull"
+    pro_c = candles_for(cds, want)
+    pro_15 = candles_for((c15 or {}).get("candles"), want)
+    if pro_c or pro_15:
+        txt_ = ", ".join([candle_text(x) for x in pro_c[:2]] + [candle_text(x, "15-min") for x in pro_15[:1]])
+        out.append(_ck(G[2], "Candle signal", txt_, "ok", 6,
+                       "A confirming candle right before the entry (hammer, engulfing, morning / evening star, "
+                       "three soldiers …) — a bonus, never a requirement."))
+    else:
+        opp = [x for x in cds if x["kind"] != want]
+        out.append(_ck(G[2], "Candle signal", "none" + (" · opposite candle: %s" % candle_text(opp[0]) if opp else ""),
+                       "na", 6, "No confirming candle — no bonus, no penalty."))
     zones = ranked_sr_zones(df) if zones is None else zones
     ref = float((plan or {}).get("entry") or px)
     risk = float((plan or {}).get("risk") or 0.0)
@@ -6683,6 +7398,23 @@ def strat_checks(key, df, sig, plan=None, bench=None, zones=None, regime_ok=None
                            "Buying low in the band leaves room up to the mid-line and the upper band."))
         except Exception:
             pass
+    elif key == "divergence":                # v5.8: kaç indikatör, hacim teyidi, tür, uzunluk
+        n_, on_, mn_ = int(sig.get("n") or 0), int(sig.get("n_on") or 0), int(sig.get("min_n") or 3)
+        out.append(_ck(G[2], "Indicators diverging", "%d of %d · %s" % (n_, on_, ", ".join(sig.get("inds") or [])),
+                       "ok" if n_ >= max(mn_ + 2, (on_ + 1) // 2) else "warn" if n_ >= mn_ else "bad", 12,
+                       "The more independent indicators disagree with price at once, the more reliable the turn."))
+        if not sig.get("no_vol"):
+            vn = sum(1 for x in sig.get("hits") or [] if x.get("ind") in DIV_VOL_KEYS)
+            out.append(_ck(G[2], "Volume confirms", "%d of 4 volume indicators (OBV · VW-MACD · CMF · MFI)" % vn,
+                           "ok" if vn >= 2 else "warn" if vn == 1 else "bad", 8,
+                           "Volume indicators show whether real money is behind the turn."))
+        out.append(_ck(G[2], "Type", "%d regular · %d hidden" % (int(sig.get("reg") or 0), int(sig.get("hid") or 0)),
+                       "ok", 4, "Regular = reversal of the last swing; hidden = the trend continues after a pullback."))
+        ln_ = int(sig.get("len") or 0)
+        out.append(_ck(G[2], "Length", "%d candles between the two %s" % (ln_, "highs" if short else "lows"),
+                       "ok" if 8 <= ln_ <= 60 else "warn", 6,
+                       "Divergences over 8–60 candles are the most reliable — very short ones are noise, very long "
+                       "ones are stale."))
     # ---- 4) piyasa — rejim yalnızca 1. stratejide (AI / formasyon kırılımı)
     if key == "ai" and regime_ok is not None:
         out.append(_ck(G[3], "Market regime", "S&P 500 and Nasdaq %s their 50-day EMA"
@@ -6701,7 +7433,7 @@ def strat_evaluate(key, ticker, df, meta=None, bench=None, regime_ok=None, param
         return None
     P = strat_params(key, params)
     fn = {"donchian2": strat_donchian, "flag": strat_flag, "ichimoku": strat_ichimoku,
-          "wavetrend": strat_wavetrend}.get(key)
+          "wavetrend": strat_wavetrend, "divergence": strat_divergence}.get(key)
     try:
         sig = fn(df, **P)
     except Exception:
@@ -6788,12 +7520,16 @@ def bot_signal_strat(r, cfg=None, regime_ok=True):
         return None, "no setup"
     staged = key == "ichimoku" and int(b.get("mode") or 0) == 1
     if b["state"] == "armed":
+        if key == "divergence":
+            return None, "divergence found, but the stop would be wider than %s ATR" % fmt_num(
+                strat_params(key, r.get("params")).get("risk_atr", 3.0), 1)
         if key == "ichimoku" and "market rule" in str(b.get("name") or ""):
             return None, b.get("note") or "market rule not met"
         return None, ("extended — waiting for the pullback to the Kijun" if key == "ichimoku" else
                       "armed — waiting for the close above %s" % fmt_num(b["level"], 2))
     if b["state"] == "forming":
         return None, ("at the band — waiting for the WaveTrend cross" if key == "wavetrend" else
+                      "divergence forming — waiting for the turn" if key == "divergence" else
                       "flag still forming — trigger %s" % fmt_num(b["level"], 2))
     if b["state"] == "aging":                      # v5.6: 4–10. mum
         return None, ("breakout is %d candles old — mature trend, no fresh entry (waiting for a Kijun pullback)"
@@ -6822,6 +7558,9 @@ def bot_signal_strat(r, cfg=None, regime_ok=True):
     if key == "ichimoku" and not staged and float(b.get("dist_atr") or 0) > \
             strat_params(key, r.get("params")).get("max_atr", 2.0) + 0.5:
         return None, "price is too far from the Kijun"
+    if key == "divergence" and p.get("tp1") is not None and \
+            ((not short and px >= float(p["tp1"])) or (short and px <= float(p["tp1"]))):
+        return None, "price already reached TP1 (the neckline)"
     has_tp = p.get("tp1") is not None
     why = "%s — %s" % (strat_info(key, r.get("params"))["name"], b["name"])
     sig = {"entry": px, "stop": stop, "tp1": float(p["tp1"]) if has_tp else 0.0,
@@ -7066,6 +7805,38 @@ def strategy_geometry(df, key, params=None, span=260):
                                    "w": 1.3, "dash": True}], "dots": [], "fill": None,
                         "at": (last - 2, sig["stop"])})
         return out
+    if key == "divergence":                  # v5.8: uyumsuzluk çizgileri (fiyat) + son sinyalin stop / hedefleri
+        ctx = div_context(df, P)
+        if not ctx["on"]:
+            return []
+        i0 = max(int(P["prd"]) + 7, last - int(span))
+        av_ = atr(df, 14).to_numpy(dtype=float)
+        bull, bear, det = div_scan(ctx, P, i0, last)
+        sigs = []
+        for t in sorted(det):
+            sg = div_signal_at(t, ctx, P, bull, bear, det)
+            if sg:
+                sigs.append(div_pack(t, sg[0], sg[1], ctx, av_))
+        for pk in sigs[-6:]:
+            bull_ = pk["side"] > 0
+            nm = [DIV_IND[x["ind"]]["name"] for x in pk["hits"] if x["ind"] in DIV_IND]
+            out.append({"label": "%s divergence ×%d · %s" % ("Bullish" if bull_ else "Bearish", len(nm),
+                                                              ", ".join(nm[:5]) + (" …" if len(nm) > 5 else "")),
+                        "color": C_ON if bull_ else C_STOP,
+                        "lines": [{"pts": [(pk["p"], pk["x1"]), (pk["e"], pk["x2"])], "w": 2.2,
+                                   "dash": pk["hid"] > pk["reg"]}],
+                        "dots": [(pk["t"], float(ctx["c"][pk["t"]]))], "fill": None, "at": (pk["e"], pk["x2"])})
+        sig = strat_divergence(df, **P)
+        if sig:
+            plan = strat_plan("divergence", df, sig, P)
+            x0 = max(i0, int(sig["e"]))
+            for y_, lab_, col_ in ((plan["stop"], "Stop · " + plan["stop_src"], C_STOP),
+                                   (plan["tp1"], "TP1 (40 %) · " + plan["tp1_src"], C_ENTRY),
+                                   (plan["tp2"], "TP2 · " + plan["tp2_src"], "#6EE7B7")):
+                out.append({"label": lab_, "color": col_, "lines": [{"pts": [(x0, y_), (last + 0.5, y_)], "w": 1.3,
+                                                                     "dash": True}],
+                            "dots": [], "fill": None, "at": (last - 2, y_)})
+        return out
     return []
 
 
@@ -7108,6 +7879,15 @@ def describe_strategy(cfg):
         s = ("WaveTrend %d / %d cross up below −%d at the lower Nadaraya-Watson band (±%s× error, window %d) on "
              "≥ %s× volume · 40%% at the mid-line, rest at the upper band · out on a WT cross down above zero · Long"
              % (P["n1"], P["n2"], int(P["os"]), fmt_num(P["nw_mult"], 1), int(P["nw_win"]), fmt_num(P["vol_x"], 1)))
+    elif key == "divergence":
+        on = div_inds(P)
+        s = ("Divergence for many indicators · at least %d of %d (%s) · pivots %d candles each side, up to %d pivots / "
+             "%d candles back · %s · signal on the turn, trade at the next open · stop beyond the extreme (≤ %s ATR) · "
+             "40%% at the neckline (≥ %sR), rest at %sR%s"
+             % (P["min_n"], len(on), ", ".join(DIV_IND[k]["name"] for k in on), P["prd"], P["maxpp"], P["maxbars"],
+                DIV_KIND_SET[int(P["kinds"])].lower(), fmt_num(P["risk_atr"], 1), fmt_num(P["tp1_r"], 1),
+                fmt_num(P["tp2_r"], 1), " · 200-day trend filter" if int(P["trend"]) else ""))
+        s += " · " + {"long": "Long", "short": "Short", "both": "Long + Short"}.get(cfg.get("dir"), "Long")
     if int(cfg.get("maxBars") or 0) > 0:
         s += " · max. %dd" % int(cfg["maxBars"])
     return s
@@ -7253,7 +8033,7 @@ def backtest_strategy(df, cfg, bench=None):
     total = len(df)
     need = {"donchian2": P.get("n_trend", 0) + P.get("n_entry", 0) + 5,
             "ichimoku": P.get("senkou", 0) + P.get("kijun", 0) + 10,
-            "wavetrend": int(P.get("nw_win", 0)) + 30}.get(key, 60)
+            "wavetrend": int(P.get("nw_win", 0)) + 30, "divergence": 80}.get(key, 60)
     if total < need:
         return {"ok": False, "msg": "Not enough price data (at least %d candles needed)." % need}
     if key == "ichimoku" and int(P["mode"]) == 1:          # v5.3: kademeli giriş — iki parçalı ayrı motor
@@ -7283,7 +8063,10 @@ def backtest_strategy(df, cfg, bench=None):
     ages_s = ichi_kumo_ages(ichi, True) if ichi is not None else None
     wts = wavetrend_series(df, P) if key == "wavetrend" else None
     side_long = cfg.get("dir", "long") != "short" or key in ("flag", "wavetrend")
-    side_short = key in ("donchian2", "ichimoku") and cfg.get("dir", "long") != "long"
+    side_short = key in ("donchian2", "ichimoku", "divergence") and cfg.get("dir", "long") != "long"
+    dctx = div_context(df, P) if key == "divergence" else None       # v5.8: uyumsuzluklar bir kez taranır
+    if dctx is not None:
+        d_bull, d_bear, d_det = div_scan(dctx, P, max(start - 2, int(P["prd"]) + 7), total - 1)
 
     def close_part(i, px, reason, qty):
         nonlocal cash, pos
@@ -7295,7 +8078,8 @@ def backtest_strategy(df, cfg, bench=None):
         trades.append({"long": pos["long"], "ei": pos["ei"], "xi": i, "entry": pos["entry"], "exit": px,
                        "reason": reason, "pnl": pnl,
                        "ret": (sg * (px - pos["entry"]) / pos["entry"] - comm * (pos["entry"] + px) / pos["entry"]) * 100,
-                       "R": pnl / (qty * pos["sd"]) if pos["sd"] > 0 else 0.0, "bars": i - pos["ei"] + 1})
+                       "R": pnl / (qty * pos["sd"]) if pos["sd"] > 0 else 0.0, "bars": i - pos["ei"] + 1,
+                       "inds": pos.get("inds")})
         pos["qty"] -= qty
         if pos["qty"] <= 1e-12:
             pos = None
@@ -7334,6 +8118,16 @@ def backtest_strategy(df, cfg, bench=None):
             if not (_ok(mid_) and _ok(up_)):
                 return None
             return {"long": True, "stop": float(lo0 - 0.25 * a), "tp1": float(mid_), "tp2": float(up_)}
+        if key == "divergence":
+            sg = div_signal_at(i, dctx, P, d_bull, d_bear, d_det)
+            if not sg:
+                return None
+            side, hits = sg
+            if (side > 0 and not side_long) or (side < 0 and not side_short):
+                return None
+            pk = div_pack(i, side, hits, dctx, av)
+            return {"long": side > 0, "stop": pk["stop"], "tp1": "div", "tp2": None, "neck": pk["neck"],
+                    "atr": pk["atr"], "inds": [x["ind"] for x in hits]}
         g = _flag_at(h, l, c, v, i - 1, P)
         if not g or not (c[i] > g["base_hi"]):
             return None
@@ -7360,14 +8154,16 @@ def backtest_strategy(df, cfg, bench=None):
             if hit_sl:
                 px = min(o[i], pos["sl"]) if lng else max(o[i], pos["sl"])
                 close_part(i, px, "Trail" if pos["chan"] else ("BE" if pos["done1"] else "SL"), pos["qty"])
-            else:
-                if pos["tp1"] is not None and not pos["done1"] and h[i] >= pos["tp1"]:
+            else:                                                   # v5.8: hedefler short'ta aşağıda
+                if pos["tp1"] is not None and not pos["done1"] and \
+                        ((h[i] >= pos["tp1"]) if lng else (l[i] <= pos["tp1"])):
                     q1 = pos["qty"] * part1
                     pos["done1"] = True
-                    pos["sl"] = max(pos["sl"], pos["entry"])
-                    close_part(i, max(o[i], pos["tp1"]), "TP1", q1)
-                if pos is not None and pos["tp2"] is not None and h[i] >= pos["tp2"]:
-                    close_part(i, max(o[i], pos["tp2"]), "TP2", pos["qty"])
+                    pos["sl"] = max(pos["sl"], pos["entry"]) if lng else min(pos["sl"], pos["entry"])
+                    close_part(i, max(o[i], pos["tp1"]) if lng else min(o[i], pos["tp1"]), "TP1", q1)
+                if pos is not None and pos["tp2"] is not None and \
+                        ((h[i] >= pos["tp2"]) if lng else (l[i] <= pos["tp2"])):
+                    close_part(i, max(o[i], pos["tp2"]) if lng else min(o[i], pos["tp2"]), "TP2", pos["qty"])
             if pos is not None and key == "ichimoku":               # kural: Kijun'un altındaki KAPANIŞ → çık
                 kij = ichi["kij"][i]
                 if _ok(kij) and ((lng and c[i] < kij) or (not lng and c[i] > kij)):
@@ -7390,15 +8186,29 @@ def backtest_strategy(df, cfg, bench=None):
             if sg_:
                 px = o[i + 1]
                 sd = (px - sg_["stop"]) if sg_["long"] else (sg_["stop"] - px)
+                tp1 = tp2 = None
+                if sd > 0 and px > 0:
+                    if sg_["tp1"] == "div":                     # v5.8: boyun çizgisi / R hedefleri; stop çok genişse yok
+                        if sd > float(P["risk_atr"]) * float(sg_["atr"]):
+                            sd = 0.0
+                        else:
+                            tp1, tp2, _r = div_targets(1 if sg_["long"] else -1, px, sg_["stop"], sg_["neck"], P)
+                    elif sg_["tp1"] == "r":
+                        tp1 = px + float(P["tp1_r"]) * sd
+                        tp2 = sg_["tp2"]
+                        if tp2 is not None:
+                            tp2 = max(tp2, px + (float(P["tp1_r"]) + 1.5) * sd)
+                    elif sg_["tp1"] is not None:                # v5.8 düzeltme: WaveTrend TP1 (NW orta çizgi) işlenir
+                        tp1 = max(float(sg_["tp1"]), px + 0.6 * sd)
+                        tp2 = max(float(sg_["tp2"]), tp1 + 0.8 * sd) if sg_["tp2"] is not None else None
+                    else:
+                        tp2 = sg_["tp2"]
                 if sd > 0 and px > 0:
                     qty = min(cash * risk_pct / sd, cash / px)
                     if qty > 0:
-                        tp1 = (px + float(P["tp1_r"]) * sd) if sg_["tp1"] == "r" else None
-                        tp2 = sg_["tp2"]
-                        if tp1 is not None and tp2 is not None:
-                            tp2 = max(tp2, px + (float(P["tp1_r"]) + 1.5) * sd)
                         pos = {"long": sg_["long"], "ei": i + 1, "entry": px, "qty": qty, "sd": sd,
-                               "sl": sg_["stop"], "tp1": tp1, "tp2": tp2, "done1": False, "chan": key == "donchian2"}
+                               "sl": sg_["stop"], "tp1": tp1, "tp2": tp2, "done1": False, "chan": key == "donchian2",
+                               "inds": sg_.get("inds")}
                         if sg_.get("mark"):
                             marks.append(sg_["mark"])
     if pos is not None:
@@ -7438,6 +8248,1390 @@ def backtest_strategy(df, cfg, bench=None):
                 more["boxes"].append({"q": dates[g["q"]], "p": dates[g["p"]], "e": dates[g["e"]], "b": dates[g["b"]],
                                       "hi": g["base_hi"], "lo": g["base_lo"], "pole_lo": g["pole_lo"],
                                       "adv": g["adv"], "f": g["f"]})
+    if key == "divergence":
+        more["div_stats"] = div_ind_stats(trades)
     res = _bt_finish(trades, eq, c, dates, start, cap, cfg, ma=None, more=more)
     res["desc"] = describe_strategy(cfg)
     return res
+
+
+# ======================================================================
+# v5.8 — ÇOKLU İNDİKATÖR UYUMSUZLUĞU ("Divergence for many indicators")
+#   LonesomeTheBlue'nun TradingView yöntemi: fiyat pivotları (onaylı), her indikatör için son N pivot geriye
+#   doğru taranır; düzenli (fiyat daha düşük dip, indikatör daha yüksek dip) ya da gizli (fiyat daha yüksek dip,
+#   indikatör daha düşük dip) uyumsuzluk + "görüş hattı" (aradaki barlar iki noktayı birleştiren çizginin
+#   öbür yanına geçmez). Bitiş noktası bir önceki bar; bu barda indikatör ya da kapanış dönmüş olmalı → yeniden
+#   boyama yok, geleceğe bakış yok. Kaç indikatör aynı anda uyumsuzsa sinyalin gücü o kadar yüksek.
+# ======================================================================
+def cmf(df, n=21):
+    """Chaikin Money Flow (n): kapanışın mum içindeki yeri × hacim, n mumda toplanır (−1 … +1)."""
+    n = int(n)
+    h, l, c = (df[k].astype(float) for k in ("High", "Low", "Close"))
+    v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+    mfm = (((c - l) - (h - c)) / (h - l).replace(0, np.nan)).fillna(0.0)
+    return (mfm * v).rolling(n, min_periods=n).sum() / v.rolling(n, min_periods=n).sum().replace(0, np.nan)
+
+
+def momentum(close, n=10):
+    """Momentum (n): kapanış − n mum önceki kapanış."""
+    return close - close.shift(int(n))
+
+
+def vw_macd(df, f=12, s=26):
+    """Hacim ağırlıklı MACD: VWMA(f) − VWMA(s) — hacmi yüksek mumlar daha çok sayılır."""
+    c = df["Close"].astype(float)
+    v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+    cv = c * v
+
+    def vwma(n):
+        n = int(n)
+        return cv.rolling(n, min_periods=n).sum() / v.rolling(n, min_periods=n).sum().replace(0, np.nan)
+    return vwma(f) - vwma(s)
+
+
+DIV_IND_KEYS = ("rsi", "macd", "hist", "stoch", "cci", "mom", "obv", "vwmacd", "cmf", "mfi", "willr", "wt")
+DIV_VOL_KEYS = ("obv", "vwmacd", "cmf", "mfi")
+DIV_KIND_SET = {0: "Regular only", 1: "Hidden only", 2: "Regular + hidden"}
+DIV_IND = {
+    "rsi": {"name": "RSI", "grp": "Momentum",
+            "what": "Relative Strength Index (%(rsi_n)d) — Wilder's share of up-moves, 0–100; below 30 oversold, "
+                    "above 70 overbought.",
+            "why": "Price prints a new extreme but the RSI does not — the move is losing speed."},
+    "macd": {"name": "MACD", "grp": "Trend momentum",
+             "what": "MACD line: EMA(%(macd_f)d) − EMA(%(macd_s)d) of the close — how far the fast trend runs away "
+                     "from the slow one.",
+             "why": "The fast trend stops pulling away from the slow trend — the swing is running out of steam."},
+    "hist": {"name": "MACD hist.", "grp": "Trend momentum",
+             "what": "MACD histogram: MACD line − its %(macd_sig)d-period signal line — the acceleration of the trend.",
+             "why": "The earliest MACD signal: momentum turns before the lines cross."},
+    "stoch": {"name": "Stochastic", "grp": "Momentum",
+              "what": "Stochastic %%K (%(stoch_n)d, smoothed %(stoch_sm)d): where the close sits in the "
+                      "%(stoch_n)d-candle high–low range, 0–100.",
+              "why": "Price makes a new extreme, yet it closes less extreme inside its range."},
+    "cci": {"name": "CCI", "grp": "Momentum",
+            "what": "Commodity Channel Index (%(cci_n)d): distance of the typical price from its average in mean "
+                    "deviations; ±100 = stretched.",
+            "why": "The stretch away from the average shrinks — the extreme is being absorbed."},
+    "mom": {"name": "Momentum", "grp": "Momentum",
+            "what": "Momentum (%(mom_n)d): close minus the close %(mom_n)d candles ago, in price units.",
+            "why": "The latest %(mom_n)d-candle move is smaller than the previous one."},
+    "obv": {"name": "OBV", "grp": "Volume",
+            "what": "On-Balance Volume: running total of volume — added on up closes, subtracted on down closes.",
+            "why": "Volume flows the other way than price: accumulation at lows, distribution at highs."},
+    "vwmacd": {"name": "VW-MACD", "grp": "Volume",
+               "what": "Volume-weighted MACD: VWMA(%(macd_f)d) − VWMA(%(macd_s)d) — candles with heavy volume "
+                       "count more.",
+               "why": "Like MACD, but it only counts when volume agrees."},
+    "cmf": {"name": "CMF", "grp": "Volume",
+            "what": "Chaikin Money Flow (%(cmf_n)d): where each close sits inside its candle, weighted by volume, "
+                    "summed over %(cmf_n)d candles (−1 … +1).",
+            "why": "Closes move to the other end of the candles on volume — buyers (sellers) step in."},
+    "mfi": {"name": "MFI", "grp": "Volume",
+            "what": "Money Flow Index (%(mfi_n)d): a volume-weighted RSI of the typical price, 0–100.",
+            "why": "Less money flows with the move on the second swing than on the first."},
+    "willr": {"name": "Williams %R", "grp": "Momentum",
+              "what": "Williams %%R (%(willr_n)d): distance of the close from the %(willr_n)d-candle high, 0 to −100.",
+              "why": "Same idea as the Stochastic, unsmoothed — reacts first."},
+    "wt": {"name": "WaveTrend", "grp": "Momentum",
+           "what": "LazyBear WaveTrend (%(wt_n1)d / %(wt_n2)d): a channel oscillator of the typical price; ±60 = "
+                   "stretched.",
+           "why": "The oscillator washes out less on the second swing."},
+}
+
+
+def div_inds(P):
+    """Açık indikatörler (sabit sırada)."""
+    raw = set(re.findall(r"[a-z]+", str((P or {}).get("inds") or "")))
+    return [k for k in DIV_IND_KEYS if k in raw]
+
+
+def div_ind_text(key, P=None):
+    P = strat_params("divergence", P)
+    d = DIV_IND.get(key) or {"name": key, "grp": "", "what": "", "why": ""}
+    try:
+        what = d["what"] % P
+    except (KeyError, TypeError, ValueError):
+        what = d["what"]
+    return {"key": key, "name": d["name"], "grp": d["grp"], "what": what, "why": d["why"] % P if "%" in d["why"]
+            else d["why"]}
+
+
+def div_series(df, P, on=None):
+    """Açık indikatörlerin serileri (numpy). Hepsi yalnızca geçmiş barlardan hesaplanır."""
+    on = list(on if on is not None else div_inds(P))
+    c = df["Close"].astype(float)
+    out = {}
+    if "rsi" in on:
+        out["rsi"] = rsi(c, P["rsi_n"])
+    if "macd" in on or "hist" in on:
+        line, _sg, hist = macd(c, P["macd_f"], P["macd_s"], P["macd_sig"])
+        if "macd" in on:
+            out["macd"] = line
+        if "hist" in on:
+            out["hist"] = hist
+    if "stoch" in on:
+        out["stoch"] = stoch(df, P["stoch_n"], 3, P["stoch_sm"])[0]
+    if "cci" in on:
+        out["cci"] = cci(df, P["cci_n"])
+    if "mom" in on:
+        out["mom"] = momentum(c, P["mom_n"])
+    if "obv" in on:
+        out["obv"] = obv(df)
+    if "vwmacd" in on:
+        out["vwmacd"] = vw_macd(df, P["macd_f"], P["macd_s"])
+    if "cmf" in on:
+        out["cmf"] = cmf(df, P["cmf_n"])
+    if "mfi" in on:
+        out["mfi"] = mfi(df, P["mfi_n"])
+    if "willr" in on:
+        out["willr"] = williams_r(df, P["willr_n"])
+    if "wt" in on:
+        out["wt"] = wavetrend(df, P["wt_n1"], P["wt_n2"])[0]
+    return {k: pd.to_numeric(out[k], errors="coerce").to_numpy(float) for k in on if k in out}
+
+
+def div_context(df, P):
+    """Tarama için ortak veri: indikatörler, fiyat kaynağı, onaylı pivotlar. Hacim verisi yoksa (endeks, döviz)
+    hacim indikatörleri kendiliğinden kapanır."""
+    on = div_inds(P)
+    vol = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+    no_vol = float(vol.tail(120).abs().sum()) <= 0
+    if no_vol:
+        on = [k for k in on if k not in DIV_VOL_KEYS]
+    h, l, c = (df[k].astype(float).to_numpy() for k in ("High", "Low", "Close"))
+    lo_src, hi_src = (l, h) if int(P["src"]) == 1 else (c, c)
+    prd = int(P["prd"])
+    _ph0, pl = pivot_points(pd.Series(lo_src), prd, prd)
+    ph, _pl0 = pivot_points(pd.Series(hi_src), prd, prd)
+    ctx = {"ind": div_series(df, P, on), "on": on, "no_vol": no_vol, "h": h, "l": l, "c": c,
+           "lo": lo_src, "hi": hi_src, "pl": pl, "ph": ph, "n": len(c), "P": P}
+    ctx["sma200"] = sma(df["Close"].astype(float), 200).to_numpy(float) if int(P["trend"]) else None
+    return ctx
+
+
+def _div_at(t, side, ctx, P, confirm=True):
+    """t. barın kapanışında görünen uyumsuzluklar. side: +1 boğa (dipler) · −1 ayı (tepeler).
+    Yalnızca t'ye kadar onaylanmış fiyat pivotları kullanılır (p + prd ≤ t). confirm=True: bitiş noktası t−1 ve
+    t'de indikatör ya da kapanış dönmüş olmalı; confirm=False: bitiş noktası t (henüz dönüş yok — "forming").
+    Döner: [{'ind','kind','p','e'}] — her indikatör en fazla bir kez (önce düzenli, yoksa gizli)."""
+    prd = int(P["prd"])
+    e = t - 1 if confirm else t
+    if e < 1 or t >= ctx["n"]:
+        return []
+    piv = ctx["pl"] if side > 0 else ctx["ph"]
+    src = ctx["lo"] if side > 0 else ctx["hi"]
+    c = ctx["c"]
+    k = bisect.bisect_right(piv, t - prd)
+    cands = []
+    for j in range(k - 1, -1, -1):
+        p = piv[j]
+        ln = t - p
+        if ln > int(P["maxbars"]) or len(cands) >= int(P["maxpp"]):
+            break
+        if ln > 5 and p < e:
+            cands.append(p)
+    if not cands:
+        return []
+    kinds = int(P["kinds"])
+    want = (["reg"] if kinds in (0, 2) else []) + (["hid"] if kinds in (1, 2) else [])
+    x_e = src[e]
+    out = []
+    for key, arr in ctx["ind"].items():
+        a_e = arr[e]
+        if a_e != a_e:
+            continue
+        if confirm:
+            a_t = arr[t]
+            if side > 0 and not ((a_t == a_t and a_t > a_e) or c[t] > c[e]):
+                continue
+            if side < 0 and not ((a_t == a_t and a_t < a_e) or c[t] < c[e]):
+                continue
+        found = None
+        for kind in want:
+            for p in cands:
+                a_p = arr[p]
+                if a_p != a_p:
+                    continue
+                x_p = src[p]
+                if side > 0:
+                    ok_ = (a_e > a_p and x_e < x_p) if kind == "reg" else (a_e < a_p and x_e > x_p)
+                else:
+                    ok_ = (a_e < a_p and x_e > x_p) if kind == "reg" else (a_e > a_p and x_e < x_p)
+                if not ok_:
+                    continue
+                if e - p > 1:                                   # görüş hattı: aradaki barlar çizgiyi kesmez
+                    f = (np.arange(p + 1, e) - p) / float(e - p)
+                    l1 = a_p + (a_e - a_p) * f
+                    l2 = c[p] + (c[e] - c[p]) * f
+                    seg_a, seg_c = arr[p + 1:e], c[p + 1:e]
+                    with np.errstate(invalid="ignore"):
+                        bad = (np.any(seg_a < l1) or np.any(seg_c < l2)) if side > 0 else \
+                            (np.any(seg_a > l1) or np.any(seg_c > l2))
+                    if bad:
+                        continue
+                found = {"ind": key, "kind": kind, "p": int(p), "e": int(e)}
+                break
+            if found:
+                break
+        if found:
+            out.append(found)
+    return out
+
+
+def div_scan(ctx, P, i0, i1):
+    """[i0, i1] aralığındaki her bar için onaylı uyumsuzluk sayıları (boğa, ayı) + eşiği geçen barların ayrıntısı."""
+    n = ctx["n"]
+    bull, bear, det = np.zeros(n, dtype=int), np.zeros(n, dtype=int), {}
+    mn = int(P["min_n"])
+    for t in range(max(int(i0), int(P["prd"]) + 7), min(int(i1), n - 1) + 1):
+        hb = _div_at(t, 1, ctx, P)
+        hs = _div_at(t, -1, ctx, P)
+        bull[t], bear[t] = len(hb), len(hs)
+        if len(hb) >= mn or len(hs) >= mn:
+            det[t] = (hb, hs)
+    return bull, bear, det
+
+
+def div_signal_at(t, ctx, P, bull, bear, det):
+    """t'de yeni sinyal var mı? (eşik + kümenin ilk barı + isteğe bağlı 200 günlük trend filtresi)
+    Döner: (side, hits) ya da None."""
+    mn = int(P["min_n"])
+    if t < 1 or t not in det:
+        return None
+    nb, ns = int(bull[t]), int(bear[t])
+    side = 1 if (nb >= mn and nb > ns) else (-1 if (ns >= mn and ns > nb) else 0)
+    if not side:
+        return None
+    if (bull[t - 1] if side > 0 else bear[t - 1]) >= mn:     # aynı uyumsuzluğun devamı — yeni sinyal değil
+        return None
+    s2 = ctx.get("sma200")
+    if s2 is not None:
+        m = s2[t]
+        if not _ok(m) or (side > 0 and ctx["c"][t] < m) or (side < 0 and ctx["c"][t] > m):
+            return None
+    return side, det[t][0 if side > 0 else 1]
+
+
+def div_pack(t, side, hits, ctx, av):
+    """Sinyalin seviyeleri: ortak başlangıç pivotu, stop (uyumsuzluk ucunun ötesi), boyun çizgisi (iki dip arasındaki
+    tepe — ayıda iki tepe arasındaki dip)."""
+    h, l, c = ctx["h"], ctx["l"], ctx["c"]
+    e = int(hits[0]["e"]) if hits else t - 1
+    a = float(av[t]) if _ok(av[t]) and av[t] > 0 else float(c[t]) * 0.02
+    ps = [int(x["p"]) for x in hits]
+    p_ref = max(set(ps), key=lambda q: (ps.count(q), q)) if ps else max(0, e - 10)
+    w0 = max(0, e - 1)
+    if side > 0:
+        stop = float(np.nanmin(l[w0:t + 1])) - 0.2 * a
+        neck = float(np.nanmax(h[p_ref + 1:e])) if e - p_ref > 1 else float(h[e])
+    else:
+        stop = float(np.nanmax(h[w0:t + 1])) + 0.2 * a
+        neck = float(np.nanmin(l[p_ref + 1:e])) if e - p_ref > 1 else float(l[e])
+    reg = sum(1 for x in hits if x["kind"] == "reg")
+    return {"side": side, "t": int(t), "e": e, "p": int(p_ref), "stop": stop, "neck": neck, "atr": a,
+            "hits": hits, "reg": reg, "hid": len(hits) - reg,
+            "x1": float((ctx["lo"] if side > 0 else ctx["hi"])[p_ref]),
+            "x2": float((ctx["lo"] if side > 0 else ctx["hi"])[e])}
+
+
+def div_targets(side, entry, stop, neck, P):
+    """TP1 = boyun çizgisi (en az tp1_r × risk) · TP2 = tp2_r × risk (TP1'in en az 1R ötesinde)."""
+    r = (entry - stop) if side > 0 else (stop - entry)
+    if not (r > 0):
+        return None, None, r
+    if side > 0:
+        t1 = max(float(neck), entry + float(P["tp1_r"]) * r)
+        t2 = max(entry + float(P["tp2_r"]) * r, t1 + r)
+    else:
+        t1 = min(float(neck), entry - float(P["tp1_r"]) * r)
+        t2 = min(entry - float(P["tp2_r"]) * r, t1 - r)
+    return t1, t2, r
+
+
+def _div_hit_rows(hits, ctx, P):
+    """Arayüz için indikatör satırları: ad, tür, iki noktadaki değer."""
+    rows = []
+    for x in hits:
+        arr = ctx["ind"].get(x["ind"])
+        if arr is None:
+            continue
+        tx = div_ind_text(x["ind"], P)
+        rows.append({"ind": x["ind"], "name": tx["name"], "grp": tx["grp"], "kind": x["kind"], "p": int(x["p"]),
+                     "e": int(x["e"]), "v1": float(arr[x["p"]]), "v2": float(arr[x["e"]])})
+    return rows
+
+
+def strat_divergence(df, **params):
+    """Son barların durumu: breakout (taze, onaylı uyumsuzluk) · armed (uyumsuzluk var ama stop çok geniş) ·
+    forming (fiyat yeni uç yaptı, indikatörler uyumsuz — dönüş bekleniyor)."""
+    P = strat_params("divergence", params)
+    if df is None or len(df) < 60:
+        return None
+    ctx = div_context(df, P)
+    if not ctx["on"]:
+        return None
+    last = ctx["n"] - 1
+    av = atr(df, 14).to_numpy(float)
+    i0 = max(int(P["prd"]) + 7, last - ST_FRESH - 1)
+    bull, bear, det = div_scan(ctx, P, i0, last)
+    mn = int(P["min_n"])
+
+    def pack(t, side, hits, state, confirm=True):
+        pk = div_pack(t, side, hits, ctx, av)
+        rows = _div_hit_rows(hits, ctx, P)
+        nm = [r_["name"] for r_ in rows]
+        word = "Bullish" if side > 0 else "Bearish"
+        ext = "low" if side > 0 else "high"
+        reg_, hid_ = pk["reg"], pk["hid"]
+        dom = "reg" if reg_ >= hid_ else "hid"
+        lower_px = (side > 0) == (dom == "reg")          # düzenli boğa / gizli ayı: fiyat daha düşük
+        moved = "%s %s" % ("lower" if lower_px else "higher", ext)
+        ind_moved = "%s %ss" % ("higher" if lower_px else "lower", ext)
+        dom_nm = [r_["name"] for r_ in rows if r_["kind"] == dom]
+        oth_nm = [r_["name"] for r_ in rows if r_["kind"] != dom]
+        nv = sum(1 for r_ in rows if r_["ind"] in DIV_VOL_KEYS)
+        conf = 0.50 + 0.07 * (len(hits) - mn) + (0.05 if reg_ else 0.0) + (0.06 if nv >= 2 else 0.0)
+        if state == "armed":
+            conf *= 0.8
+        if state == "forming":
+            conf = 0.40 + 0.03 * (len(hits) - mn)
+        vx = _vx_at(df, t)
+        pxe = float(ctx["c"][t])
+        sig = {"key": "divergence", "kind": "bull" if side > 0 else "bear", "side": "long" if side > 0 else "short",
+               "name": "%s ×%d · %s" % (word, len(hits), ", ".join(nm[:4]) + (" …" if len(nm) > 4 else "")),
+               "state": state, "level": pxe, "stop": float(pk["stop"]), "neck": float(pk["neck"]),
+               "bars_since": int(last - t), "conf": round(min(0.95, max(0.15, conf)), 2), "vol_x": round(float(vx), 2),
+               "vol_ok": True, "start": int(max(0, pk["p"] - 6)), "b": int(t), "e": int(pk["e"]), "p": int(pk["p"]),
+               "hits": rows, "inds": nm, "n": len(hits), "n_on": len(ctx["on"]), "min_n": mn,
+               "reg": int(reg_), "hid": int(hid_), "len": int(pk["e"] - pk["p"]), "x1": pk["x1"], "x2": pk["x2"],
+               "no_vol": bool(ctx["no_vol"]), "atr": float(pk["atr"])}
+        sig["note"] = ("Price made a %s (%s → %s over %d candles) but %s made %s (%s)%s"
+                       % (moved, fmt_num(pk["x1"], 2), fmt_num(pk["x2"], 2), sig["len"],
+                          ", ".join(dom_nm) or "the indicators", ind_moved,
+                          "regular — reversal" if dom == "reg" else "hidden — trend continuation",
+                          (" · also %s: %s" % ("hidden" if dom == "reg" else "regular", ", ".join(oth_nm)))
+                          if oth_nm else ""))
+        if state == "forming":
+            sig["note"] += (" · not confirmed yet — the trigger is a close %s today's close (or the indicators "
+                            "turning)" % ("above" if side > 0 else "below"))
+        elif state == "armed":
+            sig["note"] += " · stop %s ATR away — wider than the %s ATR limit" % (
+                fmt_num(abs(pxe - pk["stop"]) / max(pk["atr"], 1e-9), 1), fmt_num(P["risk_atr"], 1))
+        return sig
+
+    for t in range(last, last - ST_FRESH - 1, -1):
+        if t <= i0:
+            break
+        sg = div_signal_at(t, ctx, P, bull, bear, det)
+        if not sg:
+            continue
+        side, hits = sg
+        pk = div_pack(t, side, hits, ctx, av)
+        if t < last:                                           # sinyalden sonra stop kırıldıysa geçersiz
+            if side > 0 and float(np.nanmin(ctx["l"][t + 1:last + 1])) <= pk["stop"]:
+                continue
+            if side < 0 and float(np.nanmax(ctx["h"][t + 1:last + 1])) >= pk["stop"]:
+                continue
+        wide = abs(float(ctx["c"][t]) - pk["stop"]) > float(P["risk_atr"]) * pk["atr"]
+        return pack(t, side, hits, "armed" if wide else "breakout")
+    best = None
+    for side in (1, -1):
+        hits = _div_at(last, side, ctx, P, confirm=False)
+        if len(hits) >= mn and (best is None or len(hits) > len(best[1])):
+            best = (side, hits)
+    if best:
+        s2 = ctx.get("sma200")
+        if s2 is not None and _ok(s2[last]) and ((best[0] > 0 and ctx["c"][last] < s2[last]) or
+                                                 (best[0] < 0 and ctx["c"][last] > s2[last])):
+            return None
+        return pack(last, best[0], best[1], "forming", confirm=False)
+    return None
+
+
+def div_many(df, P=None, i_from=0):
+    """Grafik katmanı ("Many indicators"): onaylı uyumsuzluk sinyalleri — divergences() ile aynı biçim
+    (+ 'n' indikatör sayısı, 'inds' adlar). i_from'dan önceki sinyaller atlanır."""
+    P = strat_params("divergence", P)
+    if df is None or len(df) < 60:
+        return []
+    ctx = div_context(df, P)
+    if not ctx["on"]:
+        return []
+    last = ctx["n"] - 1
+    bull, bear, det = div_scan(ctx, P, max(int(i_from), int(P["prd"]) + 7), last)
+    out = []
+    for t in sorted(det):
+        sg = div_signal_at(t, ctx, P, bull, bear, det)
+        if not sg:
+            continue
+        side, hits = sg
+        ps = [x["p"] for x in hits]
+        p = max(set(ps), key=lambda q: (ps.count(q), q))
+        e = hits[0]["e"]
+        reg = sum(1 for x in hits if x["kind"] == "reg")
+        src = ctx["lo"] if side > 0 else ctx["hi"]
+        kind = ("reg_" if reg * 2 >= len(hits) else "hid_") + ("bull" if side > 0 else "bear")
+        out.append({"i1": int(p), "i2": int(e), "p1": float(src[p]), "p2": float(src[e]), "o1": None, "o2": None,
+                    "kind": kind, "n": len(hits), "t": int(t),
+                    "inds": [DIV_IND[x["ind"]]["name"] for x in hits if x["ind"] in DIV_IND]})
+    return out
+
+
+def div_ind_stats(trades):
+    """Backtest: hangi indikatörün uyumsuzluğu bu sembolde işe yaradı? Kısmi çıkışlar aynı pozisyonda toplanır."""
+    pos = {}
+    for t in trades:
+        k = (t.get("ei"), bool(t.get("long")))
+        d = pos.setdefault(k, {"pnl": 0.0, "inds": t.get("inds") or []})
+        d["pnl"] += float(t.get("pnl") or 0.0)
+    rows = []
+    for key in DIV_IND_KEYS:
+        ps = [d for d in pos.values() if key in d["inds"]]
+        if not ps:
+            continue
+        w = [d for d in ps if d["pnl"] > 0]
+        gw = sum(d["pnl"] for d in w)
+        gl = -sum(d["pnl"] for d in ps if d["pnl"] <= 0)
+        rows.append({"ind": key, "name": DIV_IND[key]["name"], "grp": DIV_IND[key]["grp"], "n": len(ps),
+                     "wins": len(w), "win": len(w) / len(ps) * 100, "pf": (gw / gl) if gl > 0 else (float("inf") if gw
+                                                                                                   > 0 else 0.0),
+                     "pnl": sum(d["pnl"] for d in ps)})
+    rows.sort(key=lambda r: (-r["win"], -r["n"]))
+    return rows
+
+
+# ======================================================================
+# v5.8 — PAIRS TRADING (istatistiksel arbitraj)
+#   İki hisse birlikte hareket ediyorsa (eşbütünleşik), aralarındaki fark (spread) ortalamasına döner. Spread'in
+#   z-skoru ±2'yi geçince ucuz olan alınır, pahalı olan açığa satılır; z sıfıra dönünce ikisi birlikte kapatılır.
+#   Hedge oranı ve z-skoru kayan pencerede, her gün yalnızca o güne kadarki veriden hesaplanır (geleceğe bakmaz).
+#   Engle–Granger testi: log fiyatlarda OLS → artıklara ADF. p-değeri: iki değişkenli, sabitli test için
+#   144 000 simülasyondan (T = 300–750) — MacKinnon'un kritik değerleriyle örtüşür (1 % −3.90, 5 % −3.34, 10 % −3.04).
+# ======================================================================
+EG_PTAB = ((-4.57, 0.001), (-4.34, 0.0025), (-4.13, 0.005), (-3.91, 0.01), (-3.69, 0.02), (-3.55, 0.03),
+           (-3.35, 0.05), (-3.18, 0.075), (-3.06, 0.10), (-2.86, 0.15), (-2.71, 0.20), (-2.58, 0.25),
+           (-2.46, 0.30), (-2.25, 0.40), (-2.06, 0.50), (-1.87, 0.60), (-1.65, 0.70), (-1.40, 0.80),
+           (-1.00, 0.90), (-0.63, 0.95), (0.10, 0.99))
+EG_CRIT = {1: -3.90, 5: -3.34, 10: -3.04}
+PAIR_DEFAULTS = {"win": 60, "entry": 2.0, "exit": 0.0, "stop": 3.5, "max_days": 30, "yrs": 3, "comm": 0.1,
+                 "cap": 10000.0, "form": 252}
+PAIR_LIMITS = {"win": (20, 250), "entry": (1.0, 4.0), "exit": (-1.0, 1.5), "stop": (2.0, 8.0), "max_days": (3, 250),
+               "yrs": (1, 10), "comm": (0.0, 1.0), "cap": (100.0, 1e9), "form": (120, 756)}
+# "Kullanılabilir" eşikleri — arayüzde ve README'de aynen yazılır
+PAIR_USABLE = {"p": 0.05, "hl_min": 2.0, "hl_max": 40.0, "trades": 6, "win": 60.0, "pf": 1.2, "mdd": -25.0}
+PAIR_GROUPS = ("US stocks", "ETFs", "Futures", "Crypto", "Europe")
+# v5.8 — Aday çiftler: aynı para birimi, aynı iş modeli / aynı fiyat sürücüsü. Bu liste bir HİPOTEZ listesidir —
+# hangisinin gerçekten kullanılabilir olduğunu Pair Lab gerçek verilerle test eder (isabet oranı, PF, eşbütünleşme).
+PAIR_CANDIDATES = [
+    ("KO", "PEP", "US stocks", "Soft drinks — same customers, same costs"),
+    ("PG", "CL", "US stocks", "Household & personal care"),
+    ("CL", "KMB", "US stocks", "Household paper & care products"),
+    ("MDLZ", "HSY", "US stocks", "Snacks & chocolate (cocoa prices)"),
+    ("MO", "PM", "US stocks", "Tobacco — US vs international Marlboro"),
+    ("GIS", "CAG", "US stocks", "Packaged food"),
+    ("WMT", "COST", "US stocks", "Big-box retail"),
+    ("HD", "LOW", "US stocks", "Home improvement — same housing cycle"),
+    ("MCD", "YUM", "US stocks", "Quick-service restaurant franchisors"),
+    ("V", "MA", "US stocks", "Card networks — near-identical business"),
+    ("JPM", "BAC", "US stocks", "Money-centre banks"),
+    ("GS", "MS", "US stocks", "Investment banks"),
+    ("C", "WFC", "US stocks", "Large US banks"),
+    ("SPGI", "MCO", "US stocks", "Credit ratings duopoly"),
+    ("ICE", "CME", "US stocks", "Exchange operators"),
+    ("MMC", "AON", "US stocks", "Insurance brokers"),
+    ("CB", "TRV", "US stocks", "Property & casualty insurers"),
+    ("ADP", "PAYX", "US stocks", "Payroll processors"),
+    ("XOM", "CVX", "US stocks", "Integrated oil majors"),
+    ("COP", "EOG", "US stocks", "Oil producers (E&P)"),
+    ("SLB", "HAL", "US stocks", "Oilfield services"),
+    ("VLO", "MPC", "US stocks", "Refiners — same crack spread"),
+    ("KMI", "WMB", "US stocks", "Gas pipelines"),
+    ("BP", "SHEL", "US stocks", "European oil majors (US listings)"),
+    ("UNP", "CSX", "US stocks", "Railroads"),
+    ("UPS", "FDX", "US stocks", "Parcel delivery"),
+    ("CAT", "DE", "US stocks", "Heavy machinery"),
+    ("LMT", "NOC", "US stocks", "Defence primes"),
+    ("GD", "LHX", "US stocks", "Defence & government tech"),
+    ("WM", "RSG", "US stocks", "Waste management duopoly"),
+    ("DAL", "UAL", "US stocks", "Network airlines — same fuel & demand"),
+    ("MAR", "HLT", "US stocks", "Hotel franchisors"),
+    ("NUE", "STLD", "US stocks", "Steel mini-mills"),
+    ("FCX", "SCCO", "US stocks", "Copper miners"),
+    ("LIN", "APD", "US stocks", "Industrial gases"),
+    ("VMC", "MLM", "US stocks", "Construction aggregates"),
+    ("SHW", "PPG", "US stocks", "Paints & coatings"),
+    ("AMAT", "LRCX", "US stocks", "Semiconductor equipment"),
+    ("KLAC", "AMAT", "US stocks", "Semiconductor equipment"),
+    ("TXN", "ADI", "US stocks", "Analog chips"),
+    ("TMO", "DHR", "US stocks", "Life-science tools"),
+    ("UNH", "ELV", "US stocks", "Managed care"),
+    ("ABT", "MDT", "US stocks", "Medical devices"),
+    ("MRK", "PFE", "US stocks", "Big pharma"),
+    ("DUK", "SO", "US stocks", "Regulated utilities (Southeast)"),
+    ("AEP", "XEL", "US stocks", "Regulated utilities"),
+    ("T", "VZ", "US stocks", "Telecom duopoly"),
+    ("PSA", "EXR", "US stocks", "Self-storage REITs"),
+    ("O", "NNN", "US stocks", "Net-lease REITs"),
+    ("AVB", "EQR", "US stocks", "Apartment REITs"),
+    ("EWA", "EWC", "ETFs", "Australia vs Canada — commodity economies (classic pair)"),
+    ("GDX", "GDXJ", "ETFs", "Gold miners — large vs junior"),
+    ("GLD", "SLV", "ETFs", "Gold vs silver"),
+    ("USO", "BNO", "ETFs", "WTI vs Brent oil funds"),
+    ("KRE", "KBE", "ETFs", "Regional banks vs all banks"),
+    ("HYG", "JNK", "ETFs", "High-yield bond funds"),
+    ("IWM", "IJR", "ETFs", "US small caps — Russell 2000 vs S&P 600"),
+    ("EWG", "EWQ", "ETFs", "Germany vs France"),
+    ("GC=F", "SI=F", "Futures", "Gold vs silver futures"),
+    ("CL=F", "BZ=F", "Futures", "WTI vs Brent crude"),
+    ("ZC=F", "ZW=F", "Futures", "Corn vs wheat"),
+    ("ZS=F", "ZM=F", "Futures", "Soybeans vs soybean meal (crush)"),
+    ("BTC-USD", "ETH-USD", "Crypto", "Bitcoin vs Ether"),
+    ("BMW.DE", "MBG.DE", "Europe", "German premium carmakers"),
+    ("VOW3.DE", "MBG.DE", "Europe", "German carmakers"),
+    ("ALV.DE", "MUV2.DE", "Europe", "Allianz vs Munich Re"),
+    ("DBK.DE", "CBK.DE", "Europe", "German banks"),
+    ("RWE.DE", "EOAN.DE", "Europe", "German utilities"),
+    ("ADS.DE", "PUM.DE", "Europe", "Sportswear — Adidas vs Puma"),
+]
+
+
+def pair_key(a, b):
+    return "%s/%s" % (str(a).upper(), str(b).upper())
+
+
+def pair_parse(txt):
+    """"KO/PEP, V-MA; XOM CVX" → [('KO','PEP'), …] (en fazla 300 çift, tekrarsız)."""
+    out, seen = [], set()
+    for part in re.split(r"[,;\n]+", str(txt or "")):
+        part = re.sub(r"\s+(?:vs\.?|v)\s+", "/", part.strip(), flags=re.I)
+        syms = [s for s in re.split(r"[\s/|:]+", part.upper()) if s][:2]
+        if len(syms) == 2 and syms[0] != syms[1]:
+            k = pair_key(*syms)
+            if k not in seen:
+                seen.add(k)
+                out.append((syms[0], syms[1]))
+    return out[:300]
+
+
+def pair_cfg(over=None):
+    c = dict(PAIR_DEFAULTS)
+    for k, v in (over or {}).items():
+        if k not in c:
+            continue
+        try:
+            v = type(PAIR_DEFAULTS[k])(v)
+        except (TypeError, ValueError):
+            continue
+        lo, hi = PAIR_LIMITS.get(k, (v, v))
+        c[k] = type(PAIR_DEFAULTS[k])(min(max(v, lo), hi))
+    if c["exit"] >= c["entry"]:
+        c["exit"] = round(c["entry"] - 0.5, 2)
+    if c["stop"] <= c["entry"]:
+        c["stop"] = round(c["entry"] + 1.0, 2)
+    return c
+
+
+def eg_pvalue(t):
+    """Engle–Granger t istatistiği → yaklaşık p-değeri."""
+    if not _ok(t):
+        return NAN
+    xs = [a for a, _ in EG_PTAB]
+    ps = [b for _, b in EG_PTAB]
+    if t <= xs[0]:
+        return 0.0005
+    if t >= xs[-1]:
+        return 0.995
+    return float(np.interp(t, xs, ps))
+
+
+def _ols(y, x):
+    xm, ym = float(np.mean(x)), float(np.mean(y))
+    sxx = float(np.sum((x - xm) ** 2))
+    if not sxx > 0:
+        return NAN, NAN, None
+    b = float(np.sum((x - xm) * (y - ym)) / sxx)
+    a = ym - b * xm
+    return a, b, y - a - b * x
+
+
+def adf_t(e, lags=1):
+    """ADF t istatistiği (sabitsiz — artıklar sıfır ortalamalı): Δe_t = γ·e_{t−1} + Σ φ_i·Δe_{t−i}."""
+    e = np.asarray(e, float)
+    e = e[~np.isnan(e)]
+    if len(e) < 30:
+        return NAN
+    de = np.diff(e)
+    Y = de[lags:]
+    X = np.column_stack([e[lags:-1]] + [de[lags - k:-k] for k in range(1, lags + 1)])
+    try:
+        beta = np.linalg.lstsq(X, Y, rcond=None)[0]
+        inv = np.linalg.inv(X.T @ X)
+    except Exception:
+        return NAN
+    res = Y - X @ beta
+    s2 = float(res @ res) / max(1, len(Y) - X.shape[1])
+    se = float(np.sqrt(s2 * inv[0, 0]))
+    return float(beta[0] / se) if se > 0 else NAN
+
+
+def half_life(e):
+    """Ortalamaya dönüş yarı ömrü (gün): Δe = λ·e_{t−1} + c → −ln2 / λ."""
+    e = np.asarray(e, float)
+    e = e[~np.isnan(e)]
+    if len(e) < 20:
+        return NAN
+    x = e[:-1]
+    X = np.column_stack([x, np.ones(len(x))])
+    try:
+        lam = float(np.linalg.lstsq(X, np.diff(e), rcond=None)[0][0])
+    except Exception:
+        return NAN
+    return float(-np.log(2) / lam) if lam < 0 else float("inf")
+
+
+def eg_test(la, lb):
+    """Engle–Granger: log A = α + β·log B + e → ADF(e). Döner: {t, p, beta, alpha, hl}."""
+    la, lb = np.asarray(la, float), np.asarray(lb, float)
+    m = ~(np.isnan(la) | np.isnan(lb))
+    la, lb = la[m], lb[m]
+    if len(la) < 60:
+        return {"t": NAN, "p": NAN, "beta": NAN, "alpha": NAN, "hl": NAN}
+    a, b, e = _ols(la, lb)
+    if e is None:
+        return {"t": NAN, "p": NAN, "beta": NAN, "alpha": NAN, "hl": NAN}
+    t = adf_t(e, 1)
+    return {"t": t, "p": eg_pvalue(t), "beta": b, "alpha": a, "hl": half_life(e)}
+
+
+def _pair_idx(df):
+    d = df[["Open", "Close"]].astype(float).copy()
+    idx = pd.DatetimeIndex(d.index)
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    d.index = idx.normalize()
+    return d[~d.index.duplicated(keep="last")]
+
+
+def pair_frame(da, db):
+    """İki sembolün ortak günleri: Open_a, Close_a, Open_b, Close_b (pozitif, boşluksuz)."""
+    if da is None or db is None or len(da) < 60 or len(db) < 60:
+        return None
+    try:
+        j = _pair_idx(da).join(_pair_idx(db), how="inner", lsuffix="_a", rsuffix="_b").dropna()
+    except Exception:
+        return None
+    j = j[(j > 0).all(axis=1)]
+    return j if len(j) >= 60 else None
+
+
+def pair_zscore(j, win=60):
+    """Kayan pencerede (win gün) OLS: log A = α_t + β_t·log B. z_t = (log A − α_t − β_t·log B) / σ_t —
+    t gününün değeri yalnızca t'ye kadarki win günden hesaplanır."""
+    y = np.log(j["Close_a"].to_numpy(float))
+    x = np.log(j["Close_b"].to_numpy(float))
+    n, w = len(y), int(win)
+    nan = np.full(n, np.nan)
+    if n < w + 2:
+        return nan, nan.copy(), nan.copy(), nan.copy()
+    y0, x0 = y - y[0], x - x[0]
+
+    def rs(v):
+        cs = np.cumsum(np.insert(v, 0, 0.0))
+        out = np.full(n, np.nan)
+        out[w - 1:] = cs[w:] - cs[:-w]
+        return out
+    sx, sy, sxx, syy, sxy = rs(x0), rs(y0), rs(x0 * x0), rs(y0 * y0), rs(x0 * y0)
+    W = float(w)
+    vx = sxx - sx * sx / W
+    cxy = sxy - sx * sy / W
+    vy = syy - sy * sy / W
+    with np.errstate(invalid="ignore", divide="ignore"):
+        beta = np.where(vx > 1e-12, cxy / vx, np.nan)
+        alpha = (sy - beta * sx) / W
+        ssr = np.maximum(vy - beta * cxy, 0.0)
+        sd = np.sqrt(ssr / (W - 2))
+        z = np.where(sd > 1e-12, (y0 - alpha - beta * x0) / sd, np.nan)
+    return z, beta, alpha, sd
+
+
+def pair_backtest(j, cfg=None):
+    """Bir çiftin geçmiş testi. Sinyal günün kapanışında, işlem ertesi açılışta (iki bacak birlikte):
+    z ≤ −giriş → A al + B açığa sat (β ile dolar dengeli) · z ≥ +giriş → tersi. Çıkış: z ortalamaya döner
+    (|z| ≤ çıkış bandı), z durdurma seviyesini aşar, süre dolar ya da hedge oranı geçersizleşir (β ≤ 0).
+    Pozisyon büyüklüğü: brüt = sermayenin %100'ü (yarısı long, yarısı short). Komisyon her bacakta, giriş + çıkış."""
+    c = pair_cfg(cfg)
+    n = len(j) if j is not None else 0
+    if n < c["win"] + 30:
+        return {"ok": False, "msg": "Not enough common history (at least %d days needed)." % (c["win"] + 30)}
+    z, beta, _alpha, _sd = pair_zscore(j, c["win"])
+    oa, ca, ob, cb = (j[k].to_numpy(float) for k in ("Open_a", "Close_a", "Open_b", "Close_b"))
+    N = max(30, min(int(round(c["yrs"] * 252)), n - c["win"] - 1))
+    start = n - N
+    cap, comm = float(c["cap"]), float(c["comm"]) / 100.0
+    cash, pos, trades, pend, xnext = cap, None, [], None, None
+    eq = np.full(n, cap)
+    inpos = np.zeros(n, dtype=bool)
+
+    def close(i, pa, pb, why):
+        nonlocal cash, pos
+        g = pos["d"] * (pos["qa"] * (pa - pos["pa"]) - pos["qb"] * (pb - pos["pb"]))
+        fee = comm * (pos["qa"] * pa + pos["qb"] * pb)
+        cash += g - fee
+        pnl = g - fee - pos["fee0"]
+        trades.append({"d": pos["d"], "ei": pos["ei"], "xi": i, "pa0": pos["pa"], "pb0": pos["pb"], "pa1": pa, "pb1": pb,
+                       "z0": pos["z0"], "z1": float(z[i - 1]) if i >= 1 and _ok(z[i - 1]) else NAN, "why": why,
+                       "pnl": pnl, "ret": pnl / pos["gross"] * 100.0, "days": i - pos["ei"] + 1, "beta": pos["beta"]})
+        pos = None
+
+    for i in range(max(start, c["win"]), n):
+        if pos is not None and xnext:
+            close(i, oa[i], ob[i], xnext)
+            xnext = None
+        if pend is not None and pos is None:
+            d, bt = pend
+            gross = max(0.0, cash)
+            na = gross / (1.0 + bt)
+            nb = gross - na
+            if na > 0 and nb > 0 and oa[i] > 0 and ob[i] > 0:
+                fee0 = comm * gross
+                cash -= fee0
+                pos = {"d": d, "ei": i, "pa": oa[i], "pb": ob[i], "qa": na / oa[i], "qb": nb / ob[i], "beta": bt,
+                       "z0": float(z[i - 1]), "gross": gross, "fee0": fee0}
+            pend = None
+        upl = pos["d"] * (pos["qa"] * (ca[i] - pos["pa"]) - pos["qb"] * (cb[i] - pos["pb"])) if pos else 0.0
+        eq[i] = cash + upl
+        inpos[i] = pos is not None
+        if i >= n - 1:
+            continue
+        zi = z[i]
+        if not _ok(zi):
+            continue
+        if pos is not None:
+            d = pos["d"]
+            if (d > 0 and zi >= -c["exit"]) or (d < 0 and zi <= c["exit"]):
+                xnext = "Mean"
+            elif (d > 0 and zi <= -c["stop"]) or (d < 0 and zi >= c["stop"]):
+                xnext = "Stop"
+            elif i - pos["ei"] + 1 >= c["max_days"]:
+                xnext = "Time"
+            elif not (_ok(beta[i]) and beta[i] > 0):
+                xnext = "Hedge"
+        elif _ok(beta[i]) and beta[i] > 0:
+            if zi <= -c["entry"]:
+                pend = (1, float(beta[i]))
+            elif zi >= c["entry"]:
+                pend = (-1, float(beta[i]))
+    if pos is not None:
+        close(n - 1, ca[n - 1], cb[n - 1], "Open")
+        eq[n - 1] = cash
+    idx = j.index[start:]
+    eq_s = pd.Series(eq[start:], index=idx)
+    dd = eq_s / eq_s.cummax() - 1
+    rets = eq_s.pct_change().dropna()
+    wins = [t for t in trades if t["pnl"] > 0]
+    gw = sum(t["pnl"] for t in wins)
+    gl = -sum(t["pnl"] for t in trades if t["pnl"] <= 0)
+    half = start + N // 2
+    t1 = [t for t in trades if t["ei"] < half]
+    t2 = [t for t in trades if t["ei"] >= half]
+    yrs = max(len(eq_s) / 252.0, 1e-9)
+    fin = float(eq_s.iloc[-1])
+    k = {"n": len(trades), "wins": len(wins), "win": (len(wins) / len(trades) * 100.0) if trades else 0.0,
+         "pf": float(gw / gl) if gl > 0 else (float("inf") if gw > 0 else 0.0),
+         "avg": float(np.mean([t["ret"] for t in trades])) if trades else 0.0,
+         "days": float(np.mean([t["days"] for t in trades])) if trades else 0.0,
+         "ret": (fin / cap - 1) * 100.0, "cagr": ((fin / cap) ** (1 / yrs) - 1) * 100.0 if fin > 0 else -100.0,
+         "mdd": float(dd.min()) * 100.0 if len(dd) else 0.0,
+         "sharpe": float(rets.mean() / rets.std() * np.sqrt(252)) if len(rets) > 2 and rets.std() > 0 else 0.0,
+         "expo": float(inpos[start:].mean() * 100.0),
+         "win1": (sum(1 for t in t1 if t["pnl"] > 0) / len(t1) * 100.0) if t1 else NAN,
+         "win2": (sum(1 for t in t2 if t["pnl"] > 0) / len(t2) * 100.0) if t2 else NAN,
+         "n1": len(t1), "n2": len(t2)}
+    for t in trades:
+        t["ed"], t["xd"] = j.index[t["ei"]], j.index[t["xi"]]
+    return {"ok": True, "kpi": k, "trades": trades, "eq": eq_s, "dd": dd * 100.0, "cfg": c,
+            "z": pd.Series(z[start:], index=idx), "beta": pd.Series(beta[start:], index=idx),
+            "range": (idx[0], idx[-1]), "start": start}
+
+
+def pair_verdict(a):
+    """Kullanılabilir · İzle · Kullanılamaz — ve nedenleri (eşikler PAIR_USABLE'da)."""
+    U = PAIR_USABLE
+    k = a.get("kpi") or {}
+    why = []
+    p_best = min([p for p in (a.get("p1y"), a.get("pfull")) if _ok(p)] or [1.0])
+    coint = p_best <= U["p"]
+    hl = a.get("hl")
+    hl_ok = _ok(hl) and U["hl_min"] <= hl <= U["hl_max"]
+    bt_ok = (k.get("n", 0) >= U["trades"] and k.get("win", 0) >= U["win"] and k.get("pf", 0) >= U["pf"]
+             and k.get("mdd", -100) >= U["mdd"])
+    if not coint:
+        why.append("not cointegrated (p %s)" % (fmt_num(p_best * 100, 1) + " %"))
+    if not hl_ok:
+        why.append("half-life %s days" % (fmt_num(hl, 0) if _ok(hl) and hl != float("inf") else "∞"))
+    if k.get("n", 0) < U["trades"]:
+        why.append("only %d trades" % k.get("n", 0))
+    else:
+        if k.get("win", 0) < U["win"]:
+            why.append("win rate %s %%" % fmt_num(k.get("win", 0), 0))
+        if k.get("pf", 0) < U["pf"]:
+            why.append("profit factor %s" % fmt_num(k.get("pf", 0), 2))
+        if k.get("mdd", -100) < U["mdd"]:
+            why.append("drawdown %s %%" % fmt_num(k.get("mdd", 0), 0))
+    if coint and hl_ok and bt_ok:
+        return "usable", "Usable", why
+    if bt_ok or (coint and hl_ok):
+        return "watch", "Watch", why
+    return "no", "Not usable", why
+
+
+def pair_analyze(da, db, cfg=None, a=None, b=None):
+    """Tek çiftin tam analizi: eşbütünleşme (son 1 yıl ve tüm test dönemi), yarı ömür, getiri korelasyonu,
+    güncel β ve z, geçmiş test, karar. Veri yetersizse None."""
+    c = pair_cfg(cfg)
+    j = pair_frame(da, db)
+    if j is None or len(j) < c["win"] + 60:
+        return None
+    bt = pair_backtest(j, c)
+    if not bt.get("ok"):
+        return None
+    la, lb = np.log(j["Close_a"].to_numpy(float)), np.log(j["Close_b"].to_numpy(float))
+    f = int(min(c["form"], len(la)))
+    e1 = eg_test(la[-f:], lb[-f:])
+    ef = eg_test(la[bt["start"]:], lb[bt["start"]:])
+    ra, rb = np.diff(la[-f:]), np.diff(lb[-f:])
+    corr = float(np.corrcoef(ra, rb)[0, 1]) if len(ra) > 10 and np.std(ra) > 0 and np.std(rb) > 0 else NAN
+    z_now = float(bt["z"].iloc[-1]) if len(bt["z"]) and _ok(bt["z"].iloc[-1]) else NAN
+    b_now = float(bt["beta"].iloc[-1]) if len(bt["beta"]) and _ok(bt["beta"].iloc[-1]) else NAN
+    sig = "—"
+    if _ok(z_now) and _ok(b_now) and b_now > 0:
+        if z_now <= -c["entry"]:
+            sig = "long"
+        elif z_now >= c["entry"]:
+            sig = "short"
+        elif abs(z_now) >= 0.75 * c["entry"]:
+            sig = "near"
+    out = {"a": a, "b": b, "key": pair_key(a or "A", b or "B"), "n_days": len(j), "kpi": bt["kpi"],
+           "p1y": e1["p"], "t1y": e1["t"], "pfull": ef["p"], "tfull": ef["t"], "hl": e1["hl"], "corr": corr,
+           "beta": b_now, "beta_static": e1["beta"], "z": z_now, "sig": sig, "cfg": c,
+           "last": str(j.index[-1].date()), "px_a": float(j["Close_a"].iloc[-1]), "px_b": float(j["Close_b"].iloc[-1])}
+    out["verdict"], out["verdict_txt"], out["why"] = pair_verdict(out)
+    return out
+
+
+def pair_rank_key(r):
+    """Sıralama: önce karar (usable → watch → no), sonra isabet oranı, sonra PF; az işlemli çiftler geride."""
+    k = r.get("kpi") or {}
+    order = {"usable": 0, "watch": 1, "no": 2}.get(r.get("verdict"), 3)
+    enough = 0 if k.get("n", 0) >= PAIR_USABLE["trades"] else 1
+    pf = k.get("pf", 0.0)
+    return (order, enough, -k.get("win", 0.0), -(pf if pf != float("inf") else 99.0), -k.get("n", 0))
+
+
+def pair_signal_live(da, db, cfg=None, live_a=None, live_b=None):
+    """Bot için güncel z: günlük kapanışlar + (varsa) canlı fiyat bugünün değeri olarak.
+    Döner: {'z','beta','pa','pb'} ya da None."""
+    c = pair_cfg(cfg)
+    j = pair_frame(da, db)
+    if j is None or len(j) < c["win"] + 5:
+        return None
+    j = j.copy()
+    if live_a and live_b and live_a > 0 and live_b > 0:
+        today = pd.Timestamp.now().normalize()
+        if j.index[-1] >= today:
+            j.iloc[-1, j.columns.get_loc("Close_a")] = float(live_a)
+            j.iloc[-1, j.columns.get_loc("Close_b")] = float(live_b)
+        else:
+            row = pd.DataFrame({"Open_a": [live_a], "Close_a": [live_a], "Open_b": [live_b], "Close_b": [live_b]},
+                               index=[today])
+            j = pd.concat([j, row])
+    z, beta, _a, _s = pair_zscore(j, c["win"])
+    if not (_ok(z[-1]) and _ok(beta[-1])):
+        return None
+    return {"z": float(z[-1]), "beta": float(beta[-1]), "pa": float(j["Close_a"].iloc[-1]),
+            "pb": float(j["Close_b"].iloc[-1])}
+
+
+# ======================================================================
+# v5.8 — MOMENTUM ROTASYONU
+#   Her ay sonunda evrendeki enstrümanlar son 3 / 6 / 12 ayın getirisine göre sıralanır; en güçlü N tanesi eşit
+#   ağırlıkla tutulur. Mutlak momentum: getirisi negatif olan alınmaz (yer güvenli limana / nakde kalır). Piyasa
+#   filtresi: gösterge endeks 200 günlük ortalamasının altındaysa hepsi güvenli limana. Tampon: elde tutulan bir
+#   enstrüman sıralamada ilk N + tampon içinde kaldıkça satılmaz (gereksiz alım-satım olmasın).
+#   Sinyal ay sonu kapanışında, işlem ayın ilk işlem gününün kapanışında (bir gün gecikme → geleceğe bakmaz).
+# ======================================================================
+ROT_UNIVERSES = {
+    "us_sectors": {"name": "US sector ETFs (SPDR)", "ccy": "USD", "bench": "SPY", "safe": "IEF",
+                   "syms": ["XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC"],
+                   "note": "US-listed ETFs — EU retail investors usually cannot buy them (no KID); use the UCITS "
+                           "list for real money."},
+    "ucits": {"name": "UCITS ETFs on Xetra", "ccy": "EUR", "bench": "EUNL.DE", "safe": "EUNH.DE",
+              "syms": ["EUNL.DE", "SXR8.DE", "SXRV.DE", "EXS1.DE", "SXRT.DE", "IS3N.DE", "ZPRR.DE", "4GLD.DE"],
+              "note": "MSCI World, S&P 500, Nasdaq-100, DAX, Euro Stoxx 50, Emerging Markets, Russell 2000 and gold — "
+                      "all buyable for EU investors; safe haven: euro government bonds (EUNH)."},
+    "assets": {"name": "Global asset classes (US ETFs)", "ccy": "USD", "bench": "SPY", "safe": "SHY",
+               "syms": ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "DBC", "VNQ"],
+               "note": "Stocks, bonds, gold, commodities and real estate — the classic dual-momentum universe."},
+    "nasdaq": {"name": "Nasdaq-100 leaders", "ccy": "USD", "bench": "QQQ", "safe": None,
+               "syms": ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "COST", "NFLX", "AMD",
+                        "ADBE", "PEP", "CSCO", "TMUS", "INTU", "QCOM", "AMAT", "TXN", "ISRG"],
+               "note": "Single stocks rotate faster and swing harder than ETFs — expect deeper drawdowns."},
+    "dax": {"name": "German large caps (DAX names)", "ccy": "EUR", "bench": "^GDAXI", "safe": None,
+            "syms": ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "AIR.DE", "MBG.DE", "BMW.DE", "BAS.DE", "MUV2.DE",
+                     "IFX.DE", "ADS.DE", "DBK.DE", "DHL.DE", "RWE.DE", "EOAN.DE", "VOW3.DE", "HEN3.DE", "MRK.DE",
+                     "RHM.DE", "DB1.DE"],
+            "note": "20 of the largest German companies; benchmark: the DAX index."},
+}
+ROT_DEFAULTS = {"top": 3, "w1": 0.0, "w3": 1.0, "w6": 1.0, "w12": 1.0, "skip": 0, "abs": 1, "mkt": 1, "buffer": 1,
+                "vol_adj": 0, "comm": 0.1, "yrs": 5, "cap": 10000.0}
+ROT_LIMITS = {"top": (1, 10), "w1": (0.0, 5.0), "w3": (0.0, 5.0), "w6": (0.0, 5.0), "w12": (0.0, 5.0), "skip": (0, 1),
+              "abs": (0, 1), "mkt": (0, 1), "buffer": (0, 5), "vol_adj": (0, 1), "comm": (0.0, 1.0), "yrs": (1, 15),
+              "cap": (100.0, 1e9)}
+ROT_LB = {"w1": 21, "w3": 63, "w6": 126, "w12": 252}
+
+
+def rot_cfg(over=None):
+    c = dict(ROT_DEFAULTS)
+    for k, v in (over or {}).items():
+        if k not in c:
+            continue
+        try:
+            v = type(ROT_DEFAULTS[k])(v)
+        except (TypeError, ValueError):
+            continue
+        lo, hi = ROT_LIMITS.get(k, (v, v))
+        c[k] = type(ROT_DEFAULTS[k])(min(max(v, lo), hi))
+    if c["w1"] + c["w3"] + c["w6"] + c["w12"] <= 0:
+        c["w3"] = c["w6"] = c["w12"] = 1.0
+    return c
+
+
+def rot_universe(key, watch=None, custom=None):
+    """Evren tanımı: {'name','syms','bench','safe','ccy','note'} — izleme listesi / özel liste dahil."""
+    if key in ROT_UNIVERSES:
+        return dict(ROT_UNIVERSES[key], key=key)
+    syms = [s for s in (watch if key == "watch" else custom) or [] if s]
+    syms = list(dict.fromkeys(str(s).upper() for s in syms))[:40]
+    eur = sum(1 for s in syms if str(s).upper().endswith((".DE", ".F", ".PA", ".AS", ".MI", ".MC")))
+    ccy = "EUR" if syms and eur * 2 > len(syms) else "USD"
+    return {"key": key, "name": "My watchlist" if key == "watch" else "Custom list", "syms": syms,
+            "bench": "EUNL.DE" if ccy == "EUR" else "SPY", "safe": None, "ccy": ccy,
+            "note": "Your own symbols — benchmark %s." % ("MSCI World (EUNL)" if ccy == "EUR" else "S&P 500 (SPY)")}
+
+
+def rot_frame(hist, syms):
+    """Kapanışlar tablosu (tarih × sembol), tarih indeksi normalize; eksik günler önceki kapanışla doldurulmaz."""
+    cols = {}
+    for s in syms:
+        df = (hist or {}).get(s)
+        if df is None or not len(df):
+            continue
+        cl = pd.to_numeric(df["Close"], errors="coerce")
+        idx = pd.DatetimeIndex(cl.index)
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+        cl.index = idx.normalize()
+        cols[s] = cl[~cl.index.duplicated(keep="last")]
+    if not cols:
+        return None
+    fr = pd.DataFrame(cols).sort_index()
+    return fr.dropna(how="all")
+
+
+def rot_scores(fr, i, cfg):
+    """i. satırdaki (gün) momentum skoru: ağırlıklı 1 / 3 / 6 / 12 ay getirisi (isteğe bağlı son ay atlanır,
+    oynaklığa bölünür). Döner: {sym: (skor, {w1: getiri…}, oynaklık)} — yeterli geçmişi olmayan atlanır."""
+    c = rot_cfg(cfg)
+    sk = 21 if c["skip"] else 0
+    out = {}
+    for s in fr.columns:
+        col = fr[s].to_numpy(float)
+        j = i - sk
+        if j < 0 or not _ok(col[j]) or col[j] <= 0:
+            continue
+        rets, wsum, sc = {}, 0.0, 0.0
+        okk = True
+        for wk, L in ROT_LB.items():
+            if j - L < 0 or not _ok(col[j - L]) or col[j - L] <= 0:
+                if c[wk] > 0:
+                    okk = False
+                rets[wk] = NAN
+                continue
+            r = col[j] / col[j - L] - 1
+            rets[wk] = r
+            if c[wk] > 0:
+                sc += c[wk] * r
+                wsum += c[wk]
+        if not okk or wsum <= 0:
+            continue
+        sc /= wsum
+        seg = col[max(0, i - 63):i + 1]
+        seg = seg[~np.isnan(seg)]
+        vol = float(np.std(np.diff(np.log(seg))) * np.sqrt(252)) if len(seg) > 20 else NAN
+        if c["vol_adj"] and _ok(vol) and vol > 0:
+            sc = sc / vol
+        out[s] = (float(sc), rets, vol)
+    return out
+
+
+def rot_pick(scores, held, cfg, risk_on=True):
+    """Hedef sepet: ilk N (mutlak momentum ve tamponla). Döner: (seçilenler, sıralama listesi)."""
+    c = rot_cfg(cfg)
+    rank = sorted(scores, key=lambda s: -scores[s][0])
+    if not risk_on and c["mkt"]:
+        return [], rank
+    ok_ = [s for s in rank if (scores[s][0] > 0 or not c["abs"])]
+    keep = [s for s in held if s in ok_ and rank.index(s) < c["top"] + c["buffer"]]
+    pick = list(keep)
+    for s in ok_:
+        if len(pick) >= c["top"]:
+            break
+        if s not in pick:
+            pick.append(s)
+    return pick[:c["top"]], rank
+
+
+def _month_last(s):
+    """Ay sonu değerleri (pandas sürümünden bağımsız: 'ME' yeni, 'M' eski takma ad)."""
+    try:
+        return s.resample("ME").last()
+    except ValueError:
+        return s.resample("M").last()
+
+
+def _rot_risk_on(fr_b, i):
+    if fr_b is None:
+        return True
+    col = fr_b.to_numpy(float)
+    if i < 200 or not _ok(col[i]):
+        return True
+    m = np.nanmean(col[i - 199:i + 1])
+    return bool(col[i] >= m)
+
+
+def rot_backtest(fr, uni, cfg=None):
+    """Aylık rotasyonun geçmiş testi. fr: kapanışlar (evren + gösterge + güvenli liman). Ay sonu sinyal, ertesi
+    işlem günü kapanışında işlem; komisyon değişen ağırlık başına. Döner: eğri, gösterge eğrisi, ay ay sepetler,
+    KPI'lar."""
+    c = rot_cfg(cfg)
+    syms = [s for s in uni["syms"] if s in fr.columns]
+    if not syms:
+        return {"ok": False, "msg": "No price data for this universe."}
+    bench = uni.get("bench") if uni.get("bench") in fr.columns else None
+    safe = uni.get("safe") if uni.get("safe") in fr.columns else None
+    n = len(fr)
+    if n < 300:
+        return {"ok": False, "msg": "Not enough history (at least 300 trading days needed)."}
+    N = max(60, min(int(round(c["yrs"] * 252)), n - 253))
+    start = n - N
+    px = fr.ffill().to_numpy(float)
+    cols = list(fr.columns)
+    ci = {s: cols.index(s) for s in cols}
+    uni_fr = fr[syms].ffill(limit=5)
+    months = fr.index.to_period("M")
+    is_me = np.zeros(n, dtype=bool)
+    is_me[:-1] = months[1:] != months[:-1]
+    w = {}                                   # sembol → ağırlık (1/N)
+    val, comm = float(c["cap"]), float(c["comm"]) / 100.0
+    eq = np.full(n, np.nan)
+    hist_rows, pending, turns = [], None, 0.0
+    held_days, safe_days = 0, 0
+    for i in range(start, n):
+        if i > start:
+            r = 0.0
+            for s, ww in w.items():
+                a0, a1 = px[i - 1, ci[s]], px[i, ci[s]]
+                if _ok(a0) and _ok(a1) and a0 > 0:
+                    r += ww * (a1 / a0 - 1)
+            val *= (1 + r)
+            if w:
+                held_days += 1
+                if safe and set(w) == {safe}:
+                    safe_days += 1
+        if pending is not None:                       # dünkü ay sonu sinyali → bugünkü kapanışta işlem
+            new_w, info = pending
+            ch = sum(abs(new_w.get(s, 0.0) - w.get(s, 0.0)) for s in set(new_w) | set(w))
+            val -= comm * ch * val
+            turns += ch
+            w = new_w
+            hist_rows.append(dict(info, d=fr.index[i]))
+            pending = None
+        eq[i] = val
+        if is_me[i] and i < n - 1:
+            sc = rot_scores(uni_fr, i, c)
+            risk_on = _rot_risk_on(fr[bench].ffill(limit=5) if (bench and c["mkt"]) else None, i)
+            held = [s for s in w if s in syms]
+            pick, rank = rot_pick(sc, held, c, risk_on)
+            slots = c["top"]
+            new_w = {s: 1.0 / slots for s in pick}
+            rest = (slots - len(pick)) / slots
+            if rest > 1e-9 and safe:
+                new_w[safe] = new_w.get(safe, 0.0) + rest
+            pending = (new_w, {"pick": list(pick), "risk_on": risk_on, "safe": rest if safe else 0.0,
+                               "cash": 0.0 if safe else rest,
+                               "top": [(s, round(sc[s][0] * 100, 1)) for s in rank[:max(5, slots + 2)]]})
+    idx = fr.index[start:]
+    eq_s = pd.Series(eq[start:], index=idx).ffill()
+    bh = None
+    if bench:
+        bcol = fr[bench].ffill().to_numpy(float)[start:]
+        if _ok(bcol[0]) and bcol[0] > 0:
+            bh = pd.Series(c["cap"] * bcol / bcol[0], index=idx)
+    dd = eq_s / eq_s.cummax() - 1
+    rets = eq_s.pct_change().dropna()
+    mon = _month_last(eq_s).pct_change().dropna() if len(eq_s) > 40 else pd.Series(dtype=float)
+    yrs = max(len(eq_s) / 252.0, 1e-9)
+    fin = float(eq_s.iloc[-1])
+    k = {"ret": (fin / c["cap"] - 1) * 100, "cagr": ((fin / c["cap"]) ** (1 / yrs) - 1) * 100 if fin > 0 else -100,
+         "mdd": float(dd.min()) * 100 if len(dd) else 0.0,
+         "sharpe": float(rets.mean() / rets.std() * np.sqrt(252)) if len(rets) > 2 and rets.std() > 0 else 0.0,
+         "vol": float(rets.std() * np.sqrt(252) * 100) if len(rets) > 2 else 0.0,
+         "mwin": float((mon > 0).mean() * 100) if len(mon) else 0.0, "months": int(len(mon)),
+         "best_m": float(mon.max() * 100) if len(mon) else 0.0, "worst_m": float(mon.min() * 100) if len(mon) else 0.0,
+         "turn": turns / max(1, len(hist_rows)) * 100, "rebal": len(hist_rows),
+         "safe_pct": safe_days / max(1, N) * 100}
+    if bh is not None:
+        bfin = float(bh.iloc[-1])
+        bdd = bh / bh.cummax() - 1
+        k.update({"b_ret": (bfin / c["cap"] - 1) * 100,
+                  "b_cagr": ((bfin / c["cap"]) ** (1 / yrs) - 1) * 100 if bfin > 0 else -100,
+                  "b_mdd": float(bdd.min()) * 100})
+    return {"ok": True, "eq": eq_s, "bh": bh, "dd": dd * 100, "kpi": k, "hist": hist_rows, "cfg": c, "uni": uni,
+            "range": (idx[0], idx[-1])}
+
+
+def rot_rank(fr, uni, cfg=None, held=None):
+    """Bugünkü sıralama tablosu + hedef sepet (son tamamlanmış ay sonuna göre DEĞİL — bugünkü kapanışa göre;
+    bot ay başında aynı hesabı yapar)."""
+    c = rot_cfg(cfg)
+    syms = [s for s in uni["syms"] if s in fr.columns]
+    if not syms:
+        return None
+    i = len(fr) - 1
+    ff = fr.ffill(limit=5)
+    sc = rot_scores(ff[syms], i, c)
+    bench = uni.get("bench") if uni.get("bench") in fr.columns else None
+    risk_on = _rot_risk_on(ff[bench] if (bench and c["mkt"]) else None, i)
+    held = [s for s in (held or []) if s in syms]
+    pick, rank = rot_pick(sc, held, c, risk_on)
+    rows = []
+    for r_, s in enumerate(rank, 1):
+        score, rets, vol = sc[s]
+        col = ff[s].to_numpy(float)
+        sma_ = np.nanmean(col[-200:]) if np.sum(~np.isnan(col[-200:])) >= 150 else NAN
+        act = ("Hold" if s in held else "Buy") if s in pick else ("Sell" if s in held else "—")
+        rows.append({"rank": r_, "sym": s, "score": score * 100 if not c["vol_adj"] else score, "r1": rets.get("w1"),
+                     "r3": rets.get("w3"), "r6": rets.get("w6"), "r12": rets.get("w12"), "vol": vol,
+                     "above200": bool(_ok(sma_) and _ok(col[-1]) and col[-1] >= sma_), "pos": score > 0,
+                     "pick": s in pick, "act": act, "px": float(col[-1]) if _ok(col[-1]) else NAN})
+    for s in held:
+        if s not in sc:
+            rows.append({"rank": None, "sym": s, "score": NAN, "r1": NAN, "r3": NAN, "r6": NAN, "r12": NAN,
+                         "vol": NAN, "above200": False, "pos": False, "pick": False, "act": "Sell", "px": NAN})
+    slots = c["top"]
+    safe = uni.get("safe")
+    return {"rows": rows, "pick": pick, "risk_on": risk_on, "free": slots - len(pick), "safe": safe,
+            "date": str(fr.index[i].date()), "bench": bench, "cfg": c}
+
+
+# ======================================================================
+# v5.10 — Karışık adil değer için ÇEKİRDEK yöntemler (her şirket tipinde çalışır)
+#   DCF (serbest nakit akışı + WACC/CAPM) · İleri F/K çarpanı · FD/FAVÖK çarpanı · PEG (büyümeye göre F/K).
+#   Girdi zinciri çok kademeli: SEC dosyaları (son 12 ay) → Yahoo tabloları (son mali yıl) → Yahoo temel
+#   alanları (TTM EPS, ileri EPS) → analist tahmini → son çare: kazanç eğiliminden tahmin (açıkça işaretlenir).
+#   Böylece tek bir kaynak (ör. rakip verisi, analist alanı, SEC) geçici olarak boş dönse de değer hesaplanır.
+# ======================================================================
+CORE_W = {"c_dcf": 0.35, "c_fpe": 0.30, "c_eveb": 0.20, "c_peg": 0.15}
+CORE_DEF = {"pe": 18.0, "ev_ebitda": 14.0, "peg": 1.5}       # rakip / geçmiş yoksa piyasa ortalamaları
+# çekirdek yöntem ↔ tipe özel yöntemlerde aynı fikir (çift saymamak için)
+CORE_DUP = {"c_dcf": ("dcf", "owner"), "c_eveb": ("eveb",), "c_fpe": ("pe_hist", "norm"), "c_peg": ()}
+
+
+def _first_ok(*pairs):
+    """[(değer, kaynak), …] → ilk geçerli (değer, kaynak); yoksa (NAN, '')."""
+    for v, src in pairs:
+        if _ok(v):
+            return float(v), src
+    return NAN, ""
+
+
+def _clamp(x, lo, hi):
+    return float(min(hi, max(lo, x)))
+
+
+def _bitem(basis, k):
+    it = ((basis or {}).get("items") or {}).get(k) or {}
+    return it.get("val", NAN) if isinstance(it, dict) else NAN
+
+
+def core_inputs(f, r, an, d, basis=None, band=None, px=None):
+    """Çekirdek yöntemlerin girdileri; her biri kaynağıyla. est=True → analist tahmini yok, eğilimden tahmin."""
+    f = f or None
+    r, an, d = r or {}, an or {}, d or {}
+    real_d = d.get("src") != "mock"                      # örnek veriler değerlemeye girmez
+    price = d.get("last", NAN)
+    sh, sh_src = _first_ok((_shares(f, d) if f else NAN, "statements"),
+                           (_bitem(basis, "dil_shares"), "SEC filings"),
+                           (_bitem(basis, "shares_out"), "SEC cover page"),
+                           (d.get("shares_out") if real_d else NAN, "Yahoo"))
+    debt, cash = _bitem(basis, "debt"), _bitem(basis, "cash")
+    nd, nd_src = _first_ok((_last_ok(f["net_debt"]) if f else NAN, "statements"),
+                           ((debt if _ok(debt) else 0.0) - cash if _ok(cash) else NAN, "SEC filings"))
+    if not _ok(nd):
+        nd, nd_src = 0.0, "assumed 0"
+    ocf, cx = _bitem(basis, "ocf_ttm"), _bitem(basis, "capex_ttm")
+    fcf, fcf_src = _first_ok((ocf - abs(cx) if (_ok(ocf) and _ok(cx)) else NAN, "last 12 months, SEC filings"),
+                             (_last_ok(f["fcf"]) if f else NAN, "last fiscal year"))
+    ni, dsh = _bitem(basis, "ni_ttm"), _bitem(basis, "dil_shares")
+    eps_ttm, eps_src = _first_ok((d.get("eps") if real_d else NAN, "Yahoo, TTM"),
+                                 (an.get("trailing_eps"), "Yahoo, TTM"),
+                                 (ni / dsh if (_ok(ni) and _ok(dsh) and dsh > 0) else NAN, "SEC filings, TTM"),
+                                 (_last_ok(f["eps"]) if f else NAN, "last fiscal year"))
+    # ileri 12 ay EPS: analist → cari + gelecek mali yıl karışımı → ileri F/K'dan → eğilim tahmini
+    fys = [e for e in (an.get("fy") or []) if _ok(e.get("avg"))]
+    ntm = NAN
+    if len(fys) >= 2:
+        left = an.get("fy0_left", 0.5)
+        left = _clamp(left if _ok(left) else 0.5, 0.0, 1.0)
+        ntm = fys[0]["avg"] * left + fys[1]["avg"] * (1 - left)
+    elif fys:
+        ntm = fys[0]["avg"]
+    fpe_d = d.get("fwd_pe") if real_d else NAN
+    fwd, fwd_src = _first_ok((an.get("fwd_eps"), "Yahoo analysts"),
+                             (ntm, "analyst consensus, next 12 months"),
+                             (price / fpe_d if (_ok(fpe_d) and fpe_d > 0 and _ok(price)) else NAN, "Yahoo forward P/E"))
+    # büyüme (ciro ve EPS) — analist → raporlanan
+    g_rev, grev_src = _first_ok((an.get("rev_growth_0y"), "analysts"),
+                                (_last_ok(r.get("rev_yoy") or []), "last fiscal year"),
+                                (r.get("rev_cagr"), "multi-year average"))
+    est = False
+    if not _ok(fwd) and _ok(eps_ttm) and eps_ttm > 0:
+        g_t, _ = _first_ok((r.get("eps_cagr"), ""), (g_rev, ""))
+        g_t = _clamp(g_t if _ok(g_t) else 6.0, -20.0, 40.0)
+        fwd, fwd_src, est = eps_ttm * (1 + g_t / 100.0), "trend estimate (no analyst forecast)", True
+    g_eps, geps_src = NAN, ""
+    if _ok(fwd) and _ok(eps_ttm) and eps_ttm > 0 and not est:
+        g_eps, geps_src = (fwd / eps_ttm - 1) * 100, "forward vs trailing EPS"
+    if not _ok(g_eps):
+        g_eps, geps_src = _first_ok((an.get("growth_1y"), "analysts (next year)"),
+                                    (an.get("growth_0y"), "analysts (this year)"),
+                                    (an.get("growth_5y"), "analysts (5 years)"),
+                                    (r.get("eps_cagr"), "multi-year EPS average"), (g_rev, "revenue growth"))
+    parts = [x for x in (an.get("growth_5y"), g_rev, g_eps) if _ok(x)]
+    g_dcf = _clamp(float(np.mean(parts)), -5.0, 25.0) if parts else 6.0
+    eb, eb_src = _first_ok((_last_ok(f["ebitda"]) if f else NAN, "last fiscal year"),
+                           (_bitem(basis, "op_ttm") + _bitem(basis, "da_ttm")
+                            if (_ok(_bitem(basis, "op_ttm")) and _ok(_bitem(basis, "da_ttm"))) else NAN,
+                            "last 12 months, SEC filings"))
+    own_eveb = NAN
+    if f is not None and px is not None:
+        try:
+            h = [x for x in hist_ev_ebitda(f, px) if _ok(x) and 2 < x < 150]
+            own_eveb = _med(h) if len(h) >= 2 else NAN
+        except Exception:
+            own_eveb = NAN
+    return {"price": price, "shares": sh, "shares_src": sh_src, "net_debt": nd, "net_debt_src": nd_src,
+            "fcf": fcf, "fcf_src": fcf_src, "eps_ttm": eps_ttm, "eps_src": eps_src, "eps_fwd": fwd,
+            "fwd_src": fwd_src, "fwd_est": est, "g_eps": g_eps, "g_eps_src": geps_src, "g_rev": g_rev,
+            "g_rev_src": grev_src, "g_dcf": g_dcf, "ebitda": eb, "ebitda_src": eb_src,
+            "own_pe": (band or {}).get("median", NAN) if band else NAN, "own_eveb": own_eveb}
+
+
+def _mult(peer, own, lo_ok, hi_ok, default):
+    """Adil çarpan: rakip medyanı ile kendi geçmiş medyanının ortalaması; ikisi de yoksa piyasa ortalaması."""
+    cands = [float(x) for x in (peer, own) if _ok(x) and lo_ok < x < hi_ok]
+    if not cands:
+        return default, default * 0.85, default * 1.15, "market average %sx" % fmt_num(default, 1)
+    m = float(np.mean(cands))
+    lo, hi = min(cands + [m * 0.85]), max(cands + [m * 1.15])
+    bits = []
+    if _ok(peer) and lo_ok < peer < hi_ok:
+        bits.append("peer median %sx" % fmt_num(peer, 1))
+    if _ok(own) and lo_ok < own < hi_ok:
+        bits.append("own history %sx" % fmt_num(own, 1))
+    return m, lo, hi, " and ".join(bits)
+
+
+def core_models(f, r, an, d, basis, band, px, pm, wacc, price):
+    """Dört çekirdek yöntem → {'methods': [...], 'inputs': {...}}. Eksik girdide yöntem atlanır."""
+    inp = core_inputs(f, r, an, d, basis, band, px)
+    pm = pm or {}
+    ms = []
+    sh, nd = inp["shares"], inp["net_debt"]
+    w = _clamp(wacc if _ok(wacc) else 9.0, 6.0, 15.0)
+    # 1) DCF — serbest nakit akışı, CAPM'den gelen WACC ile iskonto
+    fcf, g = inp["fcf"], inp["g_dcf"]
+    if _ok(fcf) and fcf > 0 and _ok(sh) and sh > 0:
+        g_lo, g_hi = (g * 0.7, g * 1.3) if g > 0 else (g - 2.0, g + 2.0)
+        v = [(dcf(fcf, sh, gx, 10, wx, G_TERM, nd) or {}).get("value", NAN)
+             for gx, wx in ((g_lo, w + 1), (g, w), (g_hi, w - 1))]
+        ms.append(_method("c_dcf", "DCF · free cash flow", v[0], v[1], v[2],
+                          "FCF %s (%s) growing %s%%, fading to %s%% · WACC %s%% (CAPM)" % (
+                              _bn(fcf), inp["fcf_src"], fmt_num(g, 1), fmt_num(G_TERM, 1), fmt_num(w, 1)),
+                          CORE_W["c_dcf"]))
+    # 2) İleri F/K çarpanı
+    fe = inp["eps_fwd"]
+    if _ok(fe) and fe > 0:
+        m, lo, hi, why = _mult(pm.get("fwd_pe"), inp["own_pe"], 4, 90, CORE_DEF["pe"])
+        ms.append(_method("c_fpe", "Forward P/E multiple", fe * lo, fe * m, fe * hi,
+                          "Forward EPS %s (%s) × %sx (%s)" % (fmt_num(fe, 2), inp["fwd_src"], fmt_num(m, 1), why),
+                          CORE_W["c_fpe"]))
+    # 3) FD/FAVÖK çarpanı
+    eb = inp["ebitda"]
+    if _ok(eb) and eb > 0 and _ok(sh) and sh > 0:
+        m, lo, hi, why = _mult(pm.get("ev_ebitda"), inp["own_eveb"], 2, 80, CORE_DEF["ev_ebitda"])
+        to_px = lambda x: (x * eb - nd) / sh    # noqa: E731
+        ms.append(_method("c_eveb", "EV/EBITDA multiple", to_px(lo), to_px(m), to_px(hi),
+                          "EBITDA %s (%s) × %sx (%s), minus net debt %s" % (_bn(eb), inp["ebitda_src"],
+                                                                           fmt_num(m, 1), why, _bn(nd)),
+                          CORE_W["c_eveb"]))
+    # 4) PEG — büyümeye göre adil F/K
+    ge = inp["g_eps"]
+    if _ok(fe) and fe > 0 and _ok(ge) and ge > 0:
+        gg = _clamp(ge, 5.0, 30.0)
+        pp = pm.get("peg")
+        peg = _clamp(pp, 1.0, 2.5) if (_ok(pp) and pp > 0) else CORE_DEF["peg"]
+        pe_at = lambda k: _clamp(k * gg, 8.0, 50.0)     # noqa: E731
+        ms.append(_method("c_peg", "PEG · growth-adjusted P/E", fe * pe_at(peg * 0.8), fe * pe_at(peg),
+                          fe * pe_at(peg * 1.2),
+                          "Fair P/E = PEG %s × EPS growth %s%% (%s) = %sx" % (
+                              fmt_num(peg, 2), fmt_num(gg, 1), inp["g_eps_src"] or "estimate", fmt_num(pe_at(peg), 1)),
+                          CORE_W["c_peg"]))
+    return {"methods": [x for x in ms if x], "inputs": inp}
+
+
+def _in_band(m, price, band=6.0):
+    return not (_ok(price) and price > 0) or price / band <= m["base"] <= price * band
+
+
+def merge_methods(vt, type_ms, core_ms, price=None, band=6.0):
+    """Tipe özel yöntemler + çekirdek yöntemler (mükerrer fikir eklenmez).
+    growth: çekirdek her zaman eklenir (eskiden tek yöntem vardı: rakiplere göre EV/Satış)
+    capital: aynı fikri taşımayan çekirdek yöntemler eklenir (ör. ileri F/K, PEG)
+    defensive / cyclical: tipe özel yöntemlerden en az ikisi geçerliyse dokunulmaz; değilse çekirdek yedek."""
+    tm = [m for m in (type_ms or []) if m]
+    ok_t = [m for m in tm if _in_band(m, price, band)]
+    have = {m["key"] for m in ok_t}
+    cm = [c for c in (core_ms or []) if c]
+    if vt == "growth":
+        add = cm
+    elif vt == "capital":
+        add = [c for c in cm if not (set(CORE_DUP.get(c["key"], ())) & have)]
+    else:
+        if len(ok_t) >= 2:
+            add = []
+        else:
+            add = [c for c in cm if not (set(CORE_DUP.get(c["key"], ())) & have)
+                   and not (vt == "cyclical" and c["key"] == "c_peg")]
+    return tm + add
+
+
+def value_label(upside, fair_band=5.0):
+    """Yukarı / aşağı potansiyel → ('Undervalued' | 'Overvalued' | 'Fairly valued', yön)."""
+    if not _ok(upside):
+        return "", 0
+    if upside >= fair_band:
+        return "Undervalued", 1
+    if upside <= -fair_band:
+        return "Overvalued", -1
+    return "Fairly valued", 0
