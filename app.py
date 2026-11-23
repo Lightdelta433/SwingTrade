@@ -406,7 +406,16 @@ def _profile_of_session():
 
 def _profile_load(email):
     """Girişte: hesabın kayıtlı ayarları oturuma yüklenir (izleme listesi, alarmlar, bildirimler …)."""
+    try:        # v5.12: war der Server bei Sitzungsbeginn leer? (vor dem ersten automatischen Speichern merken)
+        ss["_srv_blank0"] = bool(bk.server_blank(email))
+    except Exception:
+        ss["_srv_blank0"] = False
     prof = bk.profile_get(email)
+    if prof and not prof.get("gen"):     # v5.12: Datenlinie vergeben (für die Browser-Sicherung)
+        try:
+            bk.profile_put(email, prof)
+        except Exception:
+            pass
     for k in PROFILE_KEYS:
         if k in prof:
             ss[k] = copy.deepcopy(prof[k])
@@ -1419,6 +1428,10 @@ div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock
 [data-testid="stBaseButton-primary"]:hover{filter:brightness(1.08);box-shadow:0 8px 22px -10px var(--acc)}
 [data-baseweb="input"],[data-baseweb="base-input"],[data-baseweb="select"]>div,[data-baseweb="textarea"],
 [data-testid="stNumberInputContainer"]{border-radius:12px !important}
+/* v5.12: Auswahlmenüs = reine Klick-Menüs (kein Textcursor, kein Tippen) — außer „Company“ (neue Ticker) */
+[data-baseweb="select"]>div,[data-baseweb="select"] input{cursor:pointer !important}
+[data-baseweb="select"] input{caret-color:transparent !important;user-select:none}
+.st-key-rc_pick [data-baseweb="select"] input{caret-color:auto !important;cursor:text !important;user-select:auto}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-testid="stNumberInputContainer"]:focus-within{
  border-color:var(--acc) !important;box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 18%,transparent)}
 [data-testid="stBaseButton-segmented_control"],[data-testid="stBaseButton-segmented_controlActive"]{border-radius:999px !important}
@@ -6716,7 +6729,7 @@ def _demo_actions():
                     b["on"] = not b.get("on")
                     b.pop("guard_paused", None)
                     return b
-        b = bk.demo_edit(_me(), run)
+        b = bk.demo_edit(_me(), run, sync=True)
         if b and b.get("_blocked"):
             st.toast(f'⚠️ ACCOUNT BREACHED — {b["name"]} stays paused until the loss limit is raised, switched off '
                      f'or the account is reset')
@@ -6728,7 +6741,7 @@ def _demo_actions():
             kind = next((b.get("src") for b in a.get("bots") or [] if b["id"] == dl), None)
             a["bots"] = [b for b in a.get("bots") or [] if b["id"] != dl]
             return held, kind
-        held, kind = bk.demo_edit(_me(), run2)
+        held, kind = bk.demo_edit(_me(), run2, sync=True)
         st.toast("Bot deleted" + ((" — its open legs stay without a stop; close them under “Open bot positions”"
                                    if kind in ("pairs", "rotation") else
                                    " — its open positions stay and keep their stop / targets") if held else ""))
@@ -6780,157 +6793,6 @@ def _bot_when(ts):
         return pd.Timestamp(float(ts), unit="s", tz="UTC").tz_convert(md.TZ).strftime("%H:%M")
     except Exception:
         return "—"
-
-
-def render_bot_form(acct):
-    """Yeni bot: strateji (AI filtresi ya da kendi filtren), evren, risk ve çıkış kuralları."""
-    saved = ss.get("saved_filters") or []
-    cur_name = ss.get("flt_name") or "My filter"
-    opts = ["ai"] + [f"st:{k}" for k in en.STRAT_KEYS if k != "ai"] + ["pairs", "rotation", "flt:__current__"] + \
-        [f'flt:{x["name"]}' for x in saved if x.get("name") != cur_name]
-
-    def fmt(o):
-        if o == "ai":
-            return "🤖 Pattern breakout — your Short Term patterns + 15-min confirmation (candles = bonus)"
-        if o == "pairs":
-            return "⚖️ Pairs trading — long the cheap leg, short the expensive one (z-score)"
-        if o == "rotation":
-            return "🔄 Momentum rotation — the strongest of a list, rebalanced monthly"
-        if o.startswith("st:"):
-            i_ = en.strat_info(o[3:])
-            return f'{i_["icon"]} {i_["long"]}'
-        return f"My Filter — {cur_name} (as it is now)" if o == "flt:__current__" else f"My Filter — {o[4:]} (saved)"
-    with st.expander("➕  New bot", expanded=not (acct.get("bots") or [])):
-        c1, c2, c3 = st.columns([1.3, 1.9, 1.4])
-        with c1:
-            name = st.text_input("Bot name", key="bot_name", placeholder="e.g. Breakout bot", max_chars=40)
-        with c2:
-            strat = st.selectbox("Strategy", opts, key="bot_strat", format_func=fmt)
-        with c3:
-            if strat in ("pairs", "rotation"):      # v5.8: kendi listeleri
-                H('<div class="boxlbl" style="margin-top:4px">Where it looks</div><div class="muted small">'
-                  + ("The pair list below" if strat == "pairs" else "The rotation universe from the Rotation page")
-                  + '</div>')
-                uni = strat
-            elif strat == "st:ichimoku":      # v5.3: Ichimoku yalnızca dört piyasada
-                H('<div class="boxlbl" style="margin-top:4px">Where it looks</div><div class="muted small">Gold · '
-                  'Silver · Crude oil (WTI) · Bitcoin — choose below</div>')
-                uni = "ichi"
-            else:
-                uni = st.selectbox("Where it looks", ["demo", "scan"], key="bot_uni",
-                                   format_func=lambda u: BOT_UNI_NAME[u])
-        d = en.BOT_DEFAULT
-        if strat in ("pairs", "rotation"):          # v5.8: çift / rotasyon botu — kendi ayarları
-            _bot_form_special(acct, strat, name)
-            return
-        n1, n2, n3 = st.columns(3)
-        skey = strat[3:] if str(strat).startswith("st:") else None
-        with n1:
-            risk = st.number_input("Risk per trade (% of account)", 0.1, 5.0, float(d["risk_pct"]), 0.1,
-                                   key="bot_risk")
-            if skey:           # v5.3: hazır stratejilerde ödül / risk filtresi yok
-                minrr = float(d["min_rr"])
-            else:
-                minrr = st.number_input("Minimum reward / risk", 0.5, 6.0, float(d["min_rr"]), 0.1, key="bot_rr")
-        with n2:
-            maxp = st.number_input("Max. open positions", 1, 20, int(d["max_pos"]), 1, key="bot_maxp")
-            trail = st.number_input("Trailing stop (× ATR, after TP1)", 0.5, 6.0, float(d["trail_atr"]), 0.5,
-                                    key="bot_trail")
-        with n3:
-            alloc = st.number_input("Max. size of one position (%)", 2.0, 100.0, float(d["max_alloc"]), 1.0,
-                                    key="bot_alloc")
-            days = st.number_input("Max. holding time (days)", 1, 120, int(d["max_days"]), 1, key="bot_days")
-        c15, reg, mconf, aid = False, False, 0.0, "long"
-        if not skey and not str(strat).startswith("flt:"):      # v5.3: filtreler yalnızca 1. stratejide (AI)
-            aid = st.selectbox("Direction", ["long", "both"], key="bot_aidir",
-                               format_func={"long": "Long only — bullish patterns (flag, pennant, triangle, range, "
-                                                    "resistance breakout)",
-                                            "both": "Long + short — also bearish patterns (descending triangle, range "
-                                                    "breakdown, head & shoulders)"}.get,
-                               help="v5.11: shorts are opened only on bearish Short Term patterns, below the 21- and "
-                                    "50-day EMA and — with the market filter — only while SPY and QQQ are below "
-                                    "their 50-day EMA. A cash account at the broker cannot sell short.")
-            k1, k2 = st.columns([1.25, 1.35], vertical_alignment="bottom")
-            with k1:
-                c15 = st.checkbox("Require the 15-minute confirmation", value=True, key="bot_c15",
-                                  help="The breakout must hold beyond the level on the 15-minute chart with volume.")
-            with k2:
-                reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA" if aid == "long" else
-                                  "Trade with the market (longs above, shorts below the SPY / QQQ 50-day EMA)",
-                                  value=True, key="bot_reg")
-        elif str(strat).startswith("flt:"):
-            reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
-        bot_params, bot_ichi = None, None
-        if skey == "ichimoku":      # v5.3: dört piyasa · long + short · mod · Bitcoin varyantı
-            i1, i2, i3 = st.columns([1.5, 1.1, 1.2])
-            with i1:
-                mk = st.multiselect("Markets", [m[0] for m in en.ICHI_MARKETS], default=[m[0] for m in en.ICHI_MARKETS],
-                                    key="bot_ichi_mkts", format_func=en.ichi_market_name)
-            with i2:
-                bm = seg("Ichimoku mode", list(ICHI_MODE_LABEL), "bot_ichi_mode", "classic",
-                         fmt={"classic": "Kumo breakout", "staged": "Staged (⅓ + ⅔)"}.get)
-            with i3:
-                bb = st.selectbox("Bitcoin variant", list(en.ICHI_BTC), index=1, key="bot_ichi_btc",
-                                  format_func=lambda k_: en.ICHI_PRESETS[k_]["label"])
-            bot_params = {"mode": 1 if bm == "staged" else 0}
-            bot_ichi = {"mkts": mk or [m[0] for m in en.ICHI_MARKETS], "btc": bb}
-            H('<div class="muted" style="font-size:11.5px;line-height:1.5">Long <b>and short</b>. Each market uses its '
-              'own preset: gold / silver with the weekly-cloud rule, crude oil with ADX ≥ 20, Bitcoin with the '
-              'variant chosen here. Futures are traded as units in the demo account, Bitcoin in fractions.</div>')
-        if skey == "divergence":    # v5.8: tahtadaki ayarlarla aynı
-            bot_params = div_params("w_dv")
-            H(f'<div class="muted" style="font-size:11.5px;line-height:1.5">Uses the settings of the Divergence board '
-              f'(⚙️ Divergence settings): at least {bot_params["min_n"]} of {len(en.div_inds(bot_params))} indicators · '
-              f'{esc(DIV_KIND_LABEL[int(bot_params["kinds"])].lower())} · pivots {bot_params["prd"]} · stop ≤ '
-              f'{tr(bot_params["risk_atr"], 1)} ATR · long and short.</div>')
-        if skey:      # v4.9: stratejinin kuralları + hangi ayarların geçerli olduğu
-            H(strat_steps_html(skey, bot_params))
-            H('<div class="muted" style="font-size:11.5px;line-height:1.5">No extra filters: the bot trades the '
-              'strategy\'s own rules only — no regime filter, no 15-minute confirmation, no minimum confirmation '
-              'score or reward / risk (those belong to the pattern-breakout strategy). '
-              + ('There is no price target: the bot raises the stop to the new 20-day low every day and sells only '
-                 'there; the ATR trailing stop and the holding limit are not used.' if skey == "donchian2" else
-                 'There is no price target: the stop follows the Kijun (short: down, never up) — in the staged mode '
-                 'stage 1 sits just outside the cloud until stage 2 is added. ATR trailing and the holding limit are '
-                 'not used.' if skey == "ichimoku" else
-                 'Mean reversion: targets are the Nadaraya-Watson mid-line (40 %) and the upper band.'
-                 if skey == "wavetrend" else
-                 'Long and short: 40 % at the neckline (TP1), the rest at TP2 or by the ATR trailing stop.'
-                 if skey == "divergence" else
-                 'Targets: 40 % at TP1, the rest at the measured move or by the ATR trailing stop.')
-              + '</div>')
-        if button("Create bot", key="bot_create", primary=True):
-            if len(acct.get("bots") or []) >= bk.BOT_MAX:
-                st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
-            else:
-                flt = None
-                if str(strat).startswith("flt:"):
-                    if strat == "flt:__current__":
-                        flt = {"name": cur_name, "rows": en.normalize_conds(ss.flt_rows), "logic": ss.flt_logic,
-                               "min": int(ss.flt_min or 1)}
-                    else:
-                        sv = next((x for x in saved if x.get("name") == strat[4:]), None) or {}
-                        flt = {"name": sv.get("name") or strat[4:], "rows": en.normalize_conds(sv.get("rows") or []),
-                               "logic": sv.get("logic") or "AND", "min": int(sv.get("min") or 1)}
-                nm = (name or "").strip() or ("AI bot" if strat == "ai" else
-                                              f'{en.strat_info(skey)["name"]} bot' if skey else f'{flt["name"]} bot')
-                b = bk.bot_new(nm, "ai" if strat == "ai" else (skey or "filter"), uni,
-                               {"risk_pct": risk, "max_pos": maxp, "max_alloc": alloc, "min_rr": minrr,
-                                "trail_atr": trail, "max_days": days, "need_c15": bool(c15), "regime": bool(reg),
-                                "min_conf": float(mconf), "ai_dir": aid}, flt, params=bot_params, ichi=bot_ichi)
-                locked_ = bk.guard_locked(bk.demo_get(_me()))
-                if locked_:                                  # v5.4: kilitli hesapta bot duraklatılmış başlar
-                    b["on"] = False
-                    b["guard_paused"] = True
-                bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b))
-                st.toast(f"{nm} created but paused — the account is breached (loss limit)" if locked_ else
-                         f"{nm} is running — first check within 15 minutes")
-                st.rerun()
-        H('<div class="muted" style="font-size:11px;margin-top:4px">Entry: the strategy must be fully met on the '
-          'last closed 15-minute bar; size = account × risk % ÷ (entry − stop), capped by the position limit and '
-          'your cash. Exit: stop-loss, 40 % at TP1 (the stop then moves to the entry), the rest at TP2 or by the '
-          'ATR trailing stop, at the latest after the maximum holding time. Double Donchian exits only at its '
-          'trailing 20-day low, Ichimoku only at its trailing Kijun (short positions: mirrored).</div>')
 
 
 def _bots_body():
@@ -8761,13 +8623,42 @@ def _worker_chip():
             f'worker.py (PULSE_SHARED=1) on a PC / VPS for 24/7.">runs while the app is awake</span>')
 
 
+def _bot_size_txt(b):
+    """v5.12: 'max. 60 % of the account' (Strategie-Anteil)."""
+    try:
+        return f'max. {tr(en.bot_cfg(b.get("cfg"))["strat_pct"], 0)} % of the account'
+    except Exception:
+        return ""
+
+
 def _bot_extra_html(b):
-    """v5.8: çift botunun açık çiftleri / rotasyon botunun sepeti (bot satırının altında)."""
+    """v5.8: çift botunun açık çiftleri / rotasyon botunun sepeti (bot satırının altında).
+    v5.12: Strategie-Anteil · Ichimoku: selbst gewählte Stage je Markt · Paare: selbst gefundene Paare."""
+    sz = _bot_size_txt(b) if b.get("src") != "rotation" else ""
+    if b.get("src") == "ichimoku" and (b.get("ichi") or {}).get("auto"):
+        au = b.get("auto") or {}
+        parts = []
+        for sym_, nm_, _k in en.ICHI_MARKETS:
+            a_ = au.get(sym_)
+            if not a_:
+                continue
+            md_ = "staged ⅓ + ⅔" if int(a_.get("mode") or 0) == 1 else "Kumo breakout"
+            if sym_ == "BTC-USD":
+                md_ += " · " + {"btc926": "9/26/52", "btc1030": "10/30/60", "btc2060": "20/60/120"}.get(
+                    a_.get("btc") or "btc1030", "10/30/60")
+            parts.append(f"{nm_}: {md_}")
+        txt = ("Auto stage — " + " · ".join(parts)) if parts else "Auto stage — chosen at the first check"
+        return f'<span class="bsub">{esc(sz)} · {esc(txt)}</span>'
     if b.get("src") == "pairs":
         pt = b.get("pt") or {}
+        auto = bool((b.get("pairs") or {}).get("auto"))
+        au = b.get("auto") or {}
         lst = (b.get("pairs") or {}).get("list") or []
         pc = en.pair_cfg((b.get("pairs") or {}).get("p"))
-        head = (f'{len(lst)} pairs · entry ±{tr(pc["entry"], 2)} · exit {tr(pc["exit"], 2)} · stop ±'
+        found = ("best pairs: " + ", ".join(x["key"] for x in (au.get("top") or [])) if au.get("top") else
+                 "searching the best pairs…" if (auto and au.get("running")) else
+                 "best pairs: chosen at the first check" if auto else f"{len(lst)} pairs")
+        head = (f'{sz} · {found} · entry ±{tr(pc["entry"], 2)} · exit {tr(pc["exit"], 2)} · stop ±'
                 f'{tr(pc["stop"], 2)} z')
         if not pt:
             return f'<span class="bsub">{esc(head)} · no open pair</span>'
@@ -8785,39 +8676,191 @@ def _bot_extra_html(b):
         return (f'<span class="bsub">{esc(uni)} · top {rc["top"]} · last rebalance {when}: {esc(basket)}'
                 f'{(" + " + esc(rl["safe"])) if rl.get("safe") else ""}</span><span class="bsub"><a class="lnk" '
                 f'target="_self" href="{link(bot_rot=b["id"], f="bots")}">Rebalance now</a></span>')
-    return ""
+    return f'<span class="bsub">{esc(sz)}</span>' if sz else ""
 
 
-def _bot_form_special(acct, strat, name):
-    """v5.8: çift / rotasyon botu oluşturma — ayarlar Pair Lab / Rotation sayfasındakiyle aynı."""
-    d = en.BOT_DEFAULT
-    if strat == "pairs":
-        ss.setdefault("bot_pairs_txt", ss.get("pl_usable_txt") or "KO/PEP, V/MA, XOM/CVX")
-        st.text_area("Pairs (A/B, comma separated — max. 20)", key="bot_pairs_txt", height=70,
-                     help="Prefilled with the usable pairs of your last Pair Lab run. Leg A is bought when the spread "
-                          "is low (z ≤ −entry) and sold short when it is high.")
-        pc = pl_cfg()
-        n1, n2 = st.columns(2)
-        with n1:
-            maxp = st.number_input("Max. open pairs", 1, 10, 3, 1, key="bot_pmax")
-        with n2:
-            alloc = st.number_input("Size per pair (% of account, both legs)", 2.0, 50.0, 20.0, 1.0, key="bot_palloc")
-        H(f'<div class="muted" style="font-size:11.5px;line-height:1.5">Pair settings from the Pair Lab: window '
-          f'{pc["win"]} days · entry |z| ≥ {tr(pc["entry"], 2)} · exit at |z| ≤ {tr(pc["exit"], 2)} · stop |z| ≥ '
-          f'{tr(pc["stop"], 2)} · max. {pc["max_days"]} trading days. Both legs are opened together (long A + short B, '
-          f'β-weighted, dollar-neutral) and closed together — no stop on the legs, the spread decides. A symbol is used '
-          f'by one open pair at a time. Live z uses the latest 15-minute price.</div>')
-        prs = en.pair_parse(ss.get("bot_pairs_txt") or "")
+BOT_SIZE_HELP = ("The most this bot may have invested at any time, as a share of the account. The bot splits it over "
+                 "up to 5 positions (Ichimoku: one per market, pairs: up to 3 pairs) and sizes each so that it risks "
+                 "at most 1 % of the account to its stop. 100 % = the whole account (5 positions × 20 %).")
+
+
+def _bot_auto_name(acct, base):
+    """v5.12: Bot-Name automatisch — bei gleichem Namen mit Nummer (Pattern breakout bot 2 …)."""
+    names = {str(b.get("name") or "").casefold() for b in acct.get("bots") or []}
+    if base.casefold() not in names:
+        return base
+    i = 2
+    while f"{base} {i}".casefold() in names:
+        i += 1
+    return f"{base} {i}"
+
+
+def _bot_size_box(key="bot_alloc"):
+    """v5.12: Max. size of strategy (%) — reine Auswahl (kein Tippen)."""
+    opts = list(en.BOT_STRAT_OPTS)
+    if ss.get(key) not in opts:
+        ss[key] = en.BOT_STRAT_DEFAULT
+    return st.selectbox("Max. size of strategy (%)", opts, key=key, format_func=lambda v: f"{v} %", help=BOT_SIZE_HELP)
+
+
+def _flt_card(name, rows):
+    """v5.12: Regel-Karten für einen Filter-Bot (aktive Bedingungen, höchstens 5 sichtbar)."""
+    act = [r for r in en.normalize_conds(rows or []) if r.get("Active")]
+    items = "".join(f'<div class="strat-step" style="--c:{ACCENT}"><span class="n">{i + 1}</span><div>'
+                    f'<b>{esc(r["Indicator"])}</b><span>{esc(en.cond_text(r))}</span></div></div>'
+                    for i, r in enumerate(act[:5]))
+    if not act:
+        items = ('<div class="muted small">No active condition in this filter yet — add some on the My Filter '
+                 'page first.</div>')
+    more = f'<div class="muted small" style="margin-top:4px">+ {len(act) - 5} more conditions</div>' if len(act) > 5 else ""
+    return (f'<div class="strat-box"><div class="strat-hd"><span class="strat-ic">🧪</span><div><b>My Filter — '
+            f'{esc(name)}</b><div class="muted small">The bot buys stocks of the whole market that pass your filter '
+            f'(as on the My Filter page).</div></div></div><div class="strat-steps">{items}</div>{more}</div>')
+
+
+def render_bot_form(acct):
+    """v5.12 — Neuer Bot: nur Strategie + Max. size of strategy (%) (beim Musterausbruch zusätzlich Richtung,
+    15-Minuten-Bestätigung und SPY/QQQ-Filter). Name, Risiko, Positionszahl, Trailing-Stop, Haltedauer, Mindest-
+    Chance/Risiko und „Where it looks“ setzt der Bot selbst. Beschreibung + Regel-Karten 1–5 bleiben sichtbar."""
+    saved = ss.get("saved_filters") or []
+    cur_name = ss.get("flt_name") or "My filter"
+    opts = ["ai"] + [f"st:{k}" for k in en.STRAT_KEYS if k != "ai"] + ["pairs", "rotation", "flt:__current__"] + \
+        [f'flt:{x["name"]}' for x in saved if x.get("name") != cur_name]
+
+    def fmt(o):
+        if o == "ai":
+            return "🤖 Pattern breakout — your Short Term patterns + 15-min confirmation (candles = bonus)"
+        if o == "pairs":
+            return "⚖️ Pairs trading — the bot finds the best pairs itself (z-score)"
+        if o == "rotation":
+            return "🔄 Momentum rotation — the strongest of a list, rebalanced monthly"
+        if o.startswith("st:"):
+            i_ = en.strat_info(o[3:])
+            return f'{i_["icon"]} {i_["long"]}'
+        return f"My Filter — {cur_name} (as it is now)" if o == "flt:__current__" else f"My Filter — {o[4:]} (saved)"
+    if ss.get("bot_strat") not in opts:
+        ss["bot_strat"] = "ai"
+    with st.expander("➕  New bot", expanded=not (acct.get("bots") or [])):
+        c1, c2 = st.columns([2.5, 1.0], vertical_alignment="bottom")
+        with c1:
+            strat = st.selectbox("Strategy", opts, key="bot_strat", format_func=fmt)
+        if strat == "rotation":            # v5.12: Momentum Rotation behält ihre Einstellungen — nur der Name entfällt
+            _bot_form_special(acct, strat)
+            return
+        with c2:
+            alloc = _bot_size_box()
+        if strat == "pairs":
+            _bot_form_special(acct, strat, alloc)
+            return
+        skey = strat[3:] if str(strat).startswith("st:") else None
+        flt = None
+        if str(strat).startswith("flt:"):
+            if strat == "flt:__current__":
+                flt = {"name": cur_name, "rows": en.normalize_conds(ss.flt_rows), "logic": ss.flt_logic,
+                       "min": int(ss.flt_min or 1)}
+            else:
+                sv = next((x for x in saved if x.get("name") == strat[4:]), None) or {}
+                flt = {"name": sv.get("name") or strat[4:], "rows": en.normalize_conds(sv.get("rows") or []),
+                       "logic": sv.get("logic") or "AND", "min": int(sv.get("min") or 1)}
+        bot_params, bot_ichi = None, None
+        if skey == "ichimoku":              # v5.12: alle vier Märkte · Stage + Bitcoin-Variante wählt der Bot
+            bot_params = {"mode": 0}
+            bot_ichi = {"mkts": [m[0] for m in en.ICHI_MARKETS], "btc": "btc1030", "auto": True}
+        if skey == "divergence":            # v5.8: Einstellungen der Divergence-Tafel
+            bot_params = div_params("w_dv")
+        # Beschreibung + Regel-Karten 1–5 — immer sichtbar
+        H(strat_steps_html(skey or "ai", bot_params) if (strat == "ai" or skey) else _flt_card(flt["name"], flt["rows"]))
+        c15, reg, aid = False, False, "long"
+        if strat == "ai":                   # Musterausbruch: die Filter bleiben
+            aid = st.selectbox("Direction", ["long", "both"], key="bot_aidir",
+                               format_func={"long": "Long only — bullish patterns (flag, pennant, triangle, range, "
+                                                    "resistance breakout)",
+                                            "both": "Long + short — also bearish patterns (descending triangle, range "
+                                                    "breakdown, head & shoulders)"}.get,
+                               help="Shorts are opened only on bearish Short Term patterns, below the 21- and 50-day "
+                                    "EMA and — with the market filter — only while SPY and QQQ are below their 50-day "
+                                    "EMA. A cash account at the broker cannot sell short.")
+            k1, k2 = st.columns([1.25, 1.35], vertical_alignment="bottom")
+            with k1:
+                c15 = st.checkbox("Require the 15-minute confirmation", value=True, key="bot_c15",
+                                  help="The breakout must hold beyond the level on the 15-minute chart with volume.")
+            with k2:
+                reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA" if aid == "long" else
+                                  "Trade with the market (longs above, shorts below the SPY / QQQ 50-day EMA)",
+                                  value=True, key="bot_reg")
+        elif flt is not None:
+            reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
+        npos = len(en.ICHI_MARKETS) if skey == "ichimoku" else int(en.BOT_AUTO["max_pos"])
+        slot = float(alloc) / max(1, npos)
+        extra = {
+            "donchian2": "No price target: the stop rises with the 20-day low every day and the bot sells only there.",
+            "ichimoku": "Gold, silver, crude oil and Bitcoin, long and short. The bot picks the stage itself: per "
+                        "market the mode that did better over the last 3 years — Kumo breakout with Kijun trail or "
+                        "the staged entry (⅓ into the cloud, ⅔ on the breakout) — and for Bitcoin also the better "
+                        "settings. Re-checked every day; an open position keeps its mode until it is closed.",
+            "wavetrend": "Mean reversion: targets are the Nadaraya-Watson mid-line (40 %) and the upper band.",
+            "divergence": "Uses the settings of the Divergence board (⚙️ Divergence settings), long and short.",
+            "flag": "Targets: 40 % at TP1, the rest at the measured move or by the ATR trailing stop.",
+        }.get(skey or "", "")
+        H('<div class="muted" style="font-size:11.5px;line-height:1.55">'
+          + (esc(extra) + " " if extra else "")
+          + f'<b>What the bot sets itself:</b> it scans the whole market (Ichimoku: its four markets), never has more '
+            f'than <b>{int(alloc)} %</b> of the account in this strategy, splits it over up to {npos} positions '
+            f'(each at most {tr(slot, 1)} % of the account) and risks at most 1 % of the account per trade to the '
+            f'stop. Exits follow the strategy (stop-loss, 40 % at TP1 then stop to entry, the rest at TP2 or a '
+            f'2 × ATR trailing stop, at the latest after 15 days; Double Donchian and Ichimoku only at their '
+            f'trailing stop). The name is set automatically.</div>')
         if button("Create bot", key="bot_create", primary=True):
             if len(acct.get("bots") or []) >= bk.BOT_MAX:
                 st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
-            elif not prs:
-                st.warning("Enter at least one pair, e.g. KO/PEP.")
             else:
-                nm = (name or "").strip() or "Pairs bot"
-                b = bk.bot_new(nm, "pairs", "pairs", {"max_pos": int(maxp), "max_alloc": float(alloc),
-                                                      "risk_pct": d["risk_pct"]},
-                               pairs={"list": [list(x) for x in prs], "p": pc})
+                base = ("Pattern breakout bot" if strat == "ai" else f'{en.strat_info(skey)["name"]} bot' if skey
+                        else f'{flt["name"]} bot')
+                nm = _bot_auto_name(acct, base)
+                cfg = dict(en.BOT_AUTO, max_pos=npos, strat_pct=float(alloc), max_alloc=max(2.0, slot),
+                           need_c15=bool(c15), regime=bool(reg), min_conf=0.0, ai_dir=aid)
+                b = bk.bot_new(nm, "ai" if strat == "ai" else (skey or "filter"), "scan", cfg, flt,
+                               params=bot_params, ichi=bot_ichi)
+                _bot_add(b, nm)
+
+
+def _bot_form_special(acct, strat, alloc=None):
+    """v5.12: Paare — der Bot sucht die besten Paare selbst (nur Max. size of strategy); Rotation — eigene
+    Einstellungen bleiben, nur der Name wird automatisch gesetzt."""
+    if strat == "pairs":
+        pc = pl_cfg()
+        slot = float(alloc or en.BOT_STRAT_DEFAULT) / 3.0
+        H('<div class="strat-box"><div class="strat-hd"><span class="strat-ic">⚖️</span><div><b>Pairs trading — the '
+          'bot finds the best pairs itself</b><div class="muted small">Every day it tests all candidate pairs (US '
+          'stocks and ETFs such as KO/PEP, V/MA, XOM/CVX, GLD/SLV) exactly like the Pair Lab and trades only the '
+          'usable ones.</div></div></div><div class="strat-steps">'
+          + "".join(f'<div class="strat-step" style="--c:{c_}"><span class="n">{i + 1}</span><div><b>{esc(t_)}</b>'
+                    f'<span>{esc(d_)}</span></div></div>' for i, (t_, d_, c_) in enumerate([
+                        ("Find", "Cointegrated, half-life %s–%s days, at least %d backtest trades, win rate ≥ %s %% "
+                                 "and profit factor ≥ %s — the best %d by quality are watched."
+                         % (tr(en.PAIR_USABLE["hl_min"], 0), tr(en.PAIR_USABLE["hl_max"], 0),
+                            en.PAIR_USABLE["trades"], tr(en.PAIR_USABLE["win"], 0), tr(en.PAIR_USABLE["pf"], 1),
+                            bk.PAIRS_AUTO_N), ACCENT),
+                        ("Entry", "Spread at |z| ≥ %s: long the cheap leg, short the expensive one (β-weighted, "
+                                  "dollar-neutral) — the most extreme pair first." % tr(pc["entry"], 2), "#3DDC97"),
+                        ("Size", "Up to 3 pairs at a time, each with a third of the strategy size (%s %% of the "
+                                 "account, both legs)." % tr(slot, 1), "#F5B544"),
+                        ("Exit", "Spread back at |z| ≤ %s — both legs together." % tr(pc["exit"], 2), "#60A5FA"),
+                        ("Stop", "Spread stop at |z| ≥ %s or after %d trading days." % (tr(pc["stop"], 2),
+                                                                                         int(pc["max_days"])),
+                         "#F87171")]))
+          + '</div></div>')
+        H(f'<div class="muted" style="font-size:11.5px;line-height:1.55">Window {pc["win"]} days (Pair Lab settings). '
+          f'A symbol is used by one open pair at a time; the live z uses the latest 15-minute price. The name is set '
+          f'automatically.</div>')
+        if button("Create bot", key="bot_create", primary=True):
+            if len(acct.get("bots") or []) >= bk.BOT_MAX:
+                st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
+            else:
+                nm = _bot_auto_name(acct, "Pairs bot")
+                b = bk.bot_new(nm, "pairs", "pairs", {"max_pos": 3, "strat_pct": float(alloc or 100),
+                                                      "max_alloc": max(2.0, slot), "risk_pct": 1.0},
+                               pairs={"auto": True, "list": [], "p": pc})
                 _bot_add(b, nm)
         return
     rc = ro_cfg()
@@ -8829,15 +8872,16 @@ def _bot_form_special(acct, strat, name):
       f'1 / 3 / 6 / 12 months = {tr(rc["w1"], 1)} / {tr(rc["w3"], 1)} / {tr(rc["w6"], 1)} / {tr(rc["w12"], 1)} · '
       f'absolute momentum {"on" if rc["abs"] else "off"} · market filter {"on" if rc["mkt"] else "off"}. The first '
       f'basket is bought at the next check, then at the start of every month (each order while its market is '
-      f'open). No stops — the monthly ranking decides.</div>')
+      f'open). No stops — the monthly ranking decides. The name is set automatically.</div>')
     if button("Create bot", key="bot_create", primary=True):
         if len(acct.get("bots") or []) >= bk.BOT_MAX:
             st.warning(f"You can run up to {bk.BOT_MAX} bots. Delete one first.")
         elif not uni["syms"]:
             st.warning("The universe is empty — pick another one on the Rotation page.")
         else:
-            nm = (name or "").strip() or "Rotation bot"
-            b = bk.bot_new(nm, "rotation", "rotation", {"max_alloc": float(alloc), "max_pos": rc["top"] + 1},
+            nm = _bot_auto_name(acct, "Rotation bot")
+            b = bk.bot_new(nm, "rotation", "rotation", {"max_alloc": float(alloc), "max_pos": rc["top"] + 1,
+                                                        "strat_pct": float(alloc)},
                            rot={"uni": uni["key"], "syms": uni["syms"] if uni["key"] in ("watch", "custom") else [],
                                 "p": rc})
             _bot_add(b, nm)
@@ -8848,7 +8892,7 @@ def _bot_add(b, nm):
     if locked_:                                  # v5.4: kilitli hesapta bot duraklatılmış başlar
         b["on"] = False
         b["guard_paused"] = True
-    bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b))
+    bk.demo_edit(_me(), lambda a: a.setdefault("bots", []).append(b), sync=True)     # v5.12: sofort dauerhaft
     st.toast(f"{nm} created but paused — the account is breached (loss limit)" if locked_ else
              f"{nm} is running — first check within 15 minutes")
     st.rerun()
