@@ -30,7 +30,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "5.11"
+CHART_VERSION = "5.12"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -475,7 +475,7 @@ def data_token(sym, tf, lb=None):
 # ----------------------------------------------------------------------
 # Bileşen
 # ----------------------------------------------------------------------
-UI_VERSION = "5.11"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+UI_VERSION = "5.12"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
 
 
 def frontend_version():
@@ -1101,6 +1101,75 @@ def _macro_component():
                 d = _MACRO_DIR
     try:
         return components.declare_component("pulse_macro", path=d)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------- v5.12 — Browser-Sicherung (localStorage)
+# Unsichtbare Mini-Komponente: liest beim ersten Laden die Sicherung aus dem Browser (einmal) und schreibt danach
+# jede neue Kopie hinein. Gleiche Herkunft wie die App → die Kopie bleibt nach F5 und nach Neustarts erhalten
+# (solange die Browserdaten nicht gelöscht werden). Keine Passwörter — nur Demo-Konten, Bots und Einstellungen.
+_VAULT_HTML = """<!doctype html><html><head><meta charset="utf-8"><meta name="pulse-vault" content="2"></head>
+<body style="margin:0;background:transparent"><script>
+(function(){
+  // v5.12 — Browser-Sicherung. Regel: erst LESEN und melden, dann schreiben. Solange die App die gelesene Kopie
+  // nicht geprüft hat (armed=false), wird nie geschrieben — eine leere Server-Kopie kann eine gute Sicherung also
+  // nicht überschreiben. Gleicher Text wird nicht doppelt geschrieben.
+  var first = true, last = null, bad = false;
+  function send(t, d){ window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: t}, d || {}), "*"); }
+  function ls(){ try { var s = window.localStorage; s.getItem("x"); return s; } catch (e) { return null; } }
+  window.addEventListener("message", function(ev){
+    var d = ev.data || {};
+    if (d.type !== "streamlit:render") return;
+    var a = d.args || {}, s = ls(), ns = String(a.ns || "pulse:vault"), out = {ok: !!s}, tell = false;
+    if (first) {
+      first = false;
+      if (!a.armed) {                       // erste Antwort: gespeicherte Kopie an die App
+        try { out.have = s ? s.getItem(ns) : null; } catch (e) { out.have = null; }
+        tell = true;
+      }
+    } else if (!a.armed) {
+      send("streamlit:setFrameHeight", {height: 0});
+      return;
+    }
+    if (s && a.armed && typeof a.save === "string" && a.save && a.save !== last) {
+      try {
+        s.setItem(ns, a.save); s.setItem(ns + ":t", String(Date.now())); last = a.save;
+        if (bad) { bad = false; out.fixed = true; tell = true; }
+      } catch (e) { bad = true; out.err = "quota"; tell = true; }    // die alte Kopie bleibt dabei erhalten
+    }
+    if (tell) send("streamlit:setComponentValue", {value: out, dataType: "json"});
+    send("streamlit:setFrameHeight", {height: 0});
+  });
+  send("streamlit:componentReady", {apiVersion: 1});
+})();
+</script></body></html>"""
+
+
+@st.cache_resource(show_spinner=False)
+def _vault_component():
+    try:
+        import hashlib
+        d = os.path.join(tempfile.gettempdir(), "pulse_vault_" + hashlib.sha1(_VAULT_HTML.encode("utf-8")).hexdigest()[:10])
+        os.makedirs(d, exist_ok=True)
+        fp = os.path.join(d, "index.html")
+        if not os.path.isfile(fp):
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(_VAULT_HTML)
+        return components.declare_component("pulse_vault", path=d)
+    except Exception:
+        return None
+
+
+def vault(ns, save=None, armed=False, key="pulse_vault"):
+    """Browser-Sicherung. Erste Antwort (armed=False): {'ok', 'have': gespeicherter Text | None}. Danach (armed=True)
+    schreibt der Browser `save` — nur dann; bei vollem Speicher kommt {'ok', 'err': 'quota'} zurück."""
+    comp = _vault_component()
+    if comp is None:
+        return None
+    try:
+        return comp(key=key, default=None, ns=str(ns), armed=bool(armed),
+                    save=save if (armed and isinstance(save, str)) else None)
     except Exception:
         return None
 
