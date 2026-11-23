@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.11"
+BACKEND_VERSION = "5.12"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -497,7 +497,10 @@ def profile_put(email, prof, sync=False):
     with _PLOCK:
         with _LOCK:
             allp = kv_get("profiles") or {"v": 1, "users": {}}
-            allp.setdefault("users", {})[email] = prof
+            users = allp.setdefault("users", {})
+            prof = dict(prof or {})               # v5.12: Datenlinie (gen) bleibt erhalten — neu nur für ein neues Profil
+            prof["gen"] = str(prof.get("gen") or (users.get(email) or {}).get("gen") or secrets.token_hex(4))
+            users[email] = prof
         return kv_put("profiles", allp, sync=sync)
 
 
@@ -917,6 +920,176 @@ def demo_user(email):
     return _demo_user(_demo_all()["users"].get(str(email or "").lower()))
 
 
+# ---------------------------------------------------------------- v5.12 — Browser-Sicherung (localStorage)
+#   Der Server bleibt die Quelle (Bots laufen dort). Der Browser bekommt bei jeder Änderung eine Kopie. Startet
+#   Streamlit Cloud neu OHNE dauerhaften Speicher ([pulse_store]), ist der Server für das Konto leer — dann holt die
+#   App beim nächsten Login in DIESEM Browser die Kopie zurück. Stammt die Kopie aus einer älteren Datenlinie (Server
+#   wurde zurückgesetzt und schon neu benutzt), entscheidet der Nutzer — nichts wird still überschrieben.
+BACKUP_VER = 1
+BACKUP_MAX = 2_400_000        # Zeichen — passt in jedem Browser (localStorage ≈ 5 MB; Safari zählt 2 Byte je Zeichen)
+_PROF_WEIGHT_KEYS = ("watchlist", "journal", "journal_closed", "alerts", "saved_filters", "draws", "bt_saved")
+
+
+def server_blank(email):
+    """True: der Server hat für das Konto weder Demo-Konten noch Einstellungen — und der Speicher wurde
+    erfolgreich gelesen (ein GitHub-Lesefehler zählt NICHT als leer, sonst würde echte Daten überschrieben)."""
+    email = str(email or "").lower()
+    if not email or not (kv_loaded("demo") and kv_loaded("profiles")):
+        return False
+    return email not in _demo_all()["users"] and not profiles().get(email)
+
+
+def _acct_pristine(a):
+    """Unberührtes Demo-Konto: keine Trades, Positionen, Bots oder offenen Orders, Kasse = Startkapital."""
+    try:
+        return (isinstance(a, dict) and not a.get("trades") and not a.get("pos") and not a.get("bots")
+                and not a.get("pend") and abs(float(a.get("cash") or 0) - float(a.get("start") or 0)) < 0.01)
+    except (TypeError, ValueError):
+        return False
+
+
+def demo_blankish(email):
+    """True: Speicher gelesen und für das Konto kein Demo-Datensatz — oder nur unberührte Konten."""
+    email = str(email or "").lower()
+    if not email or not kv_loaded("demo"):
+        return False
+    raw = _demo_all()["users"].get(email)
+    if raw is None:
+        return True
+    return all(_acct_pristine(a) for a in _demo_user(raw)["accounts"].values())
+
+
+def backup_weight(u):
+    """Wie viel steckt in einem Demo-Datensatz: Konten über das erste hinaus + Trades + Positionen + Bots + Orders."""
+    if not isinstance(u, dict) or not isinstance(u.get("accounts"), dict):
+        return 0
+    acc = [a for a in u["accounts"].values() if isinstance(a, dict)]
+    return max(0, len(acc) - 1) + sum(len(a.get("trades") or []) + len(a.get("pos") or {}) +
+                                      len(a.get("bots") or []) + len(a.get("pend") or []) for a in acc)
+
+
+def profile_weight(p):
+    """Eigene Inhalte im Profil: Watchlist, Journal, Alarme, gespeicherte Filter, Zeichnungen, Backtests."""
+    if not isinstance(p, dict):
+        return 0
+    return sum(len(p.get(k_) or []) for k_ in _PROF_WEIGHT_KEYS if isinstance(p.get(k_), (list, dict)))
+
+
+def user_gen(email):
+    """v5.12 — Datenlinie des Kontos (zufällige Kennung im Profil). Nach einem Server-Reset ohne dauerhaften
+    Speicher entsteht eine neue Linie → so erkennt die App, dass eine Browser-Kopie aus der Zeit davor stammt."""
+    return str(profile_get(email).get("gen") or "")
+
+
+def _server_copy(email):
+    """(Demo-Datensatz, Profil, Signatur) des Kontos auf dem Server."""
+    email = str(email or "").lower()
+    u = _demo_all()["users"].get(email)
+    prof = profiles().get(email) or None
+    sig = hashlib.sha1(json.dumps({"d": u, "p": prof}, sort_keys=True, separators=(",", ":"),
+                                  default=str).encode("utf-8")).hexdigest()
+    return u, prof, sig
+
+
+def _backup_trim(u, keep):
+    """Große Listen kürzen, falls die Kopie zu groß für den Browser wird."""
+    u = copy.deepcopy(u)
+    for a in (u.get("accounts") or {}).values():
+        for k_ in ("trades", "eq", "log"):
+            if isinstance(a.get(k_), list):
+                a[k_] = a[k_][-keep:]
+    return u
+
+
+def backup_blob(email):
+    """(kopya, imza, metin) — imza yalnızca içerik değişince değişir; metin None ise kopya çok büyük.
+    Enthält nie Passwörter (nur Demo-Konten + Einstellungen)."""
+    email = str(email or "").lower()
+    u, prof, sig = _server_copy(email)
+    blob = {"v": BACKUP_VER, "app": BACKEND_VERSION, "ts": round(time.time()), "email_h": _email_h(email),
+            "gen": str((prof or {}).get("gen") or ""), "sig": sig, "demo": u, "profile": prof}
+    txt = json.dumps(blob, separators=(",", ":"), default=str)
+    for keep in (300, 120, 40):
+        if len(txt) <= BACKUP_MAX or not u:
+            break
+        blob["demo"] = _backup_trim(u, keep)
+        txt = json.dumps(blob, separators=(",", ":"), default=str)
+    return blob, sig, (txt if len(txt) <= BACKUP_MAX else None)
+
+
+def _email_h(email):
+    return hashlib.sha256(str(email or "").lower().encode("utf-8")).hexdigest()[:16]
+
+
+def backup_summary(blob):
+    """Kısa özet: {'ts','accounts','bots','positions','trades','gen'}."""
+    u = (blob or {}).get("demo") or {}
+    acc = [a for a in (u.get("accounts") or {}).values() if isinstance(a, dict)]
+    return {"ts": (blob or {}).get("ts"), "accounts": len(acc), "bots": sum(len(a.get("bots") or []) for a in acc),
+            "positions": sum(len(a.get("pos") or {}) for a in acc),
+            "trades": sum(len(a.get("trades") or []) for a in acc), "gen": str((blob or {}).get("gen") or "")}
+
+
+def server_summary(email):
+    """Gleiche Kurzform für den aktuellen Server-Stand (für die Rückfrage)."""
+    u, prof, _s = _server_copy(email)
+    return backup_summary({"demo": u, "gen": (prof or {}).get("gen")})
+
+
+def backup_check(email, blob, fresh=False):
+    """Browser-Kopie gegen den Server prüfen. Döner: (karar, açıklama)
+       'bad' / 'foreign' / 'empty' — unbrauchbar · 'wait' — Speicher gerade nicht lesbar (später nochmal)
+       'same' — identisch · 'ok' — der Server ist die gültige, neuere Linie (Kopie wird überschrieben)
+       'restore' — Server leer (oder seit Sitzungsbeginn nur unberührt: fresh) → automatisch zurückholen
+       'ask' — Kopie aus einer älteren Datenlinie mit eigenen Inhalten → der Nutzer entscheidet."""
+    email = str(email or "").lower()
+    if not isinstance(blob, dict) or int(blob.get("v") or 0) != BACKUP_VER:
+        return "bad", "unknown backup format"
+    if blob.get("email_h") and blob["email_h"] != _email_h(email):
+        return "foreign", "backup belongs to another account"
+    u, prof = blob.get("demo"), blob.get("profile")
+    has_demo = isinstance(u, dict) and isinstance(u.get("accounts"), dict) and bool(u["accounts"])
+    if not has_demo and not (isinstance(prof, dict) and prof):
+        return "empty", "the backup is empty"
+    if not (kv_loaded("demo") and kv_loaded("profiles")):
+        return "wait", "the data store cannot be read right now"
+    su, sp, sig = _server_copy(email)
+    if blob.get("sig") and blob["sig"] == sig:
+        return "same", "the backup equals the server copy"
+    if server_blank(email) or (fresh and demo_blankish(email)):
+        return "restore", "the server has no data for this account"
+    mine = backup_weight(u) + profile_weight(prof)
+    g_bak, g_srv = str(blob.get("gen") or ""), str((sp or {}).get("gen") or "")
+    if g_bak and g_srv:
+        if g_bak == g_srv:
+            return "ok", "same data line — the server copy is the newer one"
+        return ("ask", "the backup is from before a server reset") if mine else ("ok", "nothing to bring back")
+    srv = backup_weight(su) + profile_weight(sp)          # alte Daten ohne Kennung: nur fragen, wenn mehr drin ist
+    return ("ask", "the backup holds more than the server copy") if mine > srv else ("ok", "the server copy is fuller")
+
+
+def backup_restore(email, blob, force=False, fresh=False):
+    """Tarayıcı kopyasını geri yükler. Ohne force nur, wenn backup_check 'restore' sagt (Server leer); force=True
+    nach ausdrücklicher Bestätigung des Nutzers. Döner: (ok, mesaj)."""
+    email = str(email or "").lower()
+    verdict, info = backup_check(email, blob, fresh=fresh)
+    if verdict in ("bad", "foreign", "empty", "wait"):
+        return False, info
+    if verdict == "same":
+        return False, info
+    if not force and verdict != "restore":
+        return False, "the server already has data for this account"
+    u, prof = blob.get("demo"), blob.get("profile")
+    if isinstance(u, dict) and isinstance(u.get("accounts"), dict) and u["accounts"]:
+        with _DLOCK:
+            if not force and not (server_blank(email) or (fresh and demo_blankish(email))):
+                return False, "the server already has data for this account"
+            _demo_save_user(email, _demo_user(copy.deepcopy(u)), sync=True)
+    if isinstance(prof, dict) and prof:
+        profile_put(email, copy.deepcopy(prof), sync=True)     # gen der Kopie → die alte Datenlinie läuft weiter
+    return True, "restored"
+
+
 def demo_accounts(email):
     """Seçim listesi için: [{'id','name','ccy','start','equity','active','bots'}] (sıralı)."""
     u = demo_user(email)
@@ -962,12 +1135,13 @@ def demo_put(email, acct, sync=False):
         return _demo_save_user(email, u, sync=sync)
 
 
-def demo_edit(email, fn, acc_id=None):
-    """Hesabı (verilmezse etkin hesap) kilit altında okur, fn(acct) ile değiştirir, kaydeder."""
+def demo_edit(email, fn, acc_id=None, sync=False):
+    """Hesabı (verilmezse etkin hesap) kilit altında okur, fn(acct) ile değiştirir, kaydeder.
+    v5.12: sync=True → kalıcı depoya (GitHub) HEMEN yazılır (bot oluşturma / silme / açma-kapama)."""
     with _DLOCK:
         acct = demo_get(email, acc_id)
         res = fn(acct)
-        demo_put(email, acct)
+        demo_put(email, acct, sync=sync)
         return res
 
 
@@ -1750,7 +1924,8 @@ def bot_new(name, src, universe, cfg=None, flt=None, params=None, ichi=None, pai
         ok_ = [m[0] for m in en.ICHI_MARKETS]
         mk = [s_ for s_ in ((ichi or {}).get("mkts") or ok_) if s_ in ok_] or ok_
         btc = (ichi or {}).get("btc")
-        b["ichi"] = {"mkts": mk, "btc": btc if btc in en.ICHI_BTC else "btc1030"}
+        b["ichi"] = {"mkts": mk, "btc": btc if btc in en.ICHI_BTC else "btc1030",
+                     "auto": bool((ichi or {}).get("auto"))}      # v5.12: Modus + BTC-Variante wählt der Bot
         b["universe"] = "ichi"
     if src == "pairs":                       # v5.8: çift listesi + çift ayarları; açık çiftler 'pt' içinde
         lst, seen = [], set()
@@ -1760,7 +1935,8 @@ def bot_new(name, src, universe, cfg=None, flt=None, params=None, ichi=None, pai
                 if a_ and b_ and a_ != b_ and en.pair_key(a_, b_) not in seen:
                     seen.add(en.pair_key(a_, b_))
                     lst.append([a_, b_])
-        b["pairs"] = {"list": lst[:20], "p": en.pair_cfg((pairs or {}).get("p"))}
+        b["pairs"] = {"list": lst[:20], "p": en.pair_cfg((pairs or {}).get("p")),
+                      "auto": bool((pairs or {}).get("auto"))}    # v5.12: der Bot sucht die besten Paare selbst
         b["universe"], b["pt"] = "pairs", {}
     if src == "rotation":                    # v5.8: evren + rotasyon ayarları; ay başında yeniden dengeler
         r_ = rot or {}
@@ -1825,6 +2001,104 @@ def _bars15(df, after=0.0):
 
 def _real(df):
     return df is not None and len(df) > 0 and df.attrs.get("src", "real") == "real"
+
+
+# ---------------------------------------------------------------- v5.12 — Ichimoku-Stage + bestes Paar automatisch
+_ICHI_AUTO = {}
+_PAIRS_AUTO = {"key": None, "list": [], "rows": [], "running": False, "ts": 0.0, "err": ""}
+PAIRS_AUTO_N = 8             # so viele nutzbare Paare beobachtet der Bot (das beste Signal zuerst)
+PAIRS_AUTO_GROUPS = ("US stocks", "ETFs")
+
+
+def ichi_auto_pick(sym, df, bp=None):
+    """v5.12 — Ichimoku-'Stage' automatisch: pro Markt der Modus (0 = Kumo-Ausbruch + Kijun-Trail, 1 = gestaffelt
+    ⅓ + ⅔) und bei Bitcoin zusätzlich die Einstellung, die in den letzten 3 Jahren im Backtest besser war
+    (Rendite ÷ max. Drawdown, mindestens 3 Trades). Einmal pro Tag und Markt."""
+    en = _engine()
+    bp = bp or {}
+    try:
+        last = str(pd.Timestamp(df.index[-1]).date())
+    except Exception:
+        last = ""
+    key = (str(sym).upper(), time.strftime("%Y-%m-%d"), last)
+    if key in _ICHI_AUTO:
+        return dict(_ICHI_AUTO[key])
+    variants = list(en.ICHI_BTC) if str(sym).upper() == "BTC-USD" else ["btc1030"]
+    best = None
+    for v in variants:
+        for mode in (0, 1):
+            P = en.ichi_market_params(sym, v, mode, int(bp.get("bounce", 1)), float(bp.get("max_atr") or 2.0))
+            try:
+                res = en.backtest_strategy(df, {"strat": "ichimoku", "sp": P, "yrs": 3})
+            except Exception:
+                continue
+            k = (res or {}).get("kpi") or {}
+            if not (res or {}).get("ok") or int(k.get("n", 0)) < 3:
+                continue
+            sc = float(k.get("net_pct", 0.0)) / max(5.0, -float(k.get("mdd", 0.0)))
+            if best is None or sc > best["score"] + 1e-9:
+                best = {"mode": mode, "btc": v, "score": round(sc, 3), "net": round(float(k.get("net_pct", 0.0)), 1),
+                        "mdd": round(float(k.get("mdd", 0.0)), 1), "n": int(k.get("n", 0))}
+    if best is None:
+        best = {"mode": 0, "btc": "btc1030", "score": None, "net": None, "mdd": None, "n": 0}
+    if len(_ICHI_AUTO) > 64:
+        _ICHI_AUTO.clear()
+    _ICHI_AUTO[key] = best
+    return dict(best)
+
+
+def _pairs_rank(md, pc):
+    """Alle Kandidaten-Paare (US-Aktien + ETFs) wie im Pair Lab prüfen → nutzbare Paare nach Qualität."""
+    en = _engine()
+    c = en.pair_cfg(pc)
+    cands = [(a, b_) for a, b_, g, _n in en.PAIR_CANDIDATES if g in PAIRS_AUTO_GROUPS]
+    syms = sorted({x for pr in cands for x in pr})
+    yrs = float(c.get("yrs") or 3) + 1
+    daily = md.get_daily_batch(tuple(syms), period="2y" if yrs <= 2 else "5y" if yrs <= 5 else "10y") or {}
+    rows = []
+    for a, b_ in cands:
+        da, db = daily.get(a), daily.get(b_)
+        if not (_real(da) and _real(db)):
+            continue
+        try:
+            r = en.pair_analyze(da, db, c, a, b_)
+        except Exception:
+            r = None
+        if r and r.get("verdict") == "usable":
+            rows.append(r)
+    rows.sort(key=en.pair_rank_key)
+    top = rows[:PAIRS_AUTO_N]
+    info = [{"key": r["key"], "win": round(float((r.get("kpi") or {}).get("win", 0.0)), 0),
+             "pf": (round(float((r.get("kpi") or {}).get("pf", 0.0)), 2)
+                    if (r.get("kpi") or {}).get("pf", 0.0) != float("inf") else None),
+             "z": (round(float(r["z"]), 2) if r.get("z") == r.get("z") and r.get("z") is not None else None)}
+            for r in top]
+    return [[r["a"], r["b"]] for r in top], info
+
+
+def pairs_auto_list(md, pc=None, wait=False):
+    """v5.12 — 'bestes Paar' automatisch: einmal am Tag im Hintergrund (Seite blockiert nicht); bis dahin gilt die
+    letzte Liste. Döner: (liste, durum)."""
+    en = _engine()
+    st_ = _PAIRS_AUTO
+    key = (time.strftime("%Y-%m-%d"), json.dumps(en.pair_cfg(pc), sort_keys=True))
+    stale = st_["key"] != key or (st_["err"] and time.time() - st_["ts"] > 7200)
+    if stale and not st_["running"]:
+        st_["running"] = True
+
+        def job():
+            try:
+                lst, rows = _pairs_rank(md, pc)
+                st_.update(list=lst, rows=rows, err="" if lst else "no usable pair today")
+            except Exception as ex:
+                st_["err"] = f"{type(ex).__name__}: {ex}"[:160]
+            finally:
+                st_.update(key=key, ts=time.time(), running=False)
+        if wait:
+            job()
+        else:
+            threading.Thread(target=job, name="pulse-pairs-auto", daemon=True).start()
+    return [list(x) for x in st_["list"]], dict(st_)
 
 
 def bots_collect(md, acct):
@@ -1910,6 +2184,14 @@ def bots_collect(md, acct):
             elif b["src"] == "pairs":                              # v5.8: iki bacaklı çift işlemi
                 pc_ = b.get("pairs") or {}
                 lst = [tuple(x) for x in (pc_.get("list") or []) if len(x) == 2]
+                if pc_.get("auto"):                                # v5.12: beste Paare automatisch (täglich)
+                    auto_, st_ = pairs_auto_list(md, pc_.get("p"))
+                    lst = [tuple(x) for x in auto_]
+                    data.setdefault("pauto", {})[b["id"]] = {"n": len(auto_), "running": st_["running"],
+                                                             "err": st_["err"], "top": st_["rows"][:3]}
+                    for t_ in (b.get("pt") or {}).values():        # offene Paare bleiben in der Liste
+                        if (t_["a"], t_["b"]) not in lst:
+                            lst.append((t_["a"], t_["b"]))
                 syms = sorted({s_ for pr in lst for s_ in pr if inst_ccy(s_)})
                 daily = md.get_daily_batch(tuple(syms), period="2y") if syms else {}
                 pdat = {}
@@ -1956,7 +2238,15 @@ def bots_collect(md, acct):
                     if not _real(df):
                         continue
                     n_ok += 1
-                    P = en.ichi_market_params(t, ich.get("btc") or "btc1030", int(bp.get("mode") or 0),
+                    mode_, btc_ = int(bp.get("mode") or 0), ich.get("btc") or "btc1030"
+                    if ich.get("auto"):                            # v5.12: Stage wählt der Bot (Backtest, täglich)
+                        held = (acct.get("pos") or {}).get(f"{t}|{b['id']}")
+                        pk_ = ichi_auto_pick(t, df, bp)
+                        mode_, btc_ = int(pk_["mode"]), pk_["btc"]
+                        if held is not None:                       # offene Position: Modus bleibt, bis sie zu ist
+                            mode_ = 1 if held.get("stage") else 0
+                        data.setdefault("ichi_auto", {}).setdefault(b["id"], {})[t] = dict(pk_, mode=mode_)
+                    P = en.ichi_market_params(t, btc_, mode_,
                                               int(bp.get("bounce", 1)), float(bp.get("max_atr") or 2.0))
                     r = en.strat_evaluate("ichimoku", t, df, meta={"name": en.ichi_market_name(t)}, params=P)
                     if r:
@@ -2060,6 +2350,19 @@ def bots_collect(md, acct):
     return data
 
 
+def _bot_used(acct, bid, px, eurusd=None):
+    """v5.12: botun açık pozisyonlarının hesap parasıyla değeri (canlı fiyat; yoksa giriş fiyatı)."""
+    tot = 0.0
+    for p in (acct.get("pos") or {}).values():
+        if p.get("owner") != bid:
+            continue
+        sym = p.get("sym")
+        last = float((px or {}).get(sym) or p.get("entry") or 0.0)
+        fxm = fx_mult(acct.get("ccy", "USD"), inst_ccy(sym), eurusd) or 1.0
+        tot += abs(float(p.get("qty") or 0.0)) * last * fxm
+    return tot
+
+
 def bots_apply(acct, data, now=None):
     """Kilidin İÇİNDE: açık pozisyonları yönetir, yeni alımları yapar. Döner: olay listesi."""
     en = _engine()
@@ -2109,6 +2412,9 @@ def bots_apply(acct, data, now=None):
     # 2) alımlar — v5.6: her sembol kendi borsasına göre (kripto / vadeli US seansı dışında da işlem görür)
     hours = bool(BOT_HOURS_ONLY)
     for b in acct.get("bots") or []:
+        au_ = (data.get("ichi_auto") or {}).get(b["id"]) or (data.get("pauto") or {}).get(b["id"])
+        if au_:                                             # v5.12: was der Bot selbst gewählt hat (Anzeige)
+            b["auto"] = au_
         if b.get("src") in ("pairs", "rotation"):          # v5.8: kendi yönetimleri (iki bacak / aylık sepet)
             entries = bool(b.get("on")) and not gs["locked"]
             if not entries and not (b.get("src") == "pairs" and b.get("pt")):
@@ -2161,7 +2467,12 @@ def bots_apply(acct, data, now=None):
                 eq = demo_value(acct, {k: {"last": v, "src": "real"} for k, v in data["px"].items()}, eurusd)["equity"]
                 frac = str(sym).upper().endswith("-USD")             # kripto: kesirli adet
                 short = s.get("side") == "short"
-                qty = en.bot_size(eq, pend_free(acct), s["entry"], s["stop"], fxm, cfg, frac=frac)
+                used = _bot_used(acct, bid, data["px"], eurusd)      # v5.12: strateji payının dolu kısmı
+                qty = en.bot_size(eq, pend_free(acct), s["entry"], s["stop"], fxm, cfg, frac=frac, used=used)
+                if qty < (0.0001 if frac else 1) and used > 0 and \
+                        used >= eq * cfg["strat_pct"] / 100.0 - float(s["entry"]) * fxm:
+                    note = note or "strategy size reached (%d %% of the account)" % round(cfg["strat_pct"])
+                    continue
                 if s.get("size_frac"):                               # kademeli mod: ⅓ / ⅔
                     q_ = float(qty) * float(s["size_frac"])
                     qty = (int(q_ * 10000 + 1e-9) / 10000.0) if frac else int(q_ + 1e-9)
@@ -2297,7 +2608,7 @@ def _pairs_apply(acct, b, data, now, eurusd, log, entries=True):
         if not (pa and pb and fa and fb):
             notes.append("%s: no live price" % k)
             continue
-        gross = min(val["equity"] * cfg["max_alloc"] / 100.0, max(0.0, pend_free(acct)) * 0.98)
+        gross = min(en.bot_slot(cfg, val["equity"]), max(0.0, pend_free(acct)) * 0.98)   # v5.12: Anteil ÷ Paare
         na = gross / (1.0 + beta)
         qa, qb = na / (pa * fa), (gross - na) / (pb * fb)
         qa = (int(qa * 10000) / 10000.0) if a_.endswith("-USD") else int(qa)
@@ -2327,8 +2638,13 @@ def _pairs_apply(acct, b, data, now, eurusd, log, entries=True):
     note = "; ".join(notes[:2]) if (notes and not opened) else ""
     if not opened and not closed and not note:
         near = sorted(zs.items(), key=lambda kv: -abs(kv[1]["z"]))[:2]
-        note = (("no pair beyond ±%s yet — closest: " % pc["entry"]) +
-                ", ".join("%s z %+.2f" % (k, v["z"]) for k, v in near)) if near else "no pair data yet"
+        pa_ = (data.get("pauto") or {}).get(bid)
+        if not near and pa_ is not None:                  # v5.12: automatische Paarsuche
+            note = ("looking for the best pairs — the daily check is running" if pa_.get("running") else
+                    "no usable pair today — the bot checks all candidate pairs again tomorrow")
+        else:
+            note = (("no pair beyond ±%s yet — closest: " % pc["entry"]) +
+                    ", ".join("%s z %+.2f" % (k, v["z"]) for k, v in near)) if near else "no pair data yet"
     return events, opened, closed, note
 
 
