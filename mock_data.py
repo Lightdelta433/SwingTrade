@@ -23,6 +23,7 @@ yeniden denenir (fail_ttl), böylece Yahoo düzelince gerçek veri geri gelir.
 
 import os
 import re
+import sys
 import time
 import functools
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "5.7"
+DATA_VERSION = "5.10"
 
 try:
     import yfinance as yf
@@ -382,7 +383,9 @@ def _synth(t):
 # ======================================================================
 # Düşük seviye çekiciler
 # ======================================================================
-def _clean_ohlc(df):
+def _clean_ohlc(df, keep_tz=False):
+    """keep_tz=True (v5.11): saat dilimi korunur — seans dışı barların (☀️ / 🌙) hangi dilime düştüğünü bilmek için.
+    Varsayılan: saat dilimi atılır (günlük veride takvim günü, gün içi veride borsanın yerel saati kalır)."""
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
     out = pd.DataFrame(index=df.index)
@@ -393,14 +396,14 @@ def _clean_ohlc(df):
         out[c] = out[c].fillna(out["Close"])
     out["Volume"] = out["Volume"].fillna(0.0)
     idx = pd.to_datetime(out.index)
-    if getattr(idx, "tz", None) is not None:
+    if getattr(idx, "tz", None) is not None and not keep_tz:
         idx = idx.tz_localize(None)
     out.index = idx
     out.index.name = "Date"
     return out
 
 
-def _split_batch(raw, tickers):
+def _split_batch(raw, tickers, keep_tz=False):
     out = {}
     if raw is None or len(raw) == 0:
         return out
@@ -417,17 +420,17 @@ def _split_batch(raw, tickers):
                     continue
             except Exception:
                 continue
-            sub = _clean_ohlc(sub)
+            sub = _clean_ohlc(sub, keep_tz)
             if len(sub):
                 out[t] = sub
     elif len(tickers) == 1:
-        sub = _clean_ohlc(raw)
+        sub = _clean_ohlc(raw, keep_tz)
         if len(sub):
             out[tickers[0]] = sub
     return out
 
 
-def _download(tickers, period="5d", interval="1d", prepost=False):
+def _download(tickers, period="5d", interval="1d", prepost=False, keep_tz=False):
     """TEK istekte çok sembol (Yahoo rate-limit'ine karşı en etkili yöntem)."""
     tickers = list(tickers)
     if not (_HAS_YF and tickers):
@@ -437,7 +440,7 @@ def _download(tickers, period="5d", interval="1d", prepost=False):
                           auto_adjust=False, progress=False, threads=True, prepost=bool(prepost))
     except Exception:
         return {}
-    return _split_batch(raw, tickers)
+    return _split_batch(raw, tickers, keep_tz)
 
 
 @_ttl_cache(240, fail_ttl=60)
@@ -558,12 +561,99 @@ def add_emas(df, periods=(20, 50, 100, 200)):
 # Fiyat özetleri (toplu)
 # ======================================================================
 ET = "America/New_York"          # ABD seansı: ☀️ 04:00–09:30 · normal 09:30–16:00 · 🌙 16:00–20:00 (ET)
+# v5.11 — Pre-Market / After-Hours satırları SABİT ALMAN SAATİYLE (MEZ / MESZ) açılıp kapanır:
+#   ☀️ 10:00 → ABD normal açılışı (genelde 15:30) · normal seans ve kapanış → 24:00: resmî kapanış (satır yok) ·
+#   🌙 00:00 → 10:00 ve ABD'de işlem olmayan günlerin tamamı (hafta sonu, ABD tatili) — son seansın 🌙 fiyatı.
+DE_TZ = TZ
+EXT_PRE_DE = 10 * 60             # ☀️ 10:00 deutscher Zeit
+EXT_POST_DE = 0                  # 🌙 00:00 deutscher Zeit (bis 10:00)
+EXT_NO_TYPES = ("INDEX", "CURRENCY", "CRYPTOCURRENCY", "FUTURE", "MUTUALFUND", "OPTION")
+
+
+def _ts_in(now, tz):
+    """now (None | unix sn | Timestamp / datetime — saat dilimsizse o dilimin yerel saati) → tz'de Timestamp."""
+    if now is None:
+        return pd.Timestamp.now(tz=tz)
+    if isinstance(now, (int, float, np.integer, np.floating)) and not isinstance(now, bool):
+        return pd.Timestamp(float(now), unit="s", tz="UTC").tz_convert(tz)
+    t = pd.Timestamp(now)
+    return t.tz_localize(tz) if t.tzinfo is None else t.tz_convert(tz)
+
+
+def us_hours(day):
+    """v5.11 — ABD normal seansı o takvim gününde (ET dakika): (açılış, kapanış) · hafta sonu / tatilde None.
+    Tatiller ve yarım günler backend'deki borsa takviminden (yüklenemezse yalnızca hafta sonu)."""
+    d = pd.Timestamp(day)
+    if d.tzinfo is not None:
+        d = d.tz_localize(None)
+    d = d.normalize()
+    if d.weekday() >= 5:
+        return None
+    try:
+        bk_ = sys.modules.get("backend")
+        if bk_ is None:
+            import backend as bk_          # yalnızca takvim için, tembel (backend mock_data'yı içe aktarmaz)
+        return bk_._day_hours("us", d)
+    except Exception:
+        return (9 * 60 + 30, 16 * 60)
+
+
+def _prev_session(day, back=12):
+    """day'den önceki son ABD işlem günü (takvime göre)."""
+    d = pd.Timestamp(day).normalize()
+    for i in range(1, back):
+        x = d - pd.Timedelta(days=i)
+        if us_hours(x):
+            return x
+    return None
+
+
+def _et_min_de(day, m):
+    """ET'de o günün m. dakikası → Almanya saatiyle aynı takvim gününün dakikası (ABD / AB yaz saati farkı dahil)."""
+    d0 = pd.Timestamp(day).normalize()
+    t = (d0.tz_localize(ET) + pd.Timedelta(minutes=int(m))).tz_convert(DE_TZ)
+    return int((t.tz_localize(None).normalize() - d0).days) * 1440 + t.hour * 60 + t.minute
+
+
+def ext_window(now=None):
+    """v5.11 — feste deutsche Uhrzeiten: welche Zusatzzeile gilt gerade?
+    'pre'  ☀️ 10:00 → US-Börsenstart (normal 15:30 MEZ) an US-Handelstagen
+    'post' 🌙 00:00 → 10:00 sowie ganztägig an Tagen ohne US-Handel (Wochenende, US-Feiertag) — der letzte
+           Nachbörse-Kurs der letzten Sitzung bleibt stehen, bis um 10:00 ☀️ übernimmt
+    None   regulärer Handel und Börsenschluss → 24:00: offizieller Schlusskurs, keine Zusatzzeile."""
+    try:
+        t = _ts_in(now, DE_TZ)
+    except Exception:
+        return None
+    day = t.tz_localize(None).normalize()
+    hm = t.hour * 60 + t.minute
+    hrs = us_hours(day)
+    if hrs is None or hm < EXT_PRE_DE:
+        return "post"
+    return "pre" if hm < _et_min_de(day, hrs[0]) else None
+
+
+def us_regular_open(now=None):
+    """ABD normal seansı şu an açık mı (takvim + yarım günler)?"""
+    t = _ts_in(now, ET)
+    h = us_hours(t.tz_localize(None).normalize())
+    return bool(h and h[0] <= t.hour * 60 + t.minute < h[1])
+
+
+def ext_eligible(sym, qtype=None):
+    """Pre-Market / After-Hours yalnızca ABD hisse ve ETF'lerinde — saf endeksler (^GSPC …), döviz, vadeli,
+    kripto, fonlar ve ABD dışı borsalar (.DE, .L …) hariç."""
+    s_ = str(sym or "").upper().strip()
+    if not s_ or s_.startswith("^") or "=" in s_ or "." in s_ or re.search(r"-[A-Z]{3,5}$", s_):
+        return False
+    return str(qtype or "").upper() not in EXT_NO_TYPES
 
 
 def market_phase(now=None):
-    """ABD hisse seansının anlık evresi: 'pre' | 'regular' | 'post' | 'closed' (yalnızca gösterim için)."""
+    """ABD hisse seansının anlık evresi: 'pre' | 'regular' | 'post' | 'closed' (New York saatiyle; yalnızca bilgi).
+    v5.11: ☀️ / 🌙 satırlarının ne zaman görüneceğine bu değil ext_window (sabit Alman saatleri) karar verir."""
     try:
-        t = pd.Timestamp.now(tz=ET) if now is None else pd.Timestamp(now).tz_convert(ET)
+        t = _ts_in(now, ET)
     except Exception:
         return "closed"
     if t.weekday() >= 5:
@@ -579,61 +669,168 @@ def market_phase(now=None):
 
 
 def _ext_phase_of(ts):
-    """1 dakikalık barın zaman damgası hangi seans dilimine düşüyor? 'pre' | 'post' | None (normal seans)."""
+    """1 dakikalık barın zaman damgası hangi seans dilimine düşüyor? 'pre' | 'post' | None (normal seans).
+    v5.11: saat dilimsiz damga borsa (New York) saati sayılır."""
     try:
-        t = ts.tz_convert(ET)
+        t = pd.Timestamp(ts)
+        t = t.tz_localize(ET) if t.tzinfo is None else t.tz_convert(ET)
     except Exception:
         return None
-    if t.weekday() >= 5:
+    h = us_hours(t.tz_localize(None).normalize())
+    if not h:
         return None
     hm = t.hour * 60 + t.minute
-    if 4 * 60 <= hm < 9 * 60 + 30:
+    if 4 * 60 <= hm < h[0]:
         return "pre"
-    if hm >= 16 * 60:
+    if h[1] <= hm < 20 * 60:
         return "post"
     return None
 
 
 @_ttl_cache(60, fail_ttl=45)
 def _batch_ext(tickers):
-    """Seans öncesi / sonrası dahil 1 dakikalık barlar (≤ 60 sn önbellek)."""
-    return _download(tickers, "1d", "1m", prepost=True)
+    """Seans öncesi / sonrası dahil 1 dakikalık barlar, son işlem günü (≤ 60 sn önbellek).
+    v5.11: saat dilimi KORUNUR — eskiden atılıyordu ve barın ☀️ / 🌙 dilimi hiç bulunamıyordu."""
+    return _download(tickers, "1d", "1m", prepost=True, keep_tz=True)
 
 
-def get_ext_quotes(tickers):
-    """v5.0 — TradingView tarzı: normal kotasyon + varsa q['ext'] = seans dışı son işlem.
-    ext = {'phase': 'pre'|'post', 'px', 'chg_abs', 'chg_pct', 'at'}; referans her zaman son NORMAL kapanış
-    (q['last']), yani ☀️/🌙 yüzdesi kapanışa göredir ve günün normal yüzdesine karışmaz."""
+@_ttl_cache(120, fail_ttl=60)
+def _batch_ext5(tickers):
+    """v5.11 yedeği: son 5 işlem günü, 5 dakikalık barlar — 1 günlük veri yetmediğinde (☀️ başında henüz işlem yoksa
+    önceki akşamın 🌙 fiyatı, tatil sonrası vb.)."""
+    return _download(tickers, "5d", "5m", prepost=True, keep_tz=True)
+
+
+def _ext_pick(df, win, q, now=None):
+    """v5.11 — seans dışı son işlem fiyatı (HANGİ satırın gösterileceğine ext_window karar verir).
+    win='pre'  → bugünün ☀️ barları (04:00 – açılış ET); henüz işlem yoksa önceki seansın son 🌙 fiyatı (carry)
+    win='post' → son tamamlanmış seansın 🌙 barları (kapanış – 20:00 ET)
+    Referans: ilgili NORMAL seansın kapanışı (günlük veriden; yoksa o günün son normal-seans barından)."""
+    if df is None or not len(df) or "Close" not in df:
+        return None
+    c = pd.to_numeric(df["Close"], errors="coerce")
+    c = c[np.isfinite(c.to_numpy(float)) & (c.to_numpy(float) > 0)]
+    if not len(c):
+        return None
+    idx = pd.DatetimeIndex(c.index)
+    idx = idx.tz_localize(ET) if idx.tz is None else idx.tz_convert(ET)
+    vals = c.to_numpy(float)
+    hm = np.asarray(idx.hour * 60 + idx.minute)
+    days = idx.tz_localize(None).normalize()
+    now_et = _ts_in(now, ET)
+    today = now_et.tz_localize(None).normalize()
+    sess = {}
+    for d in sorted(set(days)):
+        if d <= today:
+            h = us_hours(d)
+            if h:
+                sess[d] = h
+
+    def part(d, kind):
+        if d is None or d not in sess:
+            return None
+        o, cl = sess[d]
+        m = np.asarray(days == d)
+        if kind == "pre":
+            m = m & (hm >= 4 * 60) & (hm < o)
+        elif kind == "reg":
+            m = m & (hm >= o) & (hm < cl)
+        else:
+            m = m & (hm >= cl) & (hm < 20 * 60)
+        ii = np.flatnonzero(m)
+        return (idx[ii[-1]], float(vals[ii[-1]])) if len(ii) else None
+
+    def ref_close(d):
+        ds = d.strftime("%Y-%m-%d") if d is not None else ""
+        if ds and q.get("day") == ds and q.get("last"):
+            return float(q["last"])
+        if ds and q.get("prev_day") == ds and q.get("prev"):
+            return float(q["prev"])
+        r = part(d, "reg")
+        if r:
+            return r[1]
+        return float(q.get("last") or 0) or None
+
+    carry = False
+    if win == "pre":
+        ref_d = _prev_session(today)
+        hit = part(today, "pre")
+        if hit is None:                     # henüz ☀️ işlemi yok → önceki seansın son 🌙 fiyatı (nahtloser Übergang)
+            hit, carry = part(ref_d, "post"), True
+    else:
+        h = us_hours(today)
+        ref_d = today if (h and now_et.hour * 60 + now_et.minute >= h[1]) else _prev_session(today)
+        hit = part(ref_d, "post")
+    if hit is None or ref_d is None:
+        return None
+    ts, px = hit
+    ref = ref_close(ref_d)
+    # v5.3: small cap'lerde seans dışı +%400 / −%60 gerçek olabilir — yalnızca bariz veri hatası elenir
+    if not (ref and ref > 0 and px > 0) or not (-0.9 < px / ref - 1 < 5.0):
+        return None
+    return {"phase": win, "px": px, "chg_abs": px - ref, "chg_pct": (px / ref - 1) * 100, "ref": ref,
+            "at": ts.strftime("%H:%M"), "at_de": ts.tz_convert(DE_TZ).strftime("%H:%M"),
+            "day": ts.strftime("%Y-%m-%d"), "carry": carry}
+
+
+def get_ext_quotes(tickers, now=None):
+    """v5.0 → v5.11 — normal kotasyon + q['ext'] = seans dışı satır.
+    HANGİ satırın (☀️ / 🌙 / hiçbiri) görüneceğine sabit Alman saatleri karar verir (ext_window); fiyat Yahoo'nun
+    seans dışı 1 dakikalık barlarından gelir (yetmezse 5 günlük 5 dakikalık yedek). Yalnızca ABD hisse ve ETF'leri.
+    ext = {'phase','px','chg_abs','chg_pct','ref','at' (ET),'at_de','day','carry'} — referans ilgili normal kapanış,
+    yani ☀️ / 🌙 yüzdesi günün normal yüzdesine karışmaz."""
     base = get_quotes(tickers)
     for q in base.values():
         q.setdefault("ext", None)
-    syms = tuple(sorted(t for t, q in base.items() if q.get("src") == "real"))
-    if not syms:
+    win = ext_window(now)
+    if win is None:
         return base
-    try:
-        data = _batch_ext(syms)
-    except Exception:
-        data = {}
-    for t in syms:
-        df = data.get(t)
+    syms = tuple(sorted(t for t, q in base.items() if q.get("src") == "real" and ext_eligible(t)))
+    todo, found = list(syms), {}
+    for fn in (_batch_ext, _batch_ext5):
+        if not todo:
+            break
         try:
-            c = df["Close"].dropna()
-            ts, px = c.index[-1], float(c.iloc[-1])
+            data = fn(tuple(todo))
         except Exception:
-            continue
-        ref = float(base[t].get("last") or 0)
-        ph = _ext_phase_of(ts)
-        # v5.3: small cap'lerde seans dışı +%400 / −%60 gerçek olabilir — yalnızca bariz veri hatası elenir
-        if not ph or not (ref > 0 and px > 0 and np.isfinite(px)) or not (-0.9 < px / ref - 1 < 5.0):
-            continue
-        base[t] = dict(base[t], ext={"phase": ph, "px": px, "chg_abs": px - ref,
-                                     "chg_pct": (px / ref - 1) * 100,
-                                     "at": ts.tz_convert(ET).strftime("%H:%M")})
+            data = {}
+        miss = []
+        for t in todo:
+            e = _ext_pick(data.get(t), win, base[t], now)
+            if e:
+                found[t] = e
+            else:
+                miss.append(t)
+        todo = miss
+    for t, e in found.items():
+        base[t] = dict(base[t], ext=e)
     return base
 
 
+def get_ext(sym, detail=None, now=None):
+    """v5.11 — Detay başlığı için TEK sembolün taze ☀️ / 🌙 satırı (sabit Alman saatleri).
+    Sıra: Yahoo dakika barları (izleme listesi / tablolarla aynı kaynak) → get_company_detail'deki Yahoo kotasyon
+    alanları (preMarketPrice / postMarketPrice — yalnızca saate uyuyorsa). get_info rate-limit'te boş kalsa da
+    başlık artık dakika barlarından beslenir."""
+    d = detail or {}
+    win = ext_window(now)
+    if win is None or not ext_eligible(sym, d.get("quote_type")) or d.get("src") not in (None, "real"):
+        return None
+    e = (get_ext_quotes([sym], now).get(sym) or {}).get("ext")
+    if e:
+        return e
+    e2 = d.get("ext") or {}
+    if e2.get("px"):
+        if e2.get("phase") == win:
+            return e2
+        if win == "pre" and e2.get("phase") == "post":     # henüz ☀️ işlemi yok: son 🌙 fiyatı, nahtlos
+            return dict(e2, phase="pre", carry=True)
+    return None
+
+
 def get_quotes(tickers):
-    """{ticker: {last, prev, change_pct, src, ...}} — tek toplu istekle."""
+    """{ticker: {last, prev, change_pct, src, ...}} — tek toplu istekle.
+    v5.11: 'day' / 'prev_day' = son iki günlük mumun tarihi (☀️ / 🌙 yüzdesinin referans kapanışı için)."""
     ticks = tuple(dict.fromkeys(t for t in tickers if t))
     if not ticks:
         return {}
@@ -641,9 +838,15 @@ def get_quotes(tickers):
     out = {}
     for t in ticks:
         df = data.get(t)
+        day_ = prev_day = None
         if df is not None and len(df) >= 2:
             last, prev, src = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2]), "real"
             vol = float(df["Volume"].iloc[-1]) if "Volume" in df else 0.0
+            try:
+                day_ = pd.Timestamp(df.index[-1]).strftime("%Y-%m-%d")
+                prev_day = pd.Timestamp(df.index[-2]).strftime("%Y-%m-%d")
+            except Exception:
+                pass
         elif t in KNOWN:
             s = _synth(t)
             last, prev, src = float(s["Close"].iloc[-1]), float(s["Close"].iloc[-2]), "mock"
@@ -652,7 +855,8 @@ def get_quotes(tickers):
             continue
         name, sector = NAMES.get(t, (t, ""))
         out[t] = {"ticker": t, "name": name, "sector": sector, "last": last, "prev": prev,
-                  "volume": vol, "change_pct": (last / prev - 1) * 100 if prev else 0.0, "src": src}
+                  "volume": vol, "change_pct": (last / prev - 1) * 100 if prev else 0.0, "src": src,
+                  "day": day_, "prev_day": prev_day}
     return out
 
 
@@ -1755,10 +1959,11 @@ MV_CAPS = {"all": (None, None), "small": (None, 2e9), "mid": (2e9, 10e9), "large
 MV_SESSIONS = {"day": "day_pct", "pre": "pre_pct", "post": "post_pct"}
 
 
-def mv_default_session(phase=None):
-    """Seansa göre varsayılan görünüm: seans öncesi → ☀️ pre-market · sonrası → 🌙 after-hours · aksi hâlde gün."""
-    ph = phase or market_phase()
-    return "pre" if ph == "pre" else "post" if ph == "post" else "day"
+def mv_default_session(phase=None, now=None):
+    """Varsayılan görünüm. v5.11: ☀️ / 🌙 satırlarıyla aynı SABİT ALMAN SAATLERİ — 10:00 → ABD açılışı ☀️ pre-market ·
+    00:00 → 10:00 ve ABD'de işlem olmayan günler 🌙 after-hours · aksi hâlde gün (phase yalnızca geriye uyumluluk)."""
+    win = ext_window(now)
+    return "pre" if win == "pre" else "post" if win == "post" else "day"
 
 
 def rank_movers(rows, side="up", session="day", region="all", cap="all", min_rvol=0.0, n=15):
@@ -2615,48 +2820,105 @@ def usd_rate(cur):
     return (rate / div) if rate else float("nan")
 
 
-@_ttl_cache(1800, fail_ttl=300)
-def get_valuation(t):
-    """Karşılaştırma tablosu için çarpanlar — tek info çağrısı, önbellekli.
+# v5.10: çarpanlar artık TEK bir Yahoo çağrısına bağlı değil. Yahoo (info) boş dönerse ya da alan eksikse
+# eksikler resmî verilerden hesaplanır: fiyat (toplu indirme) + SEC dosyaları (son 12 ay: net kâr, ciro, FVÖK,
+# amortisman, borç, nakit, hisse adedi) + NASDAQ piyasa değeri. Analist ileri EPS'i de yoksa son çare olarak
+# kazanç eğiliminden tahmin edilir. Hesaplanan alanlar 'calc', tahminler 'est' listesinde — arayüz işaretler.
+import threading as _threading  # noqa: E402
 
-    growth = ileri EPS büyümesi (analistlerin önümüzdeki mali yıl EPS'i ÷ son 12 ay EPS).
-    Piyasa değeri dolara çevrilir (Samsung, SK Hynix vb. yerel parayla yayımlanır).
-    """
-    nan = float("nan")
-    out = {"ticker": t, "name": company_name(t), "market_cap": nan, "pe": nan, "fwd_pe": nan,
-           "peg": nan, "ev_ebitda": nan, "growth": nan, "rev_growth": nan, "net_margin": nan,
-           "ev_sales": nan, "pb": nan, "currency": "USD", "src": "none"}
-    if not _HAS_YF:
-        return out
+_VAL_GOOD = {}                       # son başarılı Yahoo çarpanları {sembol: (zaman, alanlar)} — hız sınırına karşı
+_VAL_GOOD_TTL = 2 * 86400
+_PX_BATCH = {"ticks": (), "px": None, "lock": _threading.Lock()}
+_VAL_KEYS = ("market_cap", "pe", "fwd_pe", "peg", "ev_ebitda", "growth", "rev_growth", "net_margin", "ev_sales",
+             "pb", "price", "shares", "ev", "ebitda", "revenue", "net_income", "eps_ttm", "eps_fwd", "name", "currency")
+
+
+def _okv(x):
     try:
-        info = yf.Ticker(t).get_info() or {}
+        x = float(x)
+    except (TypeError, ValueError):
+        return False
+    return x == x and abs(x) != float("inf")
+
+
+def _info_safe(t, tries=2):
+    """yfinance info; hız sınırında (429 / 'rate limit') bir kez kısa beklemeyle yeniden dener. Hata → {}."""
+    if not _HAS_YF:
+        return {}
+    for k in range(tries):
+        try:
+            info = yf.Ticker(t).get_info() or {}
+        except Exception as ex:
+            msg = (type(ex).__name__ + " " + str(ex)).lower()
+            if k + 1 < tries and ("rate" in msg or "429" in msg or "too many" in msg):
+                time.sleep(1.0 + k)
+                continue
+            return {}
+        if isinstance(info, dict) and any(info.get(k) not in (None, "", "None") for k in (
+                "regularMarketPrice", "currentPrice", "marketCap", "trailingPE", "forwardPE", "shortName", "longName")):
+            return info                 # hız sınırında Yahoo ör. yalnızca {'trailingPegRatio': None} döndürür
+        if k + 1 < tries:
+            time.sleep(0.6)
+    return {}
+
+
+def _px_for(t):
+    """Yedek hesaplar için gerçek son fiyat — get_valuations'taki tüm semboller tek toplu indirmeyle."""
+    with _PX_BATCH["lock"]:
+        if _PX_BATCH["px"] is None or t not in _PX_BATCH["ticks"]:
+            ticks = _PX_BATCH["ticks"] if t in _PX_BATCH["ticks"] else (t,)
+            try:
+                q = get_quotes(list(ticks))
+            except Exception:
+                q = {}
+            px = {s: float(v["last"]) for s, v in q.items() if v.get("src") == "real" and _okv(v.get("last"))}
+            if t in _PX_BATCH["ticks"]:
+                _PX_BATCH["px"] = px
+            else:
+                return px.get(t, float("nan"))
+        return _PX_BATCH["px"].get(t, float("nan"))
+
+
+def _snap_cap(t):
+    try:
+        snap = get_market_snapshot()
+        if snap is None or not len(snap) or snap.attrs.get("capless"):
+            return float("nan")
+        row = snap[snap["ticker"] == str(t).upper()]
+        v = float(row["market_cap"].iloc[0]) if len(row) else float("nan")
+        return v if v > 0 else float("nan")
     except Exception:
-        return out
-    if not info:
-        return out
+        return float("nan")
+
+
+def _val_from_info(t, info, out):
+    nan = float("nan")
+
     def _f(*keys):
         v = _num(_g(info, *keys))
         return float(v) if v is not None else nan
-    out["name"] = _g(info, "shortName", "longName") or company_name(t)
+    out["name"] = _g(info, "shortName", "longName") or out["name"]
     cur = _g(info, "currency", default="USD")
     out["currency"] = cur
-    mc = _f("marketCap")
-    if mc == mc and cur not in ("USD", None):
+    rate = 1.0
+    if cur not in ("USD", None):
         r = usd_rate(cur)
-        mc = mc * r if r == r else nan
-    out["market_cap"] = mc
+        rate = r if r == r else nan
+    mc = _f("marketCap")
+    out["market_cap"] = mc * rate if mc == mc else nan
     out["pe"] = _f("trailingPE")
     out["fwd_pe"] = _f("forwardPE")
-    te, fe = _f("trailingEps"), _f("forwardEps")
-    if out["pe"] != out["pe"]:
-        p = _f("currentPrice", "regularMarketPrice")
-        if p == p and te == te and te > 0:
-            out["pe"] = p / te
-    if out["fwd_pe"] != out["fwd_pe"]:
-        p = _f("currentPrice", "regularMarketPrice")
-        if p == p and fe == fe and fe > 0:
-            out["fwd_pe"] = p / fe
+    p = _f("currentPrice", "regularMarketPrice")
+    te, fe = _f("trailingEps", "epsTrailingTwelveMonths"), _f("forwardEps", "epsForward")
+    out.update({"price": p, "eps_ttm": te, "eps_fwd": fe, "shares": _f("sharesOutstanding"),
+                "ev": _f("enterpriseValue"), "ebitda": _f("ebitda"), "revenue": _f("totalRevenue"),
+                "net_income": _f("netIncomeToCommon"), "pb": _f("priceToBook")})
+    if out["pe"] != out["pe"] and p == p and te == te and te > 0:
+        out["pe"] = p / te
+    if out["fwd_pe"] != out["fwd_pe"] and p == p and fe == fe and fe > 0:
+        out["fwd_pe"] = p / fe
     out["ev_ebitda"] = _f("enterpriseToEbitda")
+    out["ev_sales"] = _f("enterpriseToRevenue")
     if te == te and fe == fe and te > 0:
         out["growth"] = (fe / te - 1) * 100
     rg = _f("revenueGrowth")
@@ -2666,14 +2928,129 @@ def get_valuation(t):
     g = out["growth"]
     if out["fwd_pe"] == out["fwd_pe"] and g == g and g > 0:
         out["peg"] = out["fwd_pe"] / g
-    out["src"] = "real"
+    if any(_okv(out[k]) for k in ("pe", "fwd_pe", "market_cap", "ev_ebitda", "net_margin")):
+        out["src"] = "real"
+
+
+def _val_fill(t, out):
+    """Eksik alanları hesapla: fiyat + SEC (son 12 ay) + NASDAQ piyasa değeri; ileri EPS yoksa eğilim tahmini."""
+    nan = float("nan")
+    want = ("market_cap", "pe", "fwd_pe", "peg", "ev_ebitda", "growth", "rev_growth", "net_margin", "ev_sales")
+    if all(_okv(out.get(k)) for k in want):
+        return
+    if str(out.get("currency") or "USD") not in ("USD", "None"):
+        return                              # yabancı borsa: SEC verisi yok, para birimleri karışmasın
+    calc, est = out["calc"], out["est"]
+
+    sane = {"pe": (0, 1000), "fwd_pe": (0, 1000), "peg": (0, 50), "ev_ebitda": (0, 300), "ev_sales": (0, 200),
+            "net_margin": (-300, 100), "growth": (-95, 500), "rev_growth": (-95, 500)}
+
+    def put(k, v, kind="calc"):
+        lo, hi = sane.get(k, (-1e18, 1e18))
+        if not _okv(out.get(k)) and _okv(v) and lo < float(v) < hi:
+            out[k] = float(v)
+            (est if kind == "est" else calc).append(k)
+    price = out.get("price")
+    if not _okv(price):
+        price = _px_for(t)
+        if _okv(price):
+            out["price"] = price
+    try:
+        basis = get_latest_basis(t) if _HAS_REQ else {}
+    except Exception:
+        basis = {}
+    it = (basis or {}).get("items") or {}
+    bv = lambda k: float((it.get(k) or {}).get("val", nan))   # noqa: E731
+    sh = next((x for x in (out.get("shares"), bv("shares_out"), bv("dil_shares")) if _okv(x) and x > 0), nan)
+    snap_mc = _snap_cap(t)
+    if _okv(snap_mc) and _okv(price) and _okv(sh) and not (0.33 < price * sh / snap_mc < 3.0):
+        it = {}                     # ADR oranı / para birimi uyuşmazlığı → SEC hisse başı verisine güvenme
+        sh = nan
+    put("market_cap", snap_mc)
+    put("market_cap", price * sh if (_okv(price) and _okv(sh)) else nan)
+    mc = out.get("market_cap")
+    eps = out.get("eps_ttm")
+    if not _okv(eps) and _okv(bv("ni_ttm")) and _okv(bv("dil_shares")) and bv("dil_shares") > 0:
+        eps = bv("ni_ttm") / bv("dil_shares")
+        out["eps_ttm"] = eps
+    if _okv(price) and _okv(eps) and eps > 0:
+        put("pe", price / eps)
+    ev = out.get("ev")
+    if not _okv(ev) and _okv(mc):
+        debt, cash = bv("debt"), bv("cash")
+        if _okv(debt) or _okv(cash):
+            ev = mc + (debt if _okv(debt) else 0.0) - (cash if _okv(cash) else 0.0)
+    eb = out.get("ebitda")
+    if not _okv(eb) and _okv(bv("op_ttm")):
+        eb = bv("op_ttm") + (bv("da_ttm") if _okv(bv("da_ttm")) else 0.0)
+    if _okv(ev) and _okv(eb) and eb > 0:
+        put("ev_ebitda", ev / eb)
+    rev = out.get("revenue") if _okv(out.get("revenue")) else bv("rev_ttm")
+    if _okv(ev) and _okv(rev) and rev > 0:
+        put("ev_sales", ev / rev)
+    ni = out.get("net_income") if _okv(out.get("net_income")) else bv("ni_ttm")
+    if _okv(ni) and _okv(rev) and rev > 0:
+        put("net_margin", ni / rev * 100)
+    ann = list(((basis or {}).get("annual") or {}).get("revenue", {}).values())
+    if len(ann) >= 2 and ann[-2] and ann[-2] > 0:
+        put("rev_growth", (ann[-1] / ann[-2] - 1) * 100)
+    fe = out.get("eps_fwd")
+    kind = "calc"
+    if not _okv(fe) and _okv(eps) and eps > 0:
+        g = out.get("rev_growth")
+        g = float(min(40.0, max(-20.0, g))) if _okv(g) else 6.0
+        fe, kind = eps * (1 + g / 100.0), "est"            # analist tahmini yok → eğilimden tahmin
+        out["eps_fwd"] = fe
+    if _okv(price) and _okv(fe) and fe > 0:
+        put("fwd_pe", price / fe, kind)
+    if _okv(fe) and _okv(eps) and eps > 0:
+        put("growth", (fe / eps - 1) * 100, kind)
+    if _okv(out.get("fwd_pe")) and _okv(out.get("growth")) and out["growth"] > 0:
+        put("peg", out["fwd_pe"] / out["growth"], "est" if ("fwd_pe" in est or "growth" in est) else "calc")
+    if out["src"] == "none" and (calc or est):
+        out["src"] = "sec" if (basis or {}).get("src") == "sec" else "calc"
+
+
+@_ttl_cache(1800, fail_ttl=300)
+def get_valuation(t):
+    """Karşılaştırma tablosu için çarpanlar (önbellekli).
+
+    growth = ileri EPS büyümesi (analistlerin önümüzdeki mali yıl EPS'i ÷ son 12 ay EPS).
+    Piyasa değeri dolara çevrilir (Samsung, SK Hynix vb. yerel parayla yayımlanır).
+    v5.10: Yahoo boş / eksikse alanlar fiyat + SEC dosyalarından hesaplanır (calc) ya da tahmin edilir (est).
+    """
+    nan = float("nan")
+    out = {"ticker": t, "name": company_name(t), "market_cap": nan, "pe": nan, "fwd_pe": nan,
+           "peg": nan, "ev_ebitda": nan, "growth": nan, "rev_growth": nan, "net_margin": nan,
+           "ev_sales": nan, "pb": nan, "currency": "USD", "price": nan, "shares": nan, "ev": nan, "ebitda": nan,
+           "revenue": nan, "net_income": nan, "eps_ttm": nan, "eps_fwd": nan, "calc": [], "est": [],
+           "stale": False, "src": "none"}
+    info = _info_safe(t)
+    if info:
+        try:
+            _val_from_info(t, info, out)
+        except Exception:
+            pass
+    if out["src"] == "real":
+        _VAL_GOOD[t] = (time.time(), {k: out[k] for k in _VAL_KEYS})
+    else:
+        lg = _VAL_GOOD.get(t)
+        if lg and time.time() - lg[0] < _VAL_GOOD_TTL:      # son başarılı Yahoo değerleri (en çok 2 gün)
+            out.update(lg[1])
+            out["src"], out["stale"] = "real", True
+    try:
+        _val_fill(t, out)
+    except Exception:
+        pass
     return out
 
 
 def get_valuations(tickers):
-    """Birden çok sembol için çarpanlar (paralel)."""
+    """Birden çok sembol için çarpanlar (paralel; Yahoo'yu boğmamak için 3 iş parçacığı)."""
     ticks = [t for t in dict.fromkeys(tickers) if t]
-    return {v["ticker"]: v for v in _pmap(get_valuation, ticks, workers=4)}
+    with _PX_BATCH["lock"]:
+        _PX_BATCH["ticks"], _PX_BATCH["px"] = tuple(ticks), None
+    return {v["ticker"]: v for v in _pmap(get_valuation, ticks, workers=3)}
 
 
 # ======================================================================
