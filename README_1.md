@@ -1,4 +1,279 @@
-# Pulse — Market Dashboard (Streamlit) · v5.7
+# Pulse — Market Dashboard (Streamlit) · v5.11
+
+## Neu in v5.11 (Deutsch) — ☀️ Pre-Market / 🌙 After-Hours mit festen Uhrzeiten · Short Term nur mit deinen Mustern
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`, `macro.py`, `worker.py`,
+`broker.py` und `pulse_chart/index.html` — dann *Reboot app*. `pulse_macro/index.html` (5.9) und
+`pulse_list/index.html` (5.3) sind unverändert. Keine neuen Secrets, keine neuen Pakete. Läuft der Worker auf dem
+VPS, dort dieselben Dateien austauschen und `pulse-worker` neu starten.
+
+### ☀️ / 🌙 — warum die Zeilen wieder fehlten
+* *Ursache:* Die Minutenkerzen von Yahoo (mit Vor- und Nachbörse) kamen an, aber Pulse hat beim Aufräumen die
+  Zeitzone entfernt. Danach war nicht mehr erkennbar, ob eine Kerze vor- oder nachbörslich war — die Zeile blieb leer.
+  Im Detailkopf hing sie zusätzlich an Yahoos „info“-Abfrage, die Streamlit Cloud oft bremst.
+* *Jetzt:* Die Zeitzone bleibt erhalten, und der Detailkopf nutzt dieselben Minutenkerzen wie Watchlist und Tabellen
+  (Yahoo-„info“ nur noch als Reserve). Kommen die Minutenkerzen eines Tages nicht, springt ein Ersatz mit
+  5-Minuten-Kerzen der letzten 5 Tage ein.
+
+### Feste deutsche Uhrzeiten (MEZ / MESZ, schaltet automatisch)
+| Uhrzeit | Anzeige |
+|---|---|
+| 10:00 → US-Börsenstart (15:30) | ☀️ vorbörslicher Kurs + % zum letzten Schlusskurs |
+| 15:30 → Börsenschluss (22:00) | regulärer Kurs, keine Zusatzzeile |
+| 22:00 → 24:00 | offizieller Schlusskurs („At close“), keine Zusatzzeile |
+| 00:00 → 10:00 | 🌙 nachbörslicher Kurs + % zum Schlusskurs (bis 02:00 live, danach der letzte Nachbörse-Kurs) |
+| Wochenende / US-Feiertag | 🌙 der letzten Sitzung, bis am nächsten Handelstag um 10:00 ☀️ übernimmt |
+
+* *Nahtloser Übergang:* Gab es ab 10:00 noch keinen vorbörslichen Handel, zeigt ☀️ den letzten Nachbörse-Kurs
+  (Tooltip: „no pre-market trade yet“), bis der erste Pre-Market-Kurs kommt.
+* Die Wochen mit versetzter Zeitumstellung (März, Ende Oktober) sind eingerechnet: Dann startet der US-Handel schon
+  um 14:30, und ☀️ endet entsprechend früher. Halbe Handelstage (z. B. 27.11.) und US-Feiertage kommen aus dem
+  Börsenkalender in Pulse.
+* Nur US-Aktien und ETFs (SPY, QQQ … ja). Reine Indizes (^GSPC, ^VIX …), Devisen, Futures, Krypto und Nicht-US-Börsen
+  (.DE …) bekommen keine Zeile.
+* Überall gleiches Format **☀️ 126.10 (+0.46%)**: direkt unter dem großen Kurs im Markets- und Valuation-Kopf (dort mit
+  „Pre-market · 13:12“, deutsche Uhrzeit), in Watchlists, Indexkarten, Short-Term-Listen, Bot- und Demo-Tabellen, im
+  Trade-Journal und bei „Cheap Companies“. Top Movers springen zu denselben Zeiten automatisch auf ☀️ bzw. 🌙.
+
+### Short Term: nur noch deine Chart-Muster (Strategie „Pattern breakout“)
+* **Long:** Bull Flag, Bull Pennant (auch in Keilform mit zwei fallenden Linien), symmetrisches Dreieck, Rechteck /
+  Range mit Ausbruch nach oben, Ausbruch über eine mehrfach getestete Widerstandslinie (mit kräftiger grüner Kerze).
+* **Short:** absteigendes Dreieck (Bruch der Unterstützung), Range-Ausbruch nach unten, Kopf-Schulter (Bruch der
+  Nackenlinie).
+* **Raus:** Treppe, aufsteigendes Dreieck, 20-/55-Tage-Ausbruch; auch der Bestätigungs-Check „Chart patterns“ nutzt
+  nur noch diese Muster.
+* **Kerzen vor dem Trade = Bonus:** Hammer, Shooting Star, Bullish / Bearish Engulfing, Morning / Evening Star,
+  Dragonfly Doji, Three White Soldiers, Rising / Falling Three Methods — geprüft auf den letzten 3 Tageskerzen und den
+  letzten 15-Minuten-Kerzen. Passt eine Kerze zur Trade-Richtung: höherer Score, 🕯 in der Liste, „Candle signal“ ✓
+  in den Checks, Markierung im Chart. Keine Kerze: kein Bonus, aber auch kein Abzug.
+* **Liste:** Long und Short zusammen (LONG- / SHORT-Chip). Shorts kommen nur aus Aktien mit Tagesminus, unter EMA21 und
+  EMA50 und mit einem bärischen Muster. Regime: Longs, wenn S&P 500 und Nasdaq über ihrer 50-Tage-EMA liegen, Shorts,
+  wenn beide darunter liegen — sonst nur zur Info.
+* **Chart:** Das Muster wird gezeichnet (Fahnenstange grün, Flaggen- und Dreieckslinien, Nackenlinie) plus 🕯-Marke.
+* **Bots:** Beim neuen Musterausbruch-Bot gibt es „Direction“: *Long only* (Standard, wie bisher) oder *Long + short*.
+  Bestehende Bots bleiben Long only. Ist das Positionslimit knapp, werden Signale mit Kerzen-Bonus zuerst gekauft.
+  Mit einem Cash-Konto beim Broker sind keine Leerverkäufe möglich.
+* Die anderen Short-Term-Strategien zeigen die Kerzenzeile ebenfalls (nur Bonus). Das Trade-Journal behandelt
+  Short-Einträge jetzt richtig (Seite, G/V, Trefferquote).
+* *Ehrlich:* In meiner Testumgebung gibt es kein Internet. Geprüft ist alles mit Testdaten (gebaute Muster und Kerzen,
+  nachgebaute Yahoo-Minutenkerzen mit Zeitzonen, Wochenende, Feiertag, Zeitumstellung). Die Mustererkennung ist
+  regelbasiert: Nicht jedes Muster, das du mit dem Auge siehst, wird erkannt — und umgekehrt.
+
+## Neu in v5.10 (Deutsch) — Reiter „Valuation“: Fair Value und Peer-Vergleich repariert
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`, `macro.py`, `worker.py`,
+`broker.py` und `pulse_chart/index.html` — dann *Reboot app*. `pulse_macro/index.html` (5.9) und
+`pulse_list/index.html` (5.3) sind unverändert. Keine neuen Secrets, keine neuen Pakete.
+
+### Ratios and quality
+* Die drei Zeilen ohne Erklärung haben jetzt eine: **Return on assets** „above 10% shows strong asset efficiency“,
+  **Buybacks (last year)** „capital returned via share repurchases“, **Dividends (last year)** „cash distributions
+  paid to shareholders“.
+
+### Blended Fair Value — warum „Not enough data“ kam und was jetzt passiert
+* *Ursache:* Für „Growth“-Firmen (z. B. GOOGL, MSFT) gab es nur **eine** Methode (EV/Sales gegen Peers). Kamen
+  keine Peer-Daten an, blieb nichts übrig.
+* *Jetzt:* ein fester Kern aus vier Methoden, gewichtet: **DCF** auf Basis Free Cash Flow mit WACC aus CAPM (35 %),
+  **Forward-P/E-Multiple** (30 %), **EV/EBITDA-Multiple** (20 %) und **PEG** (wachstumsbereinigtes KGV, 15 %).
+  Die Multiples nehmen den Mittelwert aus Peer-Median und der eigenen Historie der Aktie; fehlt beides, gelten
+  Marktdurchschnitte (KGV 18, EV/EBITDA 14, PEG 1,5).
+* *Wie die Methoden zusammenkommen:* Bei „Growth“ kommen die vier Kern-Methoden immer dazu. Bei „Capital“
+  (z. B. AAPL, NVDA) kommen Forward-KGV und PEG dazu (DCF und EV/EBITDA hat dieser Typ schon). Bei „Defensive“
+  und „Cyclical“ springen die Kern-Methoden nur ein, wenn die eigenen Methoden zu wenig liefern.
+* *Mehrstufige Daten:* Jede Eingabe hat Ersatzquellen — SEC-Daten der letzten 12 Monate → Yahoo-Finanztabellen
+  (letztes Geschäftsjahr) → Yahoo-Basisdaten (TTM-EPS, Forward-EPS) → Analystenkonsens → als letzte Stufe eine
+  Schätzung aus dem Gewinntrend (dann steht ein Hinweis auf der Karte).
+* Auf der Karte: Fair Value, **Undervalued / Overvalued x %** als farbige Marke, jede Methode mit eigenem Wert und
+  Gewicht (Mauszeiger auf die Zeile zeigt die Rechnung), die verwendeten Eingaben mit Quelle.
+
+### Growth / Multiple Map, Multiples Comparison, Forward P/E Comparison
+* *Ursache der Striche:* Alle Kennzahlen eines Peers kamen aus **einem** Yahoo-Aufruf. Auf Streamlit Cloud bremst
+  Yahoo solche Aufrufe oft (Rate Limit), dann war die ganze Zeile leer.
+* *Jetzt:* Yahoo wird bei einer Bremsung einmal kurz erneut gefragt, nur noch mit 3 parallelen Abfragen. Fehlt danach
+  etwas, rechnet Pulse selbst aus dem Live-Kurs und den SEC-Daten der letzten 12 Monate: **P/E**, **EV/EBITDA**
+  (Börsenwert + Schulden − Cash, geteilt durch EBIT + Abschreibungen), **Net Margin**, **Umsatzwachstum**,
+  **Börsenwert** (NASDAQ). Fehlt die Analysten-Prognose, wird Forward-EPS aus dem Trend geschätzt → **Forward P/E**,
+  **Forward EPS Growth** und **PEG**. Die letzten guten Yahoo-Werte werden bis zu 2 Tage als Reserve gehalten.
+* In der Tabelle: **\*** = von Pulse aus SEC-Daten + Kurs berechnet, **≈** = aus dem Gewinntrend geschätzt (ohne
+  Analystenprognose); die Legende steht unter der Tabelle. Zellen sind jetzt farbig hinterlegt: grün = günstiger /
+  besser als der Peer-Median, rot = teurer / schwächer (±8 % gilt als gleichauf). Der Peer-Median steht unten.
+* Bubble-Chart: x = Forward EPS Growth, y = Forward P/E, Kreisgröße = Börsenwert, Punkte beschriftet, die gewählte
+  Aktie blau mit hellem Rand; geschätzte Punkte etwas blasser. Das Balkendiagramm darunter zeigt die gestrichelte
+  Peer-Median-Linie.
+* Verlustfirmen (z. B. SNAP) haben weiterhin kein KGV / Forward-KGV — dort bleibt der Strich, das ist richtig so.
+* *Ehrlich:* In meiner Testumgebung gibt es kein Internet. Ich habe alles mit Testdaten geprüft, auch für den Fall,
+  dass Yahoo komplett ausfällt. Ob Yahoo und SEC bei dir antworten, siehst du erst in der App. Ausländische Peers
+  (z. B. `005930.KS`) haben keine SEC-Daten; fällt dort Yahoo aus, bleiben sie leer.
+
+## Neu in v5.9 (Deutsch) — Global Macro Overview im Reiter „Markets“
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`, `worker.py`, `broker.py`,
+`pulse_chart/index.html` und **neu** `macro.py` sowie der Ordner `pulse_macro/` mit `index.html` — dann
+*Reboot app*. `pulse_list/index.html` ist unverändert (5.3). Keine neuen Secrets, keine neuen Pakete.
+Der Karten-Baustein steckt zusätzlich eingebettet in `chart.py`: Fehlt der Ordner `pulse_macro/`, läuft die
+Karte trotzdem. Nur `macro.py` ist Pflicht für das neue Modul (ohne sie zeigt der Bereich einen Upload-Hinweis,
+der Rest der App läuft normal).
+
+### Wo und was
+* *Markets → direkt unter „Upcoming IPOs“* (linke Hauptspalte, links neben „Watchlist News“): **Global Macro
+  Overview**. Das Modul passt sich der Spaltenbreite an (auch auf dem Handy) und überlappt weder die Tabelle
+  darüber noch die News-Spalte.
+* **6 Reiter:** GDP Growth YoY (Türkis), Inflation YoY (Hellgelb → Rot), Interest Rates (Hell- → Dunkelgrün),
+  Unemployment (Hell- → Dunkelviolett), Debt to GDP (Hellrosa → Magenta), Production YoY (Hell- → Dunkelblau).
+  Ein Klick wechselt **sofort** Karte, Farb-Legende und Rangliste — ohne Seiten-Reload (alles läuft im Browser).
+* **Weltkarte (Choropleth)** im Pulse-Dark-Design, ohne Zahlen auf der Karte; die Farbtöne sind so gewählt, dass auch
+  die dunkelsten Stufen auf dem dunklen Hintergrund sichtbar bleiben. Grau = keine Daten. Beim Überfahren:
+  Flagge, Land, Wert, Stichtag und Quelle (z. B. „Denmark · 5.70 % · Sep 2026 · OECD“). Grönland zeigt wie bei
+  TradingView die Werte von Dänemark.
+* **Farb-Legende** darunter mit Prozentstufen: BIP 0 · 3 · 6 · 8 · 10 %, Inflation 0 · 2 · 4 · 6 · 10 %,
+  Leitzins 3 · 5 · 7 · 12 · 25 %, Arbeitslosigkeit 3 · 5 · 7 · 10 · 15 %, Schulden 30 · 50 · 70 · 90 · 110 %,
+  Produktion 0 · 3 · 6 · 10 · 15 %.
+* **Top 10** direkt unter der Legende im Raster (Flagge + Land links, Wert rechtsbündig — wie bei TradingView),
+  umschaltbar **G20 / World** und **▼ Highest / ▲ Lowest**.
+* **Länder-Profil:** Klick auf ein Land (Karte *oder* Liste) öffnet „🇮🇳 India — Macro profile“ mit **← Back** und
+  **✕** (auch Esc): alle 6 Kennzahlen nebeneinander, jeweils mit Stichtag, Quelle und Rang (z. B. „#2/54 · G20 #1“).
+  Klick auf eine Kachel färbt die Karte nach dieser Kennzahl.
+* **Merkt sich alles:** gewählter Reiter, G20/World und Sortierung werden im Konto gespeichert — auf jedem Gerät
+  öffnet die Karte wieder so, wie du sie verlassen hast.
+
+### Woher die Zahlen kommen (alles offizielle, kostenlose Quellen — nichts wird geschätzt)
+* **OECD** (Key Short-Term Economic Indicators): die **neuesten Monats-/Quartalswerte** für BIP-Wachstum YoY,
+  Inflation YoY, Arbeitslosenquote und Industrieproduktion YoY — OECD-Länder und mehrere G20-Länder. Diese haben
+  Vorrang.
+* **BIS:** Leitzinsen von rund 40 Zentralbanken; die **EZB-Rate** gilt für alle 21 Euro-Länder (seit 1.1.2026
+  inkl. Bulgarien). Nicht von der BIS erfasste Länder bleiben beim Leitzins grau. Argentinien hat seit Juli 2025 keinen
+  offiziellen Leitzins mehr → letzter Wert (29 %) mit Hinweis „last available value“. USA: die BIS nutzt die Mitte
+  der Fed-Zielspanne.
+* **IMF World Economic Outlook:** wo OECD fehlt, BIP / Inflation / Arbeitslosigkeit als Jahreswert des laufenden
+  Jahres (**„2026 est.“** = IMF-Schätzung), Staatsschulden/BIP für das letzte abgeschlossene Jahr — ca. 190 Länder.
+* **Weltbank:** letzte Lücken (Jahreswerte); bei der Produktion ersatzweise „Industrie-Wertschöpfung, jährlich“ —
+  im Tooltip ausdrücklich so gekennzeichnet.
+* Die Daten werden alle 6 Stunden im Hintergrund erneuert (die Seite wartet nicht) und in
+  `.pulse_data/macro_snapshot.json` gespeichert. Fällt eine Quelle kurz aus, bleiben ihre letzten Werte stehen.
+* *Ehrlich:* Werte können von TradingView abweichen — TradingView nutzt teils nationale Statistikämter und andere
+  Abgrenzungen (z. B. Japans Schuldenquote, US-Leitzins als Obergrenze statt Mitte). Bei jedem Wert stehen Stichtag
+  und Quelle, damit du siehst, wie aktuell er ist. In meiner Testumgebung gibt es kein Internet: Logik, Karte und
+  Klicks sind mit Testdaten geprüft, die echten Abrufe passieren erst in deiner App.
+* Die Länderformen (Natural Earth über `world-atlas`) und Flaggen lädt der Browser von cdn.jsdelivr.net. Falls ein
+  Netzwerk das blockiert: Karte zeigt einen Hinweis, Rangliste und Profile funktionieren weiter. Optional kannst du
+  `countries-110m.json` aus dem npm-Paket `world-atlas` in den Ordner `pulse_macro/` legen — dann wird die Karte von
+  dort geladen.
+
+## Neu in v5.8 (Deutsch)
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`,
+`pulse_chart/index.html` und **neu** `worker.py`, `broker.py`, der Ordner `deploy/` (`Dockerfile`,
+`docker-compose.yml`, zwei `.service`-Dateien, `windows/start_pulse.bat`, `windows/start_worker.bat`),
+`.dockerignore` und die geänderte `.gitignore` — dann *Reboot app*. `pulse_list/index.html` ist unverändert (5.3).
+Keine neuen Pflicht-Secrets. Auf Streamlit Cloud werden `worker.py`, `broker.py` und `deploy/` nicht benutzt —
+sie sind für den Betrieb rund um die Uhr auf PC / VPS / Docker.
+
+### 1) Neue Strategie: Divergence (viele Indikatoren)
+* *Swing & Short Term → Strategy → 🔀 Divergence.* Nach der Methode von „Divergence for Many Indicators“
+  (LonesomeTheBlue, TradingView): Pulse sucht bestätigte Swing-Tiefs/-Hochs des Kurses und prüft für **12
+  Indikatoren**, ob sie dem Kurs widersprechen — RSI, MACD-Linie, MACD-Histogramm, Stochastik, CCI, Momentum,
+  OBV, VW-MACD (volumengewichtet), Chaikin Money Flow, MFI, Williams %R und WaveTrend.
+* **Regulär** (Kurs tieferes Tief, Indikator höheres Tief → Umkehr) und **versteckt** (Kurs höheres Tief, Indikator
+  tieferes Tief → Trendfortsetzung), bullisch und bärisch, also **Long und Short**. Zwischen den beiden Punkten
+  darf nichts die Verbindungslinie schneiden („Sichtlinie“). Nur bestätigte Pivots, der Endpunkt ist die Vorkerze
+  und auf der letzten Kerze muss Indikator oder Schlusskurs drehen → **kein Repainting, kein Blick in die Zukunft**
+  (per Test geprüft: abgeschnittene Daten liefern exakt dieselben Signale).
+* **Signal**, wenn mindestens *N* Indikatoren gleichzeitig divergieren (Standard 3 von 12). Stop knapp hinter dem
+  Divergenz-Extrem (0,2 ATR Puffer; kein Trade, wenn der Stop weiter als 3 ATR weg wäre), **TP1 = Nackenlinie**
+  (das Swing-Hoch zwischen den beiden Tiefs, mindestens 1,5 R; 40 % werden dort verkauft, Stop auf Einstand),
+  **TP2 = 3 R**.
+* **⚙️ Divergence settings** über der Tabelle: Mindestanzahl, regulär/versteckt, Pivot-Quelle (Close oder
+  High/Low), Pivot-Periode, wie viele Pivots / Kerzen zurück, Indikator-Auswahl, Stop-Grenze, TP1/TP2, optional nur
+  in Richtung des 200-Tage-Durchschnitts. Unter *Indicator lengths* stehen alle Längen **und eine Tabelle, was
+  jeder Indikator misst und warum seine Divergenz zählt**.
+* Rechts beim ausgewählten Signal: **Divergence breakdown** — jeder beteiligte Indikator mit Typ und Wert am ersten
+  und zweiten Swing, dazu, welche Indikatoren *nicht* divergieren. Die Checkliste hat eigene Zeilen (Anzahl,
+  Volumen-Bestätigung durch OBV/VW-MACD/CMF/MFI, Typ, Länge, RSI an der Wende).
+* **Chart:** die Divergenz-Linien mit Indikatorliste, Signal-Kerze, Stop / TP1 / TP2. In den Chart-Einstellungen
+  (*Indikatoren → Divergence*) gibt es zusätzlich die Quelle **„Many indicators (12)“** mit Mindestanzahl — die
+  Labels zeigen dann z. B. „▲×4“.
+* **Backtest:** Strategie „🔀 Divergence for many indicators“ mit denselben Einstellungen, Long/Short/Both. Neu:
+  Tabelle **„Which indicators worked on this symbol“** — Gewinnquote und Profit-Faktor je Indikator.
+* **Bot:** „🔀 Divergence…“ im Bot-Formular nutzt genau die Einstellungen der Divergence-Tabelle.
+
+### 2) Pairs Trading + Pair Lab
+* *Strategy → ⚖️ Pairs.* Zwei Werte mit gleichem Geschäft laufen auseinander und wieder zusammen. Ist der
+  Spread gedehnt (z-Score jenseits ±2), wird der billige gekauft und der teure leerverkauft — β-gewichtet,
+  dollar-neutral. Beide Beine werden zusammen geschlossen, wenn der Spread zurück am Mittelwert ist
+  (Stop bei |z| ≥ 3,5, Zeitstopp 30 Tage).
+* **Datensatz:** 69 Kandidaten-Paare mit Begründung — US-Aktien gleicher Branche (KO/PEP, V/MA, HD/LOW,
+  XOM/CVX, SPGI/MCO, WM/RSG, VMC/MLM …), ETFs (EWA/EWC, GDX/GDXJ, GLD/SLV, HYG/JNK …), Futures (Gold/Silber,
+  WTI/Brent, Mais/Weizen, Soja/Sojaschrot), BTC/ETH und deutsche Aktien (BMW/Mercedes, Allianz/Munich Re,
+  Deutsche Bank/Commerzbank, RWE/E.ON, Adidas/Puma). Das sind **Hypothesen** — welche Paare wirklich
+  funktionieren, entscheidet der Test. Alternativ: alle Kombinationen deiner Watchlist oder eigene Paare.
+* **▶ Run analysis** lädt die echten Tageskurse und testet jedes Paar: rollierender Hedge-Faktor und z-Score
+  (jeden Tag nur aus vergangenen Daten), Einstieg zum nächsten Eröffnungskurs, Kommission auf beiden Beinen.
+  Dazu **Engle-Granger-Kointegrationstest** (p-Werte aus 144 000 Simulationen, deckungsgleich mit MacKinnon:
+  1 % −3,90 · 5 % −3,34 · 10 % −3,04), **Halbwertszeit** der Rückkehr und Rendite-Korrelation.
+* **Rangliste nach Gewinnquote**, dazu Trades, Profit-Faktor, Ø-Trade, Max-Drawdown, CAGR, p-Wert, Halbwertszeit,
+  aktueller z und Signal. **„Usable“** = kointegriert (p ≤ 5 %), Halbwertszeit 2–40 Tage, ≥ 6 Trades,
+  Gewinnquote ≥ 60 %, Profit-Faktor ≥ 1,2, Drawdown besser als −25 %. **„Watch“** = Backtest gut, aber die
+  statistische Bindung schwach (oder umgekehrt). Gewinnquote der 1. und 2. Testhälfte separat (Stabilität).
+* **⬇ Download the full dataset (CSV)** — alle Paare mit allen Kennzahlen. Detailansicht pro Paar: normierte
+  Kurse, z-Score mit Ein-/Ausstiegsbändern und Trades, Trade-Liste, Positionsbeispiel.
+* *Ehrlich:* Die Gewinnquoten konnte ich vorab nicht ausrechnen — in meiner Umgebung ist Yahoo Finance gesperrt.
+  Die App rechnet sie beim ersten Klick mit echten Kursen (ca. 1 Minute, danach 6 h im Cache).
+
+### 3) Momentum-Rotation
+* *Strategy → 🔄 Rotation.* Jeden Monat wird die Liste nach 3/6/12-Monats-Rendite gerankt, die stärksten N
+  werden gleichgewichtet gehalten, wer herausfällt, wird verkauft. **Absolutes Momentum** (nur positive Werte),
+  **Marktfilter** (Benchmark unter dem 200-Tage-Schnitt → alles in den sicheren Hafen), **Puffer** gegen unnötige
+  Umschichtungen, optional „letzten Monat überspringen“ und volatilitätsbereinigt.
+* Universen: **UCITS-ETFs auf Xetra** (MSCI World, S&P 500, Nasdaq-100, DAX, Euro Stoxx 50, EM, Russell 2000,
+  Gold; Hafen: Euro-Staatsanleihen — für EU-Anleger kaufbar), US-Sektor-ETFs, Asset-Klassen, Nasdaq-100-Leader,
+  deutsche Large Caps, Watchlist oder eigene Liste.
+* Rangliste heute mit Aktion (Buy/Hold/Sell), Risk-on/off-Banner, **Backtest gegen die Benchmark** (CAGR,
+  Max-Drawdown, Sharpe, Gewinnmonate, Umschlag, Zeit im Hafen) und Verlauf der Körbe.
+
+### 4) Neue Bots
+* **⚖️ Pairs-Bot:** eröffnet beide Beine zusammen (geht das zweite nicht, wird das erste sofort rückgängig
+  gemacht), keine Stops auf den Beinen — der Spread entscheidet. Max. offene Paare und Größe pro Paar einstellbar,
+  ein Symbol gehört immer nur einem offenen Paar. Der z-Score nutzt den letzten 15-Minuten-Kurs. Schließt du ein
+  Bein von Hand, schließt der Bot das andere. Vorbelegt mit den „Usable“-Paaren des letzten Pair-Lab-Laufs
+  (Knopf *Create a pairs bot with the usable pairs*).
+* **🔄 Rotations-Bot:** kauft den ersten Korb beim nächsten Check, danach zu Monatsbeginn; jede Order, sobald ihre
+  Börse offen ist. Anteil am Konto einstellbar. *Rebalance now* in der Bot-Zeile erzwingt eine Umschichtung.
+* Bot-Zeilen zeigen offene Paare (mit Einstiegs-z) bzw. den aktuellen Korb.
+
+### 5) Rund um die Uhr: `worker.py`
+* Streamlit Community Cloud schläft nach ~12 h ohne Besuch ein — dann laufen keine Bots. Lösung: die App selbst
+  hosten und **`worker.py` daneben** starten. Der Worker erledigt Alarme, Bilanz-/Makro-Hinweise, SL/TP und
+  Limit-Orders (alle 30 s) und die Bots (15-Minuten-Takt) — auch wenn kein Browser offen ist.
+* Beide Prozesse laufen mit **`PULSE_SHARED=1`** und teilen den Datenordner: Lesen erkennt Änderungen des anderen
+  Prozesses, jede Lese-Ändern-Schreiben-Aktion ist per Datei-Lock abgesichert (Test: 4 Prozesse × 150 gleichzeitige
+  Buchungen → keine verlorene), Benachrichtigungen des Workers erscheinen auch in der Glocke. Läuft ein Worker,
+  pausiert der Monitor der Oberfläche automatisch; im Bot-Bereich steht „24/7 worker ✓“.
+* Start: **Docker** `docker compose -f deploy/docker-compose.yml up -d --build` · **Linux-VPS** die beiden
+  `deploy/*.service`-Dateien (systemd) · **Windows** `deploy\windows\start_pulse.bat` und `start_worker.bat`
+  (Autostart über die Aufgabenplanung „Bei Anmeldung“). `python worker.py --check` zeigt die Einstellungen,
+  `--once` macht genau einen Durchlauf (für Cron).
+
+### 6) Pulse merkt sich alles
+* Neben Watchlist, Alarmen, **Zeichnungen**, Chart-Einstellungen und gespeicherten Filtern landen jetzt auch alle
+  Einstellungen der Seiten (Strategie-Auswahl, Divergence-/Pair-Lab-/Rotations-Einstellungen, Backtest-Felder,
+  Zeiträume …), das Trade-Journal, die Filterzeilen, der letzte Backtest und die letzten Pair-Lab-/Rotations-Läufe
+  im Konto. Beim nächsten Login — auf jedem Gerät — öffnet Pulse die **zuletzt benutzte Seite** mit diesen
+  Einstellungen. Dauerhaft über Neustarts hinweg nur mit festem Speicher: selbst gehostet ist das der Datenordner,
+  auf Streamlit Cloud das GitHub-Repo aus *Account → Storage & email*.
+
+### 7) IBKR-Brücke (experimentell, standardmäßig aus)
+* `broker.py` kopiert Bot-Orders eines bestimmten Demo-Kontos an Interactive Brokers (TWS / IB Gateway,
+  `pip install ib_async`). Schutz: nur das per `PULSE_BROKER_ACCOUNT` benannte Demo-Konto, Mengen-Faktor,
+  Höchstwert pro Order, max. Orders pro Tag, nur Paper-Port 7497 außer mit `PULSE_BROKER_LIVE=1`, Notbremse
+  (Datei `STOP_TRADING` im Datenordner), `PULSE_BROKER=log` als Trockenlauf. Nur US-Aktien/ETFs und Xetra.
+  Schritt-für-Schritt-Anleitung im separaten Guide. Erst wochenlang auf Paper laufen lassen.
+
+### 8) Korrekturen
+* WaveTrend-Backtest: Die 40-%-Teilmitnahme an der NW-Mittellinie wurde bisher übersprungen — jetzt wie im
+  Live-Plan und beim Bot. (Backtest-Ergebnisse dieser Strategie ändern sich dadurch.)
+* Backtest-Engine: Kursziele funktionieren jetzt auch für Short-Trades.
+* Die Farblegende unter dem Strategie-Chart beschreibt Ichimoku und WaveTrend korrekt (vorher stand dort die
+  Flaggen-Legende).
 
 ## Neu in v5.7 (Deutsch)
 
