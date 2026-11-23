@@ -1,4 +1,73 @@
-# Pulse — Market Dashboard (Streamlit) · v5.11
+# Pulse — Market Dashboard (Streamlit) · v5.12
+
+## Neu in v5.12 (Deutsch) — einfaches Bot-Formular · Auswahlmenüs nur per Klick · dauerhaft speichern
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`, `macro.py`, `worker.py`,
+`broker.py` und `pulse_chart/index.html` — dann *Reboot app*. `pulse_macro/index.html` (5.9) und
+`pulse_list/index.html` (5.3) sind unverändert. Keine neuen Secrets, keine neuen Pakete. Läuft der Worker auf dem
+VPS, dort dieselben Dateien austauschen und `pulse-worker` neu starten.
+
+### Bot-Formular (Short Term → Bots → ➕ New bot)
+* Es bleiben nur **Strategy** und **Max. size of strategy (%)** (vorher „Max. size of one position“) — eine
+  Klick-Liste von 5 bis 100 %. Darunter stehen immer der kurze Beschreibungstext und die Regel-Karten 1–5 der
+  gewählten Strategie.
+* **Weg:** Bot name (wird automatisch vergeben, z. B. „Pattern breakout bot“, „Pattern breakout bot 2“), Risk per
+  trade, Max. open positions, Trailing stop, Max. holding time, Minimum reward / risk und Where it looks. Das setzt
+  der Bot selbst: ganzer Markt (Ichimoku: Gold, Silber, Öl, Bitcoin), bis zu 5 Positionen, höchstens 1 % des Kontos
+  Risiko pro Trade bis zum Stop, Ausstieg nach den Regeln der Strategie (40 % bei TP1, Rest bei TP2 oder per
+  2 × ATR-Trailing-Stop, spätestens nach 15 Tagen; Double Donchian und Ichimoku nur an ihrem Trailing-Stop).
+* **So rechnet „Max. size of strategy“:** 40 % bei 100.000 $ Konto → der Bot hat nie mehr als 40.000 $ in dieser
+  Strategie, verteilt auf bis zu 5 Positionen (je höchstens 8.000 $). Ist das Budget voll, kauft er nichts mehr
+  („strategy size reached“), bis eine Position schließt. Bestehende Bots behalten ihr Verhalten
+  (alte Positionsgröße × Positionszahl, höchstens 100 %).
+* **Pattern Breakout:** zusätzlich Direction, 15-Minuten-Bestätigung und SPY/QQQ-50-Tage-Filter. Der Kerzen-Bonus
+  steht jetzt in Karte 3 „Entry“ (immer 5 Karten).
+* **Double Donchian, Flag, WaveTrend, Divergence:** Strategie + Größe + Karten 1–5 (Double Donchian hat jetzt auch
+  Karte 5 „Targets“: bewusst kein festes Kursziel).
+* **Ichimoku:** kein „Stage“-Feld mehr. Der Bot vergleicht jeden Tag pro Markt im Backtest der letzten 3 Jahre beide
+  Varianten — Kumo-Ausbruch mit Kijun-Trail oder gestaffelt (⅓ in die Wolke, ⅔ beim Ausbruch) — bei Bitcoin
+  zusätzlich 9/26/52, 10/30/60 und 20/60/120, und nimmt die bessere (Rendite ÷ max. Drawdown, mindestens 3 Trades).
+  Eine offene Position behält ihren Modus bis zum Schluss. Die Bot-Liste zeigt die gewählte Stage je Markt.
+* **Pairs Trading:** keine Paar-Liste, kein „Max. open pairs“, kein „Size per pair“ mehr. Der Bot prüft einmal am
+  Tag im Hintergrund alle Kandidaten-Paare (US-Aktien + ETFs) mit denselben Regeln wie das Pair Lab und beobachtet
+  die 8 besten nutzbaren; bis zu 3 Paare gleichzeitig, je ein Drittel der Strategie-Größe (beide Beine).
+* **Momentum Rotation:** nur der Name fällt weg; die Einstellungen der Rotation-Seite und „Share of the account“
+  bleiben.
+* Die Auswahl im Formular wird im Konto gespeichert und ist nach F5 wieder da.
+* **Autonom:** Ein aktiver Bot sucht alle 15 Minuten selbst nach Einstiegen nach seinen Regeln 1–5, rechnet die
+  Größe aus „Max. size of strategy“ und bucht den Trade im Demo-Konto — wie bisher, nur ohne Handarbeit.
+
+### Auswahlmenüs nur per Klick
+* In allen Auswahlmenüs (Strategie, Konto, Zeitraum, Sortierung …) gibt es keinen Textcursor mehr, man kann nichts
+  hineinschreiben, und auf dem Handy öffnet sich keine Tastatur — nur Klicken / Antippen. Das gilt auch für neue
+  Menüs nach jedem Seitenwechsel.
+* Ausnahme: „Company“ im Positionsrechner (Demo), weil man dort neue Ticker eintippt. Echte Textfelder (Suche,
+  „Add a company“, „Symbol“) bleiben Textfelder.
+
+### Dauerhaft speichern — was geht, was nicht, und die Lösung
+* **F5 / neu laden setzt nichts zurück:** Bots, Konten und Einstellungen liegen auf dem Server, nicht im Tab. Die Bots
+  laufen dort weiter (Prüfung alle 15 Minuten), solange die App wach ist. Neue, pausierte oder gelöschte Bots
+  werden sofort gespeichert — mit `[pulse_store]` sofort auch im GitHub-Datenspeicher.
+* **Was ohne Zusatz nicht geht:** Streamlit Community Cloud hat keine dauerhafte Festplatte. Bei jedem Neustart
+  (Reboot, neue Dateien, Wartung, Ruhezustand nach längerer Pause) ist alles weg, was nur auf dem Server lag —
+  auch die Logins in `.pulse_auth.json`. Das kann keine Web-App von sich aus verhindern.
+* **Lösung 1 — wirklich dauerhaft (empfohlen):** privates GitHub-Repo als Datenspeicher, Block `[pulse_store]` in den
+  Secrets (Anleitung: v4.0 weiter unten bzw. Account-Menü → Storage & email). Dann übersteht alles jeden Neustart,
+  auf jedem Gerät. Die Bot-Liste zeigt „✓ saved permanently“.
+* **Lösung 2 — Sicherheitsnetz (neu, automatisch):** Dein Browser bekommt nach jeder Änderung eine Kopie
+  (localStorage, nur Demo-Konten mit Bots und Einstellungen — nie Passwörter). War der Server nach einem Neustart
+  leer, holt die App beim nächsten Login in diesem Browser alles automatisch zurück. Hat der Server inzwischen
+  andere Daten (z. B. schon auf einem anderen Gerät benutzt), fragt die App: **Restore backup** oder
+  **Keep server data** — nichts wird still überschrieben. Die App liest die Kopie immer zuerst und schreibt erst
+  danach; ist der Datenspeicher gerade nicht lesbar, wartet sie.
+* **Grenzen der Kopie:** nur dieser Browser auf diesem Gerät; weg, wenn du die Browserdaten löschst; Logins sind
+  nicht drin — anmelden muss also noch klappen (`[pulse_store]` oder `[[pulse_users]]` in den Secrets).
+* **Bots rund um die Uhr:** Auf Streamlit Cloud laufen Bots nur, solange die App wach ist. Für echtes 24/7
+  `worker.py` auf einem PC / VPS starten (Abschnitt v5.8 → „Rund um die Uhr“).
+* In der Bot-Liste zeigt eine Zeile 💾, wo gerade gespeichert wird, und wann die letzte Browser-Kopie gemacht wurde.
+* *Ehrlich:* Getestet mit Testdaten; die beiden Browser-Skripte (Klick-Menüs, Kopie inkl. vollem Speicher und neu
+  geladener Seite) zusätzlich in einem echten Chromium. Kein Internet in meiner Testumgebung — also kein Live-Test
+  gegen Yahoo oder GitHub.
 
 ## Neu in v5.11 (Deutsch) — ☀️ Pre-Market / 🌙 After-Hours mit festen Uhrzeiten · Short Term nur mit deinen Mustern
 
