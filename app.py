@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "5.11"
+APP_VERSION = "5.12"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -322,6 +322,8 @@ V58_WIDGETS = ([f"w_dv_{s_}" for s_, _ in DIV_W.values()] + [f"bt_v_{s_}" for s_
 # v5.9 — Global Macro: seçili gösterge sekmesi, G20 / dünya, en yüksek / en düşük (hesapta saklanır)
 MC_TABS = ("gdp", "infl", "rate", "unemp", "debt", "prod")
 V59_WIDGETS = ["w_mc_tab", "w_mc_scope", "w_mc_order"]
+# v5.12 — Formular „New bot“: Strategie, Max. size of strategy, Richtung, Filter, Rotations-Anteil
+V512_WIDGETS = ["bot_strat", "bot_alloc", "bot_aidir", "bot_c15", "bot_reg", "bot_ralloc"]
 # Widget anahtarları (kullanıcı ayarları) — sayfa değişse de korunur
 WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_fxtf", "w_lb", "w_fxlb", "w_fxc",
                "w_calday",
@@ -333,7 +335,7 @@ WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_
                "bt_f_pole", "bt_f_min", "bt_f_max", "bt_f_depth", "bt_f_vol", "bt_f_tp1", "bt_cf_weekly",
                "bt_cf_adx", "bt_cf_regime", "bt_i_ten", "bt_i_kij", "bt_i_sen", "bt_i_atr", "bt_i_bounce",
                "bt_i_preset", "bt_ichi_cmp", "bt_i_mode", "bt_i_wk", "bt_i_adx", "w_ichi_mode", "w_ichi_btc", "bt_w_n1", "bt_w_n2", "bt_w_os", "bt_w_vol", "bt_w_h", "bt_w_mult",
-               "bt_w_win"] + V58_WIDGETS + V59_WIDGETS
+               "bt_w_win"] + V58_WIDGETS + V59_WIDGETS + V512_WIDGETS
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
@@ -6829,6 +6831,7 @@ def _bots_body():
               f'target="_self" href="{link(sec="Demo")}">“{esc(acct.get("name") or "Account")}”</a> '
               f'({money(val["equity"], cur, 0)}) · switch accounts in the Demo tab · checked every 15 minutes'
               f'{" · last check " + _bot_when(last) if last else ""}</div>')
+            H(storage_line_html())               # v5.12: wo die Bots + Einstellungen gespeichert sind
             if gs_.get("locked"):
                 H(breach_html(gs_, cur))
             if bots:
@@ -6846,7 +6849,7 @@ def _bots_body():
                     rows += (
                         f'<tr><td><span style="display:flex;align-items:center;gap:10px"><span class="bot-ic" '
                         f'style="--c:{ALLOC_COLS[bots.index(b) % len(ALLOC_COLS)]}">🤖</span><span><b>{esc(b["name"])}'
-                        f'</b><span class="bsub">{esc(strat)} · {esc(BOT_UNI_NAME.get(b["universe"], b["universe"]))}</span>'
+                        f'</b><span class="bsub">{esc(strat)} · {esc(_bot_uni_txt(b))}</span>'
                         f'{_bot_extra_html(b)}'
                         f'<span class="bsub bnote">{("Last check " + _bot_when(lc.get("ts")) + " · " + str(int(lc.get("checked") or 0)) + " checked · ") if lc else ""}'
                         f'{esc(note)}</span></span></span></td><td><div>{money(stt["value"], cur, 0)}</div>'
@@ -8169,11 +8172,11 @@ def _pl_run_cb():
     ss.pop("w_pl_sel", None)
 
 
-def _pl_to_bot_cb(txt):
+def _pl_to_bot_cb(txt=None):
+    """v5.12: Paar-Bot vorbereiten — die Paare sucht der Bot selbst (gleiche Prüfung wie hier im Pair Lab)."""
     ss["bot_strat"] = "pairs"
-    ss["bot_pairs_txt"] = txt
-    ss["bot_name"] = "Pairs bot"
-    toast_later("Pairs bot prepared — open “➕ New bot” below and press Create bot")
+    toast_later("Pairs bot prepared — open “➕ New bot” below, pick the size and press Create bot. "
+                "It tests the pairs every day and trades the best usable ones itself.")
 
 
 def _pl_kpi_row(k):
@@ -8332,7 +8335,7 @@ def render_pair_lab():
          f'{esc(", ".join(res["miss"][:12]))}{" …" if len(res["miss"]) > 12 else ""}</div>' if res["miss"] else ""))
     if us:
         txt = ", ".join(r["key"] for r in us[:12])
-        st.button(f"🤖 Create a pairs bot with the {min(len(us), 12)} usable pairs", key="pl_tobot",
+        st.button("🤖 Create a pairs bot — it finds the best pairs itself", key="pl_tobot",
                   on_click=_pl_to_bot_cb, args=(txt,), **_wkw(st.button))
     ss["pl_usable_txt"] = ", ".join(r["key"] for r in us[:12])
     opts = [r["key"] for r in (shown or rows)]
@@ -8463,7 +8466,6 @@ def run_rotation(uni_json, cfg_json, token):
 
 def _ro_to_bot_cb():
     ss["bot_strat"] = "rotation"
-    ss["bot_name"] = "Rotation bot"
     toast_later("Rotation bot prepared with these settings — open “➕ New bot” below and press Create bot")
 
 
@@ -8623,6 +8625,13 @@ def _worker_chip():
             f'worker.py (PULSE_SHARED=1) on a PC / VPS for 24/7.">runs while the app is awake</span>')
 
 
+def _bot_uni_txt(b):
+    """v5.12: wo der Bot sucht — Paar-Bots im Auto-Modus: „Best pairs (auto)“."""
+    if b.get("src") == "pairs" and (b.get("pairs") or {}).get("auto"):
+        return "Best pairs (auto)"
+    return BOT_UNI_NAME.get(b.get("universe"), b.get("universe") or "—")
+
+
 def _bot_size_txt(b):
     """v5.12: 'max. 60 % of the account' (Strategie-Anteil)."""
     try:
@@ -8657,6 +8666,7 @@ def _bot_extra_html(b):
         pc = en.pair_cfg((b.get("pairs") or {}).get("p"))
         found = ("best pairs: " + ", ".join(x["key"] for x in (au.get("top") or [])) if au.get("top") else
                  "searching the best pairs…" if (auto and au.get("running")) else
+                 "no usable pair today — searched again tomorrow" if (auto and au.get("err")) else
                  "best pairs: chosen at the first check" if auto else f"{len(lst)} pairs")
         head = (f'{sz} · {found} · entry ±{tr(pc["entry"], 2)} · exit {tr(pc["exit"], 2)} · stop ±'
                 f'{tr(pc["stop"], 2)} z')
@@ -8771,7 +8781,11 @@ def render_bot_form(acct):
         # Beschreibung + Regel-Karten 1–5 — immer sichtbar
         H(strat_steps_html(skey or "ai", bot_params) if (strat == "ai" or skey) else _flt_card(flt["name"], flt["rows"]))
         c15, reg, aid = False, False, "long"
+        ss.setdefault("bot_c15", True)
+        ss.setdefault("bot_reg", True)
         if strat == "ai":                   # Musterausbruch: die Filter bleiben
+            if ss.get("bot_aidir") not in ("long", "both"):
+                ss["bot_aidir"] = "long"
             aid = st.selectbox("Direction", ["long", "both"], key="bot_aidir",
                                format_func={"long": "Long only — bullish patterns (flag, pennant, triangle, range, "
                                                     "resistance breakout)",
@@ -8782,14 +8796,14 @@ def render_bot_form(acct):
                                     "EMA. A cash account at the broker cannot sell short.")
             k1, k2 = st.columns([1.25, 1.35], vertical_alignment="bottom")
             with k1:
-                c15 = st.checkbox("Require the 15-minute confirmation", value=True, key="bot_c15",
+                c15 = st.checkbox("Require the 15-minute confirmation", key="bot_c15",
                                   help="The breakout must hold beyond the level on the 15-minute chart with volume.")
             with k2:
                 reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA" if aid == "long" else
                                   "Trade with the market (longs above, shorts below the SPY / QQQ 50-day EMA)",
-                                  value=True, key="bot_reg")
+                                  key="bot_reg")
         elif flt is not None:
-            reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", value=True, key="bot_reg")
+            reg = st.checkbox("Only buy while SPY and QQQ are above their 50-day EMA", key="bot_reg")
         npos = len(en.ICHI_MARKETS) if skey == "ichimoku" else int(en.BOT_AUTO["max_pos"])
         slot = float(alloc) / max(1, npos)
         extra = {
@@ -8865,7 +8879,13 @@ def _bot_form_special(acct, strat, alloc=None):
         return
     rc = ro_cfg()
     uni = ro_universe()
-    alloc = st.number_input("Share of the account for the rotation (%)", 5.0, 100.0, 60.0, 5.0, key="bot_ralloc",
+    try:
+        ra_ = float(ss.get("bot_ralloc", 60.0))
+    except (TypeError, ValueError):
+        ra_ = 60.0
+    ss["bot_ralloc"] = min(100.0, max(5.0, ra_))
+    alloc = st.number_input("Share of the account for the rotation (%)", min_value=5.0, max_value=100.0, step=5.0,
+                            key="bot_ralloc",
                             help="Split equally across the top N; the rest of the account stays free.")
     H(f'<div class="muted" style="font-size:11.5px;line-height:1.5">Rotation settings from the Rotation page: '
       f'{esc(uni["name"])} ({len(uni["syms"])} symbols) · hold the top {rc["top"]} (buffer {rc["buffer"]}) · weights '
@@ -11001,6 +11021,209 @@ LOADING_HTML = """<div class="p-load-wrap"><style>
 <p style="margin:0;font-size:13px;color:#94A3B8">Loading market data...</p></div></div></div>"""
 
 
+# ======================================================================
+# v5.12 — Dauerhaft speichern: Server (+ GitHub-Datenspeicher) und Browser-Sicherung
+# ======================================================================
+#   Quelle ist immer der Server: dort laufen die Bots, dort liegen Demo-Konten und Einstellungen (mit [pulse_store]
+#   zusätzlich im GitHub-Datenspeicher — übersteht jeden Neustart). Zusätzlich bekommt dieser Browser nach jeder
+#   Änderung eine Kopie (localStorage). Reihenfolge: erst lesen und prüfen, dann schreiben.
+def _vault_ns(email):
+    return "pulse:v1:" + hashlib.sha256(str(email or "").lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _vault_when(ts):
+    try:
+        t_ = pd.Timestamp(float(ts), unit="s", tz="UTC").tz_convert(md.TZ)
+        return t_.strftime("%H:%M") if t_.date() == pd.Timestamp.now(tz=md.TZ).date() else t_.strftime("%d.%m.%y %H:%M")
+    except Exception:
+        return "—"
+
+
+def _vault_sum_txt(sm):
+    sm = sm or {}
+    return (f'{int(sm.get("accounts") or 0)} demo account(s), {int(sm.get("bots") or 0)} bot(s), '
+            f'{int(sm.get("positions") or 0)} open position(s), {int(sm.get("trades") or 0)} trade(s)')
+
+
+def _vault_check(me, val):
+    """Erste Antwort des Browsers auswerten. Döner: True → Kopie zurückgeholt (neu zeichnen)."""
+    have = val.get("have")
+    blob = None
+    if isinstance(have, str) and have:
+        try:
+            blob = json.loads(have)
+        except ValueError:
+            blob = None
+    verdict = "none"
+    if isinstance(blob, dict):
+        verdict, _info = bk.backup_check(me, blob, fresh=bool(ss.get("_srv_blank0")))
+        if verdict == "wait":                # Datenspeicher gerade nicht lesbar → beim nächsten Lauf erneut
+            return False
+    ss["_vault_checked"] = True
+    ss["_vault_ok"] = bool(val.get("ok"))
+    if verdict == "restore":
+        ok_, _msg = bk.backup_restore(me, blob, fresh=bool(ss.get("_srv_blank0")))
+        if not ok_:                          # nicht zurückgeholt → die Kopie im Browser bleibt unangetastet
+            ss["_vault_hold"] = True
+            return False
+        if ok_:
+            sm = bk.backup_summary(blob)
+            ss["_vault_restored"] = sm
+            ss["_srv_blank0"] = False
+            ss["_vault_sig"] = None
+            _profile_load(me)
+            ss["_srv_blank0"] = False
+            ss["_vault_toast"] = f"Restored from this browser's backup ({_vault_when(sm['ts'])}): " + _vault_sum_txt(sm)
+            return True
+    elif verdict == "ask":
+        ss["_vault_conflict"] = {"blob": blob, "bak": bk.backup_summary(blob), "srv": bk.server_summary(me)}
+    return False
+
+
+def browser_vault():
+    """Pro Lauf genau einmal, vor allen Widgets: Browser-Sicherung lesen (beim ersten Mal) bzw. die aktuelle Kopie
+    übergeben. Solange nicht geprüft (oder eine Rückfrage offen ist), wird im Browser nichts überschrieben."""
+    me = _me()
+    if not me or ch is None or bk is None:
+        return
+    if ss.pop("_vault_reload", False):       # nach „Restore backup“: wiederhergestellte Einstellungen laden
+        _profile_load(me)
+        ss["_srv_blank0"] = False
+    val = ss.get("pulse_vault")
+    redraw = False
+    if not ss.get("_vault_checked") and not ss.get("_vault_hold") and isinstance(val, dict) and "have" in val:
+        try:
+            redraw = _vault_check(me, val)
+        except Exception:
+            ss["_vault_fail"] = int(ss.get("_vault_fail") or 0) + 1
+            if ss["_vault_fail"] >= 3:       # lieber pausieren als eine gute Kopie überschreiben
+                ss["_vault_hold"] = True
+    if redraw:
+        st.rerun()
+    if isinstance(val, dict) and val.get("err"):
+        ss["_vault_err"] = str(val["err"])
+    elif isinstance(val, dict) and val.get("fixed"):
+        ss.pop("_vault_err", None)
+    try:
+        readable = bool(bk.kv_loaded("demo") and bk.kv_loaded("profiles"))
+    except Exception:
+        readable = False
+    armed = (bool(ss.get("_vault_checked")) and readable and not ss.get("_vault_conflict")
+             and not ss.get("_vault_hold"))
+    if armed:
+        try:
+            _b, sig, txt = bk.backup_blob(me)
+            if sig != ss.get("_vault_sig"):
+                ss["_vault_sig"], ss["_vault_txt"], ss["_vault_at"] = sig, txt, time.time()
+                ss["_vault_big"] = txt is None
+        except Exception:
+            pass
+    ch.vault(_vault_ns(me), save=ss.get("_vault_txt") if armed else None, armed=armed, key="pulse_vault")
+
+
+def render_vault_prompt():
+    """Browser-Kopie aus der Zeit vor einem Server-Reset gefunden → der Nutzer entscheidet (nichts geht still verloren)."""
+    cf = ss.get("_vault_conflict")
+    if not isinstance(cf, dict):
+        return
+    with st.container(border=True, key="vault_prompt"):
+        H(f'<div class="hd"><span class="panel-title">💾 A backup of your data was found in this browser</span></div>'
+          f'<div class="muted" style="font-size:12.5px;line-height:1.6">Backup from <b>'
+          f'{esc(_vault_when((cf.get("bak") or {}).get("ts")))}</b>: {esc(_vault_sum_txt(cf.get("bak")))}.<br>'
+          f'The server started fresh since then (most likely a restart without permanent storage) and now has '
+          f'{esc(_vault_sum_txt(cf.get("srv")))}.<br><b>Restore backup</b> puts this copy back on the server and '
+          f'replaces what is there now · <b>Keep server data</b> leaves the server as it is and replaces this browser '
+          f'copy. Nothing changes until you choose.</div>')
+        c1, c2, _c3 = st.columns([1.1, 1.1, 2.2])
+        with c1:
+            res = button("Restore backup", key="vault_restore", primary=True)
+        with c2:
+            keep = button("Keep server data", key="vault_keep")
+    if res:
+        ok_, msg = bk.backup_restore(_me(), cf.get("blob"), force=True)
+        if ok_:
+            ss["_vault_restored"] = cf.get("bak")
+            ss["_vault_conflict"] = None
+            ss["_vault_sig"] = None
+            ss["_vault_reload"] = True         # Einstellungen laden, bevor im nächsten Lauf Widgets entstehen
+            ss["_vault_toast"] = "Backup restored — " + _vault_sum_txt(cf.get("bak"))
+        else:
+            ss["_vault_toast"] = "Could not restore the backup: " + str(msg)
+        st.rerun()
+    if keep:
+        ss["_vault_conflict"] = None
+        ss["_vault_sig"] = None
+        st.rerun()
+
+
+def storage_line_html():
+    """v5.12: Wo liegen die Daten gerade? (Server / GitHub-Datenspeicher / Browser-Sicherung)"""
+    try:
+        s = bk.store_status()
+    except Exception:
+        s = {"mode": "local", "ok": True, "err": ""}
+    if s.get("mode") == "github" and s.get("ok"):
+        a = (UP, "✓ saved permanently (server + GitHub data store — survives restarts)")
+    elif s.get("mode") == "github":
+        a = (WARN, "⚠ GitHub data store: " + str(s.get("err") or "not reachable") + " — kept on the server, retried")
+    elif getattr(bk, "SHARED", False):
+        a = (UP, "✓ saved on this computer's disk (always-on mode)")
+    else:
+        a = (WARN, "⚠ saved on the server only — a Streamlit Cloud restart wipes it; the app owner can make it "
+                   "permanent under Account → Storage & email")
+    if ss.get("_vault_err"):
+        b = (WARN, "⚠ browser backup failed (browser storage full)")
+    elif ss.get("_vault_big"):
+        b = (WARN, "⚠ browser backup skipped (too much data for the browser)")
+    elif ss.get("_vault_conflict"):
+        b = (WARN, "browser backup waits for your choice (box at the top)")
+    elif ss.get("_vault_hold"):
+        b = (WARN, "browser backup paused (the stored copy could not be checked)")
+    elif ss.get("_vault_checked") and not ss.get("_vault_ok"):
+        b = (MUT, "no browser backup — this browser blocks local storage")
+    elif ss.get("_vault_checked") and ss.get("_vault_at"):
+        b = (UP, "✓ browser backup " + _vault_when(ss["_vault_at"]))
+    else:
+        b = (MUT, "browser backup: connecting …")
+    rs = ss.get("_vault_restored")
+    r_ = (f' · <span style="color:{ACCENT}">↺ restored from this browser\'s backup of '
+          f'{esc(_vault_when(rs.get("ts")))}</span>') if isinstance(rs, dict) else ""
+    return (f'<div class="muted small" style="margin-top:4px">💾 <span style="color:{a[0]}">{esc(a[1])}</span> · '
+            f'<span style="color:{b[0]}">{esc(b[1])}</span>{r_}</div>')
+
+
+# v5.12 — Auswahlmenüs nur per Klick / Tipp: das Suchfeld jeder Selectbox wird schreibgeschützt (kein Textcursor,
+# keine Bildschirmtastatur, kein Tippen). Das Skript wird in die Hauptseite gelegt (nicht ins iframe), damit es nach
+# jedem Seitenwechsel weiterläuft. Ausnahme: „Company“ im Positionsrechner — dort tippt man neue Ticker ein.
+_RO_JS = """<script>
+(function(){
+  try {
+    var D = window.parent.document;
+    if (!D || D.getElementById('pulse-ro-js')) return;
+    var s = D.createElement('script');
+    s.id = 'pulse-ro-js';
+    s.textContent = '(' + function(){
+      var D = document, SKIP = '.st-key-rc_pick', t = null;
+      function fix(){
+        t = null;
+        var l = D.querySelectorAll('[data-baseweb="select"] input');
+        for (var i = 0; i < l.length; i++) {
+          var el = l[i];
+          if (el.closest(SKIP)) continue;
+          if (!el.readOnly) el.readOnly = true;
+          if (el.getAttribute('inputmode') !== 'none') el.setAttribute('inputmode', 'none');
+        }
+      }
+      fix();
+      new MutationObserver(function(){ if (!t) t = setTimeout(fix, 40); })
+        .observe(D.body, {childList: true, subtree: true});
+    } + ')();';
+    D.head.appendChild(s);
+  } catch (e) {}
+})();
+</script>"""
+
+
 def main():
     if not auth_valid():
         render_auth()
@@ -11010,6 +11233,8 @@ def main():
         if ss.pop("_reopen", False):    # v5.8: en son açık olan bölüme dön
             st.rerun()
     ss.auth["last"] = time.time()           # hareketsizlik süresi sıfırlanır
+    browser_vault()                          # v5.12: Browser-Sicherung (erst lesen + prüfen, dann schreiben)
+    components.html(_RO_JS, height=0)        # v5.12: Auswahlmenüs nur per Klick (kein Tippen)
     if ss.pop("_cred_store", False):
         components.html(_CRED_STORE_JS, height=0)
     boot = st.empty() if ss.pop("_boot", False) else None
@@ -11019,6 +11244,9 @@ def main():
         _demo_actions()          # v4.3: demo / bot linkleri (çıkar, kapat, durdur, sil)
         notify_live()            # yeni bildirimler zil sayacına başlık çizilmeden önce girsin
         render_header()
+        if ss.get("_vault_toast"):
+            st.toast(ss.pop("_vault_toast"))
+        render_vault_prompt()    # v5.12: Browser-Kopie aus der Zeit vor einem Server-Reset → Nutzer entscheidet
         {"Markets": render_piyasalar, "Valuation": render_value, "Long Term": render_longterm,
          "Short Term": render_short, "Demo": render_demo, "Backtest": render_backtest,
          "Forex & News": render_forex}[SEC]()
