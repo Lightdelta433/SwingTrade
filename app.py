@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Pulse — Market Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-APP_VERSION = "5.12"
+APP_VERSION = "5.13"
 import mock_data as md  # noqa: E402
 
 _missing = []
@@ -324,6 +324,8 @@ MC_TABS = ("gdp", "infl", "rate", "unemp", "debt", "prod")
 V59_WIDGETS = ["w_mc_tab", "w_mc_scope", "w_mc_order"]
 # v5.12 — Formular „New bot“: Strategie, Max. size of strategy, Richtung, Filter, Rotations-Anteil
 V512_WIDGETS = ["bot_strat", "bot_alloc", "bot_aidir", "bot_c15", "bot_reg", "bot_ralloc"]
+# v5.13 — Long Term: Symbol im Short-Interest-Modul
+V513_WIDGETS = ["w_si_sym"]
 # Widget anahtarları (kullanıcı ayarları) — sayfa değişse de korunur
 WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_fxtf", "w_lb", "w_fxlb", "w_fxc",
                "w_calday",
@@ -335,7 +337,7 @@ WIDGET_KEYS = ["flt_logic", "flt_min", "flt_name", "acct", "w_risk", "w_tf", "w_
                "bt_f_pole", "bt_f_min", "bt_f_max", "bt_f_depth", "bt_f_vol", "bt_f_tp1", "bt_cf_weekly",
                "bt_cf_adx", "bt_cf_regime", "bt_i_ten", "bt_i_kij", "bt_i_sen", "bt_i_atr", "bt_i_bounce",
                "bt_i_preset", "bt_ichi_cmp", "bt_i_mode", "bt_i_wk", "bt_i_adx", "w_ichi_mode", "w_ichi_btc", "bt_w_n1", "bt_w_n2", "bt_w_os", "bt_w_vol", "bt_w_h", "bt_w_mult",
-               "bt_w_win"] + V58_WIDGETS + V59_WIDGETS + V512_WIDGETS
+               "bt_w_win"] + V58_WIDGETS + V59_WIDGETS + V512_WIDGETS + V513_WIDGETS
 PERSIST = ["watchlist", "journal", "journal_closed", "flt_rows", "flt_ver", "flt_lastN", "bt_extra",
            "bt_extra_ver", "bt_ran", "bt_saved",
            "draws", "alerts", "ch_cfg", "ch_type", "ch_rev", "ch_n", "tf_pending",
@@ -5166,9 +5168,162 @@ def render_revenue_mix(sym):
                 H('<div class="muted small" style="margin-top:8px">No customer, subscriber or member counts are '
                   'tagged in this company\'s filings. Many companies publish them only in earnings releases and '
                   'investor presentations — see the filing link above.</div>')
+# ======================================================================
+# v5.13 — Long Term: Halbleiter (Kurs vs. Forward EPS) · Short Interest (FINRA)
+# ======================================================================
+SI_SYM_RE = re.compile(r"^[A-Z]{1,5}([.-][A-Z]{1,2})?$")      # US-Aktien und ETFs (keine Indizes, Krypto, Devisen)
+
+
+def _lt_colors():
+    """Farben für die beiden Long-Term-Grafiken (dunkles bzw. helles Design)."""
+    return {"txt": TXT, "mut": MUT, "soft": SOFT, "border": BORDER, "tipbg": PANEL, "acc": ACCENT, "accbg": ACC_BG,
+            "grid": "#E9ECF0" if LIGHT else "#1A1D23", "zero": "#C5CBD3" if LIGHT else "#3A404A",
+            "accsoft": "#3B6EF5" if LIGHT else "#9DB8FF",
+            "eps": "#1B2A4A" if LIGHT else "#E8ECF2", "price": "#2F7FE0" if LIGHT else "#4DA3FF",
+            "rec": "rgba(15,23,42,.07)" if LIGHT else "rgba(255,255,255,.07)",
+            "recline": "rgba(15,23,42,.18)" if LIGHT else "rgba(255,255,255,.18)", "bgdot": BG,
+            "bar": DOWN, "barhi": "#E5484D" if LIGHT else "#FF8A8A",
+            "dot": "#111418" if LIGHT else "#FFFFFF", "dotring": "#FFFFFF" if LIGHT else "#111418"}
+
+
+def _ms(ts):
+    """Zeitpunkt → Millisekunden seit 1970 (UTC) für die Grafiken."""
+    t_ = pd.Timestamp(ts)
+    if t_.tzinfo is not None:
+        t_ = t_.tz_convert("UTC").tz_localize(None)
+    return int(t_.value // 1_000_000)
+
+
+def _rnd(v, d=1):
+    try:
+        v = float(v)
+        return round(v, d) if v == v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def render_lt_semis():
+    """S&P 500 Semiconductors: Stock Price vs. Forward Earnings (YoY % Change)."""
+    ref = en.semis_ref()
+    px = md.get_semis_price()
+    live = pd.Series(dtype=float)
+    if px.attrs.get("src") == "real" and len(px):
+        live = en.yoy_weekly(px["Close"])
+    has_live = len(live) > 100
+    data = {"c": _lt_colors(), "h": 300, "has_live": has_live, "peak": int(en.SEMIS_REF_PEAK),
+            "ref": {"t": [_ms(d) for d in ref.index], "eps": [_rnd(v) for v in ref["eps"]],
+                    "price": [_rnd(v) for v in ref["price"]], "clip": [bool(c) for c in ref["clip"]]},
+            "live": {"t": [_ms(d) for d in live.index], "v": [_rnd(v) for v in live.values]},
+            "rec": [[_ms(a), _ms(b)] for a, b in en.RECESSIONS]}
+    chip = ('<span class="srcchip live">● live price · EPS from the chart</span>' if has_live else
+            '<span class="srcchip mock">values from the source chart ≈</span>')
+    last_live = (f' Live price line: PHLX Semiconductor index (^SOX) from Yahoo, weekly, last '
+                 f'{live.index[-1].strftime("%d.%m.%Y")}: {pct(float(live.iloc[-1]), 1)}.' if has_live else
+                 ' The live price line (PHLX Semiconductor index, Yahoo) is not available right now — both lines '
+                 'come from the source chart.')
+    H(f'<div class="sec-head"><h3>S&amp;P 500 Semiconductors: Stock Price vs. Forward Earnings</h3>'
+      f'<span style="margin-left:auto">{chip}</span></div>'
+      f'<div class="muted" style="margin:-6px 0 8px;line-height:1.45">Year-over-year % change · long-term comparison '
+      f'since Jan 2005 between the stock price and the blended forward 12-month consensus EPS · gray = recessions</div>')
+    components.html(ch.semis_html(data), height=340)
+    H(f'<div class="muted small" style="margin-top:6px;line-height:1.5">{esc(en.SEMIS_SRC)}<br>'
+      f'<span style="opacity:.85">Forward EPS: monthly values read from that chart (≈ ±3–5 percentage points, until '
+      f'12 Nov 2026) — no free source publishes the consensus history.{esc(last_live)}</span></div>')
+
+
+def _si_options():
+    """Auswahl für Short Interest: bekannte ETFs + Aktien und ETFs aus der Watchlist + aktives Symbol."""
+    out = list(md.SI_DEFAULT)
+    for s_ in list(ss.get("watchlist") or []) + [ACTIVE]:
+        s_ = str(s_ or "").upper()
+        if SI_SYM_RE.match(s_) and s_ not in out:
+            out.append(s_)
+    return out
+
+
+def _si_label(s_):
+    nm = md.SI_NAMES.get(s_) or md.company_name(s_)
+    return s_ if nm in ("", s_) else f"{s_} — {nm}"
+
+
+def _si_fmt_sh(v):
+    if v is None:
+        return "—"
+    a = abs(v)
+    return (f"{v / 1e9:,.2f}B" if a >= 1e9 else f"{v / 1e6:,.2f}M" if a >= 1e6 else f"{v / 1e3:,.1f}K" if a >= 1e3
+            else f"{v:,.0f}")
+
+
+def si_data(sym):
+    """Short-Interest-Tabelle für die Grafik: FINRA (bzw. gespeicherter Verlauf) + Kurse + Aktienzahl."""
+    d = md.get_short_interest(sym)
+    rows, counts, src = d.get("rows") or [], dict(d.get("counts") or {}), d.get("src")
+    try:
+        if src == "real":
+            rows, cnt_s = bk.si_merge(sym, rows, d.get("cnt_now"))
+            counts = {**cnt_s, **counts}
+        elif src == "none":                       # FINRA und Yahoo gerade nicht erreichbar → gespeicherter Verlauf
+            rows, cnt_s = bk.si_merge(sym, [], None, store=False)
+            counts = cnt_s
+            src = "real" if rows else "none"
+    except Exception:
+        pass
+    cs = pd.Series({pd.Timestamp(k): v for k, v in counts.items() if v}) if counts else None
+    df = en.si_frame(rows, d.get("close"), cs)
+    return d, df, src
+
+
+def render_lt_short():
+    """Short Interest Overview: Short Interest ($) · Days to Cover · Short % of Float — seit 2021."""
+    opts = _si_options()
+    if ss.get("w_si_sym") not in opts:
+        ss["w_si_sym"] = "QQQ"
+    H('<div class="sec-head"><h3>Short Interest Overview</h3><span class="muted" style="margin-left:2px">'
+      'stocks &amp; ETFs · twice a month since 2021</span></div>')
+    sym = st.selectbox("Symbol", opts, key="w_si_sym", label_visibility="collapsed", format_func=_si_label)
+    d, df, src = si_data(sym)
+    k = en.si_kpis(df)
+    if k:
+        chg = k.get("chg_pct")
+        cc = DOWN if (chg or 0) > 0 else (UP if (chg or 0) < 0 else MUT)
+        cnt = d.get("float") or d.get("so")
+        vol, avg = d.get("vol"), d.get("avg_vol")
+        tiles = [("Current short interest", f'{_si_fmt_sh(k["shares"])} shares',
+                  f'<span style="color:{cc}">{pct(chg, 2)}</span> vs. previous report' if chg is not None else ""),
+                 ("Dollar volume sold short", big(k["dollar"]) if k.get("dollar") else "—",
+                  f'at {tr(k["price"], 2)} on the record date' if k.get("price") else ""),
+                 ("Short interest ratio", f'{tr(k["dtc"], 2)} days to cover' if k.get("dtc") is not None else "—",
+                  f'avg. volume {_si_fmt_sh(k["adv"])}' if k.get("adv") else ""),
+                 ("Short percent of float", f'{tr(k["pct"], 2)}%' if k.get("pct") is not None else "—",
+                  f'{"float" if d.get("float") else "shares out"} {_si_fmt_sh(cnt)}' if cnt else ""),
+                 ("Last record date", k["date"].strftime("%b %d, %Y"),
+                  f'previous {_si_fmt_sh(k["prev"])} shares' if k.get("prev") else ""),
+                 ("Today's volume vs. average", f'{tr(100 * vol / avg, 0)}%' if (vol and avg) else "—",
+                  f'{_si_fmt_sh(vol)} vs. {_si_fmt_sh(avg)}' if (vol and avg) else "")]
+        H('<div class="kpigrid" style="margin:4px 0 10px">' + "".join(
+            f'<div class="tile kpitile"><span class="k">{esc(a)}</span><span class="v">{esc(b)}</span>'
+            f'<span class="muted small">{c_}</span></div>' for a, b, c_ in tiles) + '</div>')
+    rows = [{"t": _ms(i), "sh": _rnd(r["shares"], 0), "dollar": _rnd(r["dollar"], 0), "dtc": _rnd(r["dtc"], 2),
+             "pct": _rnd(r["pct"], 2)} for i, r in df.iterrows()]
+    unit = "usd" if any(r_["dollar"] for r_ in rows) else "shares"
+    components.html(ch.si_html({"c": _lt_colors(), "sym": sym, "rows": rows, "unit": unit, "h": 290}), height=372)
+    via = d.get("via")
+    src_txt = {"FINRA": "FINRA consolidated short interest (exchange-listed + OTC, twice a month, published about 7 "
+                        "business days after the record date)",
+               "Yahoo": "Yahoo Finance (latest two reports — FINRA did not answer)",
+               "sample": "sample data (no internet connection)"}.get(via, "saved history (FINRA did not answer)")
+    if src == "none":
+        src_txt = "no data: " + (d.get("err") or "no source answered")
+    H(f'<div class="muted small" style="margin-top:6px;line-height:1.5">{src_chip(src)} Source: {esc(src_txt)}.<br>'
+      f'<span style="opacity:.85">Dollar value = short shares × closing price on the record date (Yahoo) · days to '
+      f'cover = short shares ÷ average daily volume (FINRA) · % of float = short shares ÷ float (ETFs: shares '
+      f'outstanding) from the same period — bars appear where that share count is known; the app remembers it '
+      f'every day.</span></div>')
+
+
 def render_longterm():
-    H('<div class="page-title">Long Term</div><div class="muted" style="margin-bottom:12px">Sentiment, sectors '
-      'and a value screen for long-term investing</div>')
+    H('<div class="page-title">Long Term</div><div class="muted" style="margin-bottom:12px">Sentiment, sector '
+      'earnings, short interest, sectors and a value screen for long-term investing</div>')
     fg = md.get_fear_greed()
     l, r = st.columns([1.1, 1], gap="large")
     with l:
@@ -5190,6 +5345,13 @@ def render_longterm():
                 H(f'<div class="stat-row"><span class="lbl">{esc(h["when"])}<br><b style="color:{TXT}">'
                   f'{esc(h["label"])}</b></span><span class="mono" style="font-size:20px;font-weight:700;color:{hc}">'
                   f'{h["value"]}</span></div>')
+    l2, r2 = st.columns([1, 1], gap="large")        # v5.13: Halbleiter-Gewinne · Short Interest nebeneinander
+    with l2:
+        with st.container(border=True, key="lt_semis"):
+            render_lt_semis()
+    with r2:
+        with st.container(border=True, key="lt_short"):
+            render_lt_short()
     with st.container(border=True):
         render_sector_block()
     render_sector_map()
