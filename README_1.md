@@ -1,4 +1,52 @@
-# Pulse — Market Dashboard (Streamlit) · v5.12
+# Pulse — Market Dashboard (Streamlit) · v5.13
+
+## Neu in v5.13 (Deutsch) — Long Term: Halbleiter-Gewinne vs. Kurs · Short Interest Overview
+
+**Dateien:** hochladen — `app.py`, `backend.py`, `chart.py`, `engine.py`, `mock_data.py`, `macro.py`, `worker.py`,
+`broker.py` und `pulse_chart/index.html` — dann *Reboot app*. `pulse_macro/index.html` (5.9) und
+`pulse_list/index.html` (5.3) sind unverändert. Keine neuen Secrets, keine neuen Pakete.
+
+Im Reiter **Long Term** steht direkt unter Fear & Greed eine neue Reihe mit zwei Karten nebeneinander (auf dem Handy
+untereinander).
+
+### Links: S&P 500 Semiconductors — Stock Price vs. Forward Earnings (YoY % Change)
+* Zwei Linien seit Januar 2005: **Forward EPS** (Veränderung des gewichteten 12-Monats-Konsens zum Vorjahr; im dunklen
+  Design hell, im hellen Design dunkelblau) und **Stock price** (hellblau). Graue Flächen = Rezessionen
+  (Dez. 2007 – Juni 2009, Feb. – Apr. 2020). Skala −100 % bis +200 % wie im Original; die Spitze 2010 (+953 %) läuft
+  oben hinaus und ist beschriftet. Endwerte stehen rechts an den Linien (+160,0 % / +12,2 %).
+* Maus oder Finger auf die Grafik: Datum, Forward EPS und Kurs an dieser Stelle.
+* Umschalter **Price: live ^SOX / Price: source chart**: die Kurslinie entweder live (PHLX-Halbleiterindex von Yahoo,
+  wöchentlich, bis heute) oder genau wie im Quell-Chart. Die Wahl merkt sich der Browser.
+* Fußzeile mit der Quelle: *Source: Ritholtz Wealth Management, data via Bloomberg Finance L.P., original idea from
+  Yardeni Research*.
+* **Ehrlich zu den Daten:** Die Historie der Forward-EPS-Konsensschätzungen gibt es in keiner freien Quelle (nur
+  Bloomberg, FactSet, I/B/E/S). Deshalb sind die Forward-EPS-Werte Monat für Monat aus dem Chart gelesen
+  (≈ ±3–5 Prozentpunkte, Stand 12.11.2026) und ändern sich erst mit einem App-Update. Yahoo hat keinen
+  S&P-500-Halbleiterindex; die Live-Kurslinie nimmt deshalb den sehr ähnlichen PHLX Semiconductor Index (^SOX).
+
+### Rechts: Short Interest Overview (QQQ, andere ETFs und Aktien)
+* Auswahl (nur Klick): QQQ, SPY, IWM, DIA, SMH, SOXX, XLK, ARKK, dazu die Aktien und ETFs aus deiner Watchlist und das
+  gerade geöffnete Symbol. Die Wahl bleibt im Konto gespeichert.
+* Kennzahlen wie bei MarketBeat: aktuelles Short Interest (mit Änderung zum letzten Bericht), Dollarwert, Days to cover,
+  % des Floats, letzter Stichtag, heutiges Volumen im Vergleich zum Durchschnitt.
+* Drei Tabs ohne Neuladen: **Short Interest Chart** (Dollarwert), **Days to Cover Chart**, **Short Percent of Float
+  Chart**. Ein Balken je Stichtag (zweimal im Monat) seit 2021, Achse mit Quartalen (Q1–Q4) und Jahren, Skala passt sich
+  an. Der letzte Wert ist hervorgehoben: Punkt, Wert oben (z. B. $57B, 1.91, 12.22%) und Datum unten (z. B. Oct 30).
+  Den zuletzt gewählten Tab merkt sich der Browser.
+* **Quelle:** FINRA Consolidated Short Interest (offizielle Meldungen aller Broker, börsennotierte Werte und OTC,
+  zweimal im Monat, ungefähr 7 Handelstage nach dem Stichtag veröffentlicht; frei, ohne Schlüssel). Dollarwert = Short-
+  Aktien × Schlusskurs am Stichtag (Yahoo). Antwortet FINRA nicht, nimmt die App die letzten zwei Meldungen von Yahoo
+  bzw. den gespeicherten Verlauf.
+* **% of float:** Short-Aktien ÷ Float (bei ETFs: Aktien im Umlauf) aus derselben Zeit. Yahoo liefert für ETFs keinen
+  Verlauf der Aktienzahl — die App merkt sich deshalb jeden Tag die aktuelle Zahl (mit `[pulse_store]` dauerhaft).
+  Balken erscheinen nur dort, wo eine passende Zahl bekannt ist; die Ansicht füllt sich mit der Zeit (so ist es auch bei
+  MarketBeat, dort beginnt sie 2025).
+* Der Short-Interest-Verlauf wird pro Symbol gespeichert (Speicher „shortint“) und steht auch dann bereit, wenn FINRA
+  einmal nicht erreichbar ist. Testdaten werden nie gespeichert.
+
+*Getestet mit Testdaten; beide Grafiken zusätzlich in einem echten Chromium (Tabs, Umschalter, Hover, 620 px und
+380 px Breite). Kein Internet in meiner Testumgebung — die FINRA- und Yahoo-Abrufe sind gegen nachgebaute Antworten
+getestet, nicht live.*
 
 ## Neu in v5.12 (Deutsch) — einfaches Bot-Formular · Auswahlmenüs nur per Klick · dauerhaft speichern
 
