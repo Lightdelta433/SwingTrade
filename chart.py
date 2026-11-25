@@ -30,7 +30,7 @@ import streamlit.components.v1 as components
 import engine as en
 import mock_data as md
 
-CHART_VERSION = "5.12"
+CHART_VERSION = "5.13"
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_chart")
 _INDEX = os.path.join(_DIR, "index.html")
 
@@ -475,7 +475,7 @@ def data_token(sym, tf, lb=None):
 # ----------------------------------------------------------------------
 # Bileşen
 # ----------------------------------------------------------------------
-UI_VERSION = "5.12"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
+UI_VERSION = "5.13"     # pulse_chart/index.html içindeki <meta name="pulse-ui"> ile aynı olmalı
 
 
 def frontend_version():
@@ -1172,6 +1172,440 @@ def vault(ns, save=None, armed=False, key="pulse_vault"):
                     save=save if (armed and isinstance(save, str)) else None)
     except Exception:
         return None
+
+
+
+# ======================================================================
+# v5.13 — Long Term: Halbleiter-Chart (Kurs vs. Forward EPS) und Short-Interest-Chart (3 Tabs)
+# ======================================================================
+#   Eigenständige HTML/SVG-Grafiken (components.html): Hover-Tooltip, Touch, passt sich der Breite an, Tabs bzw.
+#   Kurs-Umschalter ohne Neuladen der Seite (Auswahl merkt sich der Browser).
+_LT_SEMIS_HTML = """<!doctype html><html><head><meta charset="utf-8"><meta name="pulse-lt" content="semis-1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:transparent;overflow:hidden}
+body{color:var(--txt);font-family:"Source Sans 3","Source Sans Pro",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:30px;margin:0 0 4px}
+.leg{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--soft);align-items:center}
+@media (max-width:520px){.leg{gap:9px;font-size:11.5px}.tog button{padding:5px 8px;font-size:11px}}
+.leg span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.leg i{display:inline-block;width:18px;height:3px;border-radius:2px}
+.leg i.rec{height:10px;width:12px;border-radius:2px}
+.tog{margin-left:auto;display:inline-flex;border:1px solid var(--border);border-radius:999px;overflow:hidden}
+.tog button{background:transparent;border:0;color:var(--mut);font:600 11.5px/1 inherit;padding:6px 10px;cursor:pointer;
+  font-family:inherit;white-space:nowrap}
+.tog button.on{background:var(--accbg);color:var(--txt)}
+.wrap{position:relative}
+svg{display:block;width:100%;overflow:visible;touch-action:pan-y}
+.ax{font-size:11px;fill:var(--mut);font-variant-numeric:tabular-nums}
+.lab{font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.ann{font-size:10.5px;fill:var(--soft);font-weight:600}
+.tip{position:absolute;pointer-events:none;background:var(--tipbg);border:1px solid var(--border);border-radius:10px;
+  padding:7px 10px;font-size:12px;line-height:1.5;box-shadow:0 8px 22px rgba(0,0,0,.35);display:none;white-space:nowrap;
+  z-index:5;color:var(--txt)}
+.tip b{font-weight:700}.tip .d{color:var(--mut);font-size:11px;margin-bottom:2px}
+.tip i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.empty{color:var(--mut);font-size:13px;padding:40px 6px;text-align:center}
+</style></head><body>
+<div class="top"><div class="leg" id="leg"></div><div class="tog" id="tog"></div></div>
+<div class="wrap" id="wrap"><svg id="svg"></svg><div class="tip" id="tip"></div></div>
+<script>
+(function(){
+  var D = /*__DATA__*/null;
+  var C = D.c, R = document.documentElement.style;
+  ["txt","mut","soft","border","grid","zero","accbg","tipbg"].forEach(function(k){ R.setProperty("--" + k, C[k]); });
+  var KEY = "pulse:semis_src", mode = D.has_live ? "live" : "ref";
+  try { var m0 = localStorage.getItem(KEY); if (m0 === "ref" || (m0 === "live" && D.has_live)) mode = m0; } catch (e) {}
+  var DAY = 864e5, svg = document.getElementById("svg"), tip = document.getElementById("tip");
+  var NS = "http://www.w3.org/2000/svg";
+  function el(n, a, p){
+    var e = document.createElementNS(NS, n);
+    for (var k in a) e.setAttribute(k, a[k]);
+    if (p) p.appendChild(e);
+    return e;
+  }
+  function pct(v, d){
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    return (v > 0 ? "+" : "") + v.toFixed(d === undefined ? 1 : d) + " %";
+  }
+  var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function fdate(t, daily){
+    var d = new Date(t);
+    return (daily ? d.getUTCDate() + " " : "") + MON[d.getUTCMonth()] + " " + d.getUTCFullYear();
+  }
+  function legend(){
+    var L = document.getElementById("leg");
+    L.innerHTML = '<span><i style="background:' + C.eps + '"></i>Forward EPS</span>' +
+      '<span><i style="background:' + C.price + '"></i>Stock price</span>' +
+      '<span><i class="rec" style="background:' + C.rec + ';border:1px solid ' + C.recline + '"></i>Recession</span>';
+    var T = document.getElementById("tog");
+    T.innerHTML = "";
+    var nar = document.body.clientWidth < 520;
+    [["live", nar ? "Live ^SOX" : "Price: live ^SOX"], ["ref", nar ? "Source chart" : "Price: source chart"]].forEach(function(o){
+      if (o[0] === "live" && !D.has_live) return;
+      var b = document.createElement("button");
+      b.textContent = o[1]; b.className = mode === o[0] ? "on" : ""; b.setAttribute("data-m", o[0]);
+      b.onclick = function(){ mode = o[0]; try { localStorage.setItem(KEY, mode); } catch (e) {} legend(); draw(); };
+      T.appendChild(b);
+    });
+    T.style.display = D.has_live ? "" : "none";
+  }
+  function series(){
+    var ref = D.ref, eps = [], pr = [];
+    for (var i = 0; i < ref.t.length; i++) {
+      eps.push({t: ref.t[i], v: ref.eps[i], clip: !!ref.clip[i]});
+      pr.push({t: ref.t[i], v: ref.price[i]});
+    }
+    if (mode === "live" && D.has_live) {
+      pr = [];
+      for (var j = 0; j < D.live.t.length; j++) pr.push({t: D.live.t[j], v: D.live.v[j]});
+    }
+    return {eps: eps, pr: pr, daily: mode === "live" && D.has_live};
+  }
+  function draw(){
+    var S = series(), W = Math.max(280, document.body.clientWidth);
+    var topH = document.querySelector(".top").offsetHeight, H = Math.max(220, (D.h || 300) - Math.max(0, topH - 34));
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H); svg.setAttribute("height", H);
+    var narrow = W < 520, m = {l: 44, r: narrow ? 58 : 66, t: 12, b: 22};
+    var pw = W - m.l - m.r, ph = H - m.t - m.b;
+    var t0 = Date.UTC(2005, 0, 1), tl = S.eps[S.eps.length - 1].t;
+    S.pr.forEach(function(p){ if (p.t > tl) tl = p.t; });
+    var t1 = tl + 40 * DAY;
+    var lo = -100, hi = 200;
+    S.pr.forEach(function(p){
+      if (p.v !== null) { lo = Math.min(lo, Math.floor(p.v / 50) * 50); hi = Math.max(hi, Math.ceil(p.v / 50) * 50); }
+    });
+    function X(t){ return m.l + (t - t0) / (t1 - t0) * pw; }
+    function Y(v){ return m.t + (hi - v) / (hi - lo) * ph; }
+    var defs = el("defs", {}, svg), cp = el("clipPath", {id: "pc"}, defs);
+    el("rect", {x: m.l, y: m.t, width: pw, height: ph}, cp);
+    // Rezessionen
+    D.rec.forEach(function(r){
+      var a = X(r[0]), b = X(r[1]);
+      el("rect", {x: a, y: m.t, width: Math.max(2, b - a), height: ph, fill: C.rec}, svg);
+    });
+    // Gitter + y-Achse
+    for (var v = lo; v <= hi; v += 50) {
+      el("line", {x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: v === 0 ? C.zero : C.grid, "stroke-width": v === 0 ? 1.2 : 1}, svg);
+      var tx = el("text", {x: m.l - 6, y: Y(v) + 3.5, "text-anchor": "end", "class": "ax"}, svg);
+      tx.textContent = v + "%";
+    }
+    // x-Achse: Jahre
+    var step = W < 420 ? 4 : (narrow ? 4 : 2), y0 = new Date(t0).getUTCFullYear(), y1 = new Date(t1).getUTCFullYear();
+    for (var yy = y0 + 1; yy <= y1; yy++) {
+      if ((yy - 2006) % step) continue;
+      var xx = X(Date.UTC(yy, 0, 1));
+      if (xx < m.l + 8 || xx > m.l + pw - 8) continue;
+      el("line", {x1: xx, x2: xx, y1: m.t + ph, y2: m.t + ph + 4, stroke: C.grid}, svg);
+      var lb = el("text", {x: xx, y: m.t + ph + 16, "text-anchor": "middle", "class": "ax"}, svg);
+      lb.textContent = yy;
+    }
+    var g = el("g", {"clip-path": "url(#pc)"}, svg);
+    function path(pts, col, w, op){
+      var d = "", pen = false;
+      pts.forEach(function(p){
+        var v = p.clip ? hi + 80 : p.v;
+        if (v === null || v === undefined || isNaN(v)) { pen = false; return; }
+        d += (pen ? "L" : "M") + X(p.t).toFixed(1) + " " + Y(v).toFixed(1); pen = true;
+      });
+      return el("path", {d: d, fill: "none", stroke: col, "stroke-width": w, "stroke-linejoin": "round",
+                         "stroke-linecap": "round", opacity: op || 1}, g);
+    }
+    path(S.pr, C.price, S.daily ? 1.3 : 1.8, 0.95);
+    path(S.eps, C.eps, 2.4, 1);
+    // 2010-Spitze außerhalb der Skala
+    var ci = S.eps.filter(function(p){ return p.clip; });
+    if (ci.length) {
+      var cx = X(ci[Math.floor(ci.length / 2)].t);
+      var at = el("text", {x: cx + 10, y: m.t + 13, "class": "ann"}, svg);
+      at.textContent = narrow ? "2010: +" + D.peak + "%" : "2010: up to +" + D.peak + "%";
+    }
+    // Endpunkte
+    function endp(p, col, txt, dy){
+      if (!p || p.v === null) return;
+      var x = X(p.t), y = Y(p.v);
+      el("circle", {cx: x, cy: y, r: 3.6, fill: col, stroke: C.bgdot, "stroke-width": 1.2}, svg);
+      var t = el("text", {x: x + 7, y: y + 4 + (dy || 0), "class": "lab", fill: col}, svg);
+      t.textContent = txt;
+    }
+    var le = S.eps[S.eps.length - 1], lp = S.pr[S.pr.length - 1];
+    var dy = Math.abs(Y(le.v) - Y(lp.v)) < 14 ? (Y(le.v) < Y(lp.v) ? -6 : 6) : 0;
+    endp(le, C.eps, pct(le.v), dy);
+    endp(lp, C.price, pct(lp.v), -dy);
+    // Hover
+    var cross = el("line", {y1: m.t, y2: m.t + ph, stroke: C.mut, "stroke-dasharray": "3 3", opacity: 0}, svg);
+    var d1 = el("circle", {r: 3.6, fill: C.eps, opacity: 0}, svg), d2 = el("circle", {r: 3.4, fill: C.price, opacity: 0}, svg);
+    var hit = el("rect", {x: m.l, y: m.t, width: pw, height: ph, fill: "transparent"}, svg);
+    function near(arr, t, tol){
+      var lo_ = 0, hi_ = arr.length - 1;
+      while (hi_ - lo_ > 1) { var mid = (lo_ + hi_) >> 1; if (arr[mid].t < t) lo_ = mid; else hi_ = mid; }
+      var b = Math.abs(arr[lo_].t - t) <= Math.abs(arr[hi_].t - t) ? arr[lo_] : arr[hi_];
+      return Math.abs(b.t - t) <= tol ? b : null;
+    }
+    function move(cx_){
+      var t = t0 + (cx_ - m.l) / pw * (t1 - t0);
+      if (t < t0 || t > tl + 20 * DAY) { hide(); return; }
+      var pe = near(S.eps, t, 20 * DAY), pp = near(S.pr, t, (S.daily ? 6 : 20) * DAY);
+      if (!pe && !pp) { hide(); return; }
+      var tt = pp ? pp.t : pe.t, x = X(tt);
+      cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("opacity", 0.7);
+      if (pe && !pe.clip && pe.v !== null) {
+        d1.setAttribute("cx", X(pe.t)); d1.setAttribute("cy", Y(pe.v)); d1.setAttribute("opacity", 1);
+      }
+      else d1.setAttribute("opacity", 0);
+      if (pp && pp.v !== null) { d2.setAttribute("cx", X(pp.t)); d2.setAttribute("cy", Y(pp.v)); d2.setAttribute("opacity", 1); }
+      else d2.setAttribute("opacity", 0);
+      var ev = pe ? (pe.clip ? "&gt; +200 % (2010 peak +" + D.peak + " %)" : pct(pe.v)) : "—";
+      tip.innerHTML = '<div class="d">' + fdate(tt, S.daily) + '</div>' +
+        '<div><i style="background:' + C.eps + '"></i>Forward EPS <b>' + ev + '</b></div>' +
+        '<div><i style="background:' + C.price + '"></i>Stock price <b>' + (pp ? pct(pp.v) : "—") + '</b></div>';
+      tip.style.display = "block";
+      var tw = tip.offsetWidth, left = x + 14;
+      if (left + tw > W - 4) left = x - tw - 14;
+      tip.style.left = Math.max(2, left) + "px"; tip.style.top = (m.t + 6) + "px";
+    }
+    function hide(){
+      cross.setAttribute("opacity", 0); d1.setAttribute("opacity", 0); d2.setAttribute("opacity", 0);
+      tip.style.display = "none";
+    }
+    function pos(e){
+      var r = svg.getBoundingClientRect(), p = e.touches ? e.touches[0] : e;
+      return (p.clientX - r.left) * (W / r.width);
+    }
+    hit.addEventListener("mousemove", function(e){ move(pos(e)); });
+    hit.addEventListener("mouseleave", hide);
+    hit.addEventListener("touchstart", function(e){ move(pos(e)); }, {passive: true});
+    hit.addEventListener("touchmove", function(e){ move(pos(e)); }, {passive: true});
+    window.__pulseSemis = {mode: mode, n_eps: S.eps.length, n_price: S.pr.length, W: W, lo: lo, hi: hi};
+  }
+  legend(); draw();
+  var rt = null;
+  window.addEventListener("resize", function(){ clearTimeout(rt); rt = setTimeout(function(){ legend(); draw(); }, 80); });
+})();
+</script></body></html>
+"""
+
+_LT_SI_HTML = """<!doctype html><html><head><meta charset="utf-8"><meta name="pulse-lt" content="si-1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:transparent;overflow:hidden}
+body{color:var(--txt);font-family:"Source Sans 3","Source Sans Pro",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+.tabs button{font-family:inherit;font-size:12.5px;font-weight:600;color:var(--soft);background:transparent;cursor:pointer;
+  border:1px solid var(--border);border-radius:10px;padding:7px 11px;white-space:nowrap;transition:background .15s,color .15s}
+.tabs button:hover{color:var(--txt)}
+.tabs button.on{background:var(--accbg);border-color:var(--acc);color:var(--txt)}
+.ttl{font-size:15px;font-weight:700;margin:2px 0 4px;color:var(--txt)}
+.wrap{position:relative}
+svg{display:block;width:100%;overflow:visible;touch-action:pan-y}
+.ax{font-size:11px;fill:var(--mut);font-variant-numeric:tabular-nums}
+.q{font-size:10.5px;fill:var(--mut)}
+.yr{font-size:11.5px;fill:var(--accsoft);font-weight:600}
+.lab{font-size:12.5px;font-weight:700;fill:var(--acc);font-variant-numeric:tabular-nums}
+.tip{position:absolute;pointer-events:none;background:var(--tipbg);border:1px solid var(--border);border-radius:10px;
+  padding:7px 10px;font-size:12px;line-height:1.5;box-shadow:0 8px 22px rgba(0,0,0,.35);display:none;white-space:nowrap;
+  z-index:5;color:var(--txt)}
+.tip b{font-weight:700}.tip .d{color:var(--mut);font-size:11px;margin-bottom:2px}
+.empty{color:var(--mut);font-size:13px;line-height:1.5;padding:70px 10px;text-align:center}
+</style></head><body>
+<div class="tabs" id="tabs"></div>
+<div class="ttl" id="ttl"></div>
+<div class="wrap" id="wrap"><svg id="svg"></svg><div class="tip" id="tip"></div></div>
+<script>
+(function(){
+  var D = /*__DATA__*/null;
+  var C = D.c, R = document.documentElement.style;
+  ["txt","mut","soft","border","grid","acc","accbg","accsoft","tipbg"].forEach(function(k){ R.setProperty("--" + k, C[k]); });
+  var TABS = [["si", "Short Interest Chart", " Short Interest Over Time", "Short interest"],
+              ["dtc", "Days to Cover Chart", " Days to Cover Over Time", "Days to cover"],
+              ["pct", "Short Percent of Float Chart", " Percentage of Float Shorted Over Time", "% of float"]];
+  var SHR = D.unit === "shares";
+  var KEY = "pulse:si_tab", tab = "si";
+  try { var t0_ = localStorage.getItem(KEY); if (t0_ === "si" || t0_ === "dtc" || t0_ === "pct") tab = t0_; } catch (e) {}
+  if (D.tab) tab = D.tab;
+  var DAY = 864e5, svg = document.getElementById("svg"), tip = document.getElementById("tip"), NS = "http://www.w3.org/2000/svg";
+  var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function el(n, a, p){
+    var e = document.createElementNS(NS, n);
+    for (var k in a) e.setAttribute(k, a[k]);
+    if (p) p.appendChild(e);
+    return e;
+  }
+  function money(v, d){ if (v === null || v === undefined) return "—"; var a = Math.abs(v);
+    if (a >= 1e12) return "$" + (v / 1e12).toFixed(d === undefined ? 2 : d) + "T";
+    if (a >= 1e9) return "$" + (v / 1e9).toFixed(d === undefined ? 2 : d) + "B";
+    if (a >= 1e6) return "$" + (v / 1e6).toFixed(d === undefined ? 1 : d) + "M";
+    return "$" + Math.round(v).toLocaleString("en-US"); }
+  function shares(v){ if (v === null || v === undefined) return "—"; var a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(2) + "B"; if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (a >= 1e3) return (v / 1e3).toFixed(1) + "K"; return String(Math.round(v)); }
+  function fmt(v, k, axis){
+    if (v === null || v === undefined) return "—";
+    if (k === "si" && SHR) return shares(v);
+    if (k === "si") return axis ? money(v, 0) : money(v);
+    if (k === "dtc") return v.toFixed(2);
+    return v.toFixed(2) + "%";
+  }
+  function nice(maxv){
+    if (!(maxv > 0)) return {top: 1, step: 0.25};
+    var raw = maxv / 4, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+    var s = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+    var step = s * p;
+    return {top: Math.ceil(maxv / step) * step, step: step};
+  }
+  function fdate(t, long){ var d = new Date(t); return long ? MON[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear()
+                                                         : MON[d.getUTCMonth()] + " " + d.getUTCDate(); }
+  function tabs(){
+    var T = document.getElementById("tabs"); T.innerHTML = "";
+    var nar = document.body.clientWidth < 470;
+    TABS.forEach(function(o){
+      var b = document.createElement("button"); b.textContent = nar ? o[3] : o[1]; b.className = o[0] === tab ? "on" : "";
+      b.setAttribute("data-k", o[0]);
+      b.onclick = function(){ tab = o[0]; try { localStorage.setItem(KEY, tab); } catch (e) {} tabs(); draw(); };
+      T.appendChild(b);
+    });
+    var o = TABS.filter(function(x){ return x[0] === tab; })[0];
+    document.getElementById("ttl").textContent = D.sym + o[2] + (o[0] === "si" && SHR ? " (shares)" : "");
+  }
+  function val(r){ return tab === "si" ? (SHR ? r.sh : r.dollar) : (tab === "dtc" ? r.dtc : r.pct); }
+  function draw(){
+    var W = Math.max(280, document.body.clientWidth);
+    var tabH = document.getElementById("tabs").offsetHeight, H = Math.max(220, (D.h || 290) - Math.max(0, tabH - 40));
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H); svg.setAttribute("height", H);
+    var pts = D.rows.filter(function(r){ var v = val(r); return v !== null && v !== undefined && !isNaN(v); });
+    tip.style.display = "none";
+    window.__pulseSI = {tab: tab, n: pts.length, W: W};
+    if (!pts.length) {
+      var fo = el("foreignObject", {x: 0, y: 0, width: W, height: H}, svg);
+      var dv = document.createElement("div"); dv.className = "empty";
+      dv.innerHTML = tab === "pct" ? "No share count from the same period yet for " + D.sym +
+        " — this view fills in by itself over time (the app remembers the share count every day)."
+        : "No short-interest data for " + D.sym + ".";
+      fo.appendChild(dv); return;
+    }
+    var narrow = W < 470, m = {l: narrow ? 44 : 52, r: 12, t: 26, b: narrow ? 28 : 46};
+    var pw = W - m.l - m.r, ph = H - m.t - m.b;
+    var t0 = Math.min(Date.UTC(2021, 0, 1), D.rows[0].t), last = D.rows[D.rows.length - 1].t;
+    var t1 = last + 18 * DAY;
+    function X(t){ return m.l + (t - t0) / (t1 - t0) * pw; }
+    var mx = 0; pts.forEach(function(r){ mx = Math.max(mx, val(r)); });
+    var nk = nice(mx * 1.12);
+    function Y(v){ return m.t + ph - v / nk.top * ph; }
+    // Gitter + y-Achse
+    for (var v = 0; v <= nk.top + 1e-9; v += nk.step) {
+      el("line", {x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: C.grid, "stroke-width": 1}, svg);
+      var tx = el("text", {x: m.l - 7, y: Y(v) + 3.5, "text-anchor": "end", "class": "ax"}, svg);
+      tx.textContent = fmt(v, tab, true);
+    }
+    el("line", {x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: C.zero, "stroke-width": 1.2}, svg);
+    // Balkenbreite aus dem kleinsten Abstand
+    var gap = 1e18; for (var i = 1; i < D.rows.length; i++) gap = Math.min(gap, D.rows[i].t - D.rows[i - 1].t);
+    if (!(gap < 1e17)) gap = 15 * DAY;
+    var bw = Math.max(1.6, Math.min(14, gap / (t1 - t0) * pw * 0.66));
+    var defs = el("defs", {}, svg);
+    function grad(id, col, a, b){
+      var lg = el("linearGradient", {id: id, x1: 0, y1: 0, x2: 0, y2: 1}, defs);
+      el("stop", {offset: "0%", "stop-color": col, "stop-opacity": a}, lg);
+      el("stop", {offset: "100%", "stop-color": col, "stop-opacity": b}, lg);
+    }
+    grad("gb", C.bar, 0.92, 0.10); grad("gl", C.barhi, 1, 0.35);
+    var bars = el("g", {}, svg);
+    pts.forEach(function(r, i){
+      var x = X(r.t), y = Y(val(r)), isl = r.t === last;
+      el("rect", {x: (x - bw / 2).toFixed(2), y: y.toFixed(2), width: bw.toFixed(2), height: Math.max(0.5, Y(0) - y).toFixed(2),
+                  fill: isl ? "url(#gl)" : "url(#gb)", rx: Math.min(2, bw / 3)}, bars);
+    });
+    // x-Achse: Quartale + Jahre (Quartale unter dem Datum des letzten Punkts entfallen)
+    var lr = pts[pts.length - 1], lx = X(lr.t), dx = Math.min(lx, m.l + pw - 2);
+    var ya = new Date(t0).getUTCFullYear(), yb = new Date(t1).getUTCFullYear();
+    for (var yy = ya; yy <= yb; yy++) {
+      var ys = Math.max(t0, Date.UTC(yy, 0, 1)), ye = Math.min(t1, Date.UTC(yy + 1, 0, 1));
+      if (ye - ys < 20 * DAY) continue;
+      var xa = X(ys), xb = X(ye);
+      if (!narrow) {
+        for (var q = 0; q < 4; q++) {
+          var qs = Date.UTC(yy, q * 3, 1), qe = Date.UTC(yy, q * 3 + 3, 1);
+          if (qs < t0 - DAY || qe > t1 + 40 * DAY) continue;
+          var qx = (X(Math.max(qs, t0)) + X(Math.min(qe, t1))) / 2;
+          if (qx > dx - 52) continue;
+          var qt = el("text", {x: qx, y: m.t + ph + 15, "text-anchor": "middle", "class": "q"}, svg);
+          qt.textContent = "Q" + (q + 1);
+        }
+        el("line", {x1: xa + 3, x2: xb - 3, y1: m.t + ph + 24, y2: m.t + ph + 24, stroke: C.acc, "stroke-width": 2,
+                    "stroke-linecap": "round", opacity: 0.75}, svg);
+      }
+      if (xb - xa > 26) {
+        var yt = el("text", {x: (xa + xb) / 2, y: m.t + ph + (narrow ? 17 : 39), "text-anchor": "middle", "class": "yr"}, svg);
+        yt.textContent = yy;
+      }
+    }
+    // letzter Datenpunkt: Punkt + Wert + Datum
+    var ly = Y(val(lr));
+    el("circle", {cx: lx, cy: ly, r: 4.6, fill: C.dot, stroke: C.dotring, "stroke-width": 1.6}, svg);
+    var lbt = fmt(val(lr), tab, false);
+    if (tab === "si" && !SHR) lbt = money(val(lr), val(lr) >= 1e9 ? 0 : 1);
+    var lb = el("text", {x: dx, y: m.t - 9, "text-anchor": "end", "class": "lab"}, svg);
+    lb.textContent = narrow ? lbt + " · " + fdate(lr.t, false) : lbt;
+    el("line", {x1: lx, x2: lx, y1: m.t - 4, y2: ly - 6, stroke: C.acc, "stroke-width": 1, "stroke-dasharray": "2 3", opacity: 0.6}, svg);
+    if (!narrow) {
+      var dl = el("text", {x: dx, y: m.t + ph + 15, "text-anchor": "end", "class": "lab"}, svg);
+      dl.textContent = fdate(lr.t, false);
+    }
+    // Hover
+    var hl = el("rect", {y: m.t, height: ph, fill: C.acc, opacity: 0}, svg);
+    var hit = el("rect", {x: m.l, y: m.t, width: pw, height: ph, fill: "transparent"}, svg);
+    function move(cx){
+      var t = t0 + (cx - m.l) / pw * (t1 - t0), best = null, bd = 1e18;
+      pts.forEach(function(r){ var d = Math.abs(r.t - t); if (d < bd) { bd = d; best = r; } });
+      if (!best || bd > 40 * DAY) { hide(); return; }
+      var x = X(best.t);
+      hl.setAttribute("x", x - Math.max(bw, 6) / 2); hl.setAttribute("width", Math.max(bw, 6)); hl.setAttribute("opacity", 0.12);
+      var rows = '<div class="d">' + fdate(best.t, true) + '</div>' +
+        '<div>Short interest <b>' + shares(best.sh) + '</b> shares</div>' +
+        '<div>Dollar value <b>' + money(best.dollar) + '</b></div>' +
+        '<div>Days to cover <b>' + (best.dtc === null ? "—" : best.dtc.toFixed(2)) + '</b></div>' +
+        '<div>Of the float <b>' + (best.pct === null ? "—" : best.pct.toFixed(2) + "%") + '</b></div>';
+      tip.innerHTML = rows; tip.style.display = "block";
+      var tw = tip.offsetWidth, left = x + 12;
+      if (left + tw > W - 4) left = x - tw - 12;
+      tip.style.left = Math.max(2, left) + "px"; tip.style.top = (m.t + 4) + "px";
+    }
+    function hide(){ hl.setAttribute("opacity", 0); tip.style.display = "none"; }
+    function pos(e){
+      var r = svg.getBoundingClientRect(), p = e.touches ? e.touches[0] : e;
+      return (p.clientX - r.left) * (W / r.width);
+    }
+    hit.addEventListener("mousemove", function(e){ move(pos(e)); });
+    hit.addEventListener("mouseleave", hide);
+    hit.addEventListener("touchstart", function(e){ move(pos(e)); }, {passive: true});
+    hit.addEventListener("touchmove", function(e){ move(pos(e)); }, {passive: true});
+    window.__pulseSI = {tab: tab, n: pts.length, W: W, top: nk.top, label: lbt};
+  }
+  tabs(); draw();
+  var rt = null;
+  window.addEventListener("resize", function(){ clearTimeout(rt); rt = setTimeout(function(){ tabs(); draw(); }, 80); });
+})();
+</script></body></html>
+"""
+
+
+def _lt_fill(tpl, data):
+    js = json.dumps(data, separators=(",", ":"), default=str).replace("</", "<\\/")
+    return tpl.replace("/*__DATA__*/null", js, 1)
+
+
+def semis_html(data):
+    """Halbleiter-Grafik. data: {c (Farben), ref{t, eps, price, clip}, live{t, v}, has_live, rec[[t0, t1]], peak, h}"""
+    return _lt_fill(_LT_SEMIS_HTML, data)
+
+
+def si_html(data):
+    """Short-Interest-Grafik mit 3 Tabs. data: {c, sym, rows[{t, sh, dollar, dtc, pct}], unit, h, tab?}"""
+    return _lt_fill(_LT_SI_HTML, data)
 
 
 def macro_available():
