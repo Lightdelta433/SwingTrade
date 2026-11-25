@@ -27,7 +27,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-MACRO_VERSION = "5.12"
+MACRO_VERSION = "5.13"
 DATA_DIR = os.environ.get("PULSE_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                            ".pulse_data")
 SNAP_NAME = "macro_snapshot.json"
