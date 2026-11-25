@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-DATA_VERSION = "5.12"
+DATA_VERSION = "5.13"
 
 try:
     import yfinance as yf
@@ -5489,3 +5489,195 @@ def get_latest_basis(t):
         except Exception:
             pass
     return out
+
+
+# ======================================================================
+# v5.13 — Long Term: Halbleiter-Kurse (PHLX SOX) und Short Interest (FINRA)
+# ======================================================================
+FINRA_SI_URL = "https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest"
+SI_START = "2021-01-01"
+SI_DEFAULT = ["QQQ", "SPY", "IWM", "DIA", "SMH", "SOXX", "XLK", "ARKK"]
+SI_NAMES = {"SOXX": "iShares Semiconductor ETF", "ARKK": "ARK Innovation ETF"}
+
+
+@_ttl_cache(3600, fail_ttl=300)
+def get_semis_price():
+    """PHLX Semiconductor (^SOX): Tagesschlusskurse ab Ende 2003 — für die Vorjahres-Veränderung ab 2005.
+    Ohne Yahoo: leer (src 'none') — die App nimmt dann die Kurslinie aus dem Quell-Chart."""
+    t = "^SOX"
+    if _HAS_YF:
+        try:
+            df = _clean_ohlc(yf.Ticker(t).history(start="2003-12-01", auto_adjust=False))
+            if len(df) > 1000:
+                df.attrs["src"] = "real"
+                return df
+        except Exception:
+            pass
+    df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    df.attrs["src"] = "none"
+    return df
+
+
+def _finra_sym(t):
+    return re.sub(r"[^A-Z0-9.]", "", str(t or "").upper().replace("-", "."))
+
+
+def finra_rows(data, fs):
+    """FINRA-Antwort → [{date, shares, adv, dtc}] (ein Eintrag je Stichtag, sortiert)."""
+    out = {}
+    for it in data if isinstance(data, list) else []:
+        if not isinstance(it, dict):
+            continue
+        if str(it.get("symbolCode") or fs).upper() != fs:
+            continue
+        d = str(it.get("settlementDate") or "")[:10]
+        q = _num(it.get("currentShortPositionQuantity"))
+        if len(d) != 10 or q is None or q < 0:
+            continue
+        out[d] = {"date": d, "shares": q, "adv": _num(it.get("averageDailyVolumeQuantity")),
+                  "dtc": _num(it.get("daysToCoverQuantity"))}
+    rows = [out[k] for k in sorted(out)]
+    return rows, ("" if rows else "FINRA has no short interest for " + fs)
+
+
+def _finra_si(t, start=SI_START):
+    """FINRA Query API, Datensatz „Consolidated Short Interest“ (öffentlich, ohne Schlüssel). Döner: (rows, err)."""
+    fs = _finra_sym(t)
+    if not (_HAS_REQ and fs):
+        return [], "no internet library"
+    end = pd.Timestamp.now(tz=TZ).strftime("%Y-%m-%d")
+    body = {"compareFilters": [{"compareType": "EQUAL", "fieldName": "symbolCode", "fieldValue": fs}],
+            "dateRangeFilters": [{"fieldName": "settlementDate", "startDate": start, "endDate": end}],
+            "limit": 5000}
+    hdr = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": _UA}
+    try:
+        r = requests.post(FINRA_SI_URL, json=body, timeout=20, headers=hdr)
+        if r.status_code == 400:                 # Datumsfilter abgelehnt → nur nach Symbol fragen
+            body.pop("dateRangeFilters", None)
+            r = requests.post(FINRA_SI_URL, json=body, timeout=20, headers=hdr)
+    except Exception as e:
+        return [], f"FINRA not reachable ({type(e).__name__})"
+    if r.status_code == 204:
+        return [], "FINRA has no short interest for " + fs
+    if r.status_code != 200:
+        return [], f"FINRA answered HTTP {r.status_code}"
+    try:
+        data = r.json()
+    except ValueError:
+        return [], "FINRA sent no readable data"
+    rows, err = finra_rows(data, fs)
+    return [x for x in rows if x["date"] >= start], err
+
+
+@_ttl_cache(21600, fail_ttl=900)
+def get_share_profile(t):
+    """Yahoo: Float (bzw. Aktien im Umlauf), Verlauf der Aktienzahl, Volumen und der letzte Short-Schnappschuss
+    (Notfall ohne FINRA). Döner: {float, so, hist{date: n}, vol, avg_vol, snap[], qt, src}."""
+    out = {"float": None, "so": None, "hist": {}, "vol": None, "avg_vol": None, "snap": [], "qt": "", "src": "none"}
+    if not _HAS_YF:
+        return out
+    try:
+        tk = yf.Ticker(t)
+        try:
+            info = tk.get_info() or {}
+        except Exception:
+            info = {}
+        try:
+            fi = tk.fast_info
+        except Exception:
+            fi = None
+        out["qt"] = str(_g(info, "quoteType", default="") or "")
+        out["float"] = _num(info.get("floatShares"))
+        out["so"] = _num(_g(info, "sharesOutstanding", "impliedSharesOutstanding")) or (_fi_get(fi, "shares") if fi else None)
+        out["vol"] = _num(_g(info, "regularMarketVolume", "volume")) or (_fi_get(fi, "last_volume") if fi else None)
+        out["avg_vol"] = (_num(_g(info, "averageVolume", "averageDailyVolume3Month"))
+                          or (_fi_get(fi, "three_month_average_volume") if fi else None))
+        try:
+            hs = tk.get_shares_full(start="2020-06-01")
+            if hs is not None and len(hs):
+                hs = pd.Series(hs).dropna()
+                hi = pd.DatetimeIndex(hs.index)
+                hs.index = (hi.tz_localize(None) if hi.tz is not None else hi).normalize()
+                hs = hs[~hs.index.duplicated(keep="last")]
+                out["hist"] = {i.strftime("%Y-%m-%d"): float(v) for i, v in hs.items() if v and v > 0}
+        except Exception:
+            pass
+        snap = []
+        for dk, sk in (("sharesShortPreviousMonthDate", "sharesShortPriorMonth"), ("dateShortInterest", "sharesShort")):
+            d, q = info.get(dk), _num(info.get(sk))
+            if d and q:
+                try:
+                    ds = pd.Timestamp(int(d), unit="s").strftime("%Y-%m-%d")
+                except (TypeError, ValueError):
+                    continue
+                snap.append({"date": ds, "shares": q, "adv": None,
+                             "dtc": _num(info.get("shortRatio")) if sk == "sharesShort" else None})
+        out["snap"] = snap
+        out["src"] = "real" if (out["so"] or out["float"] or snap) else "none"
+    except Exception:
+        pass
+    return out
+
+
+def si_settlements(start, end):
+    """FINRA-Stichtage: Monatsmitte (15., sonst Werktag davor) und Monatsende (letzter Werktag)."""
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    out = []
+    for m in pd.period_range(start, end, freq="M"):
+        mid = pd.Timestamp(m.year, m.month, 15)
+        while mid.dayofweek >= 5:
+            mid -= pd.Timedelta(days=1)
+        eom = m.end_time.normalize()
+        while eom.dayofweek >= 5:
+            eom -= pd.Timedelta(days=1)
+        out += [mid, eom]
+    return [d for d in out if start <= d <= end]
+
+
+def _mock_si(t):
+    """Testdaten (nur ohne Internet): Short Interest zweimal im Monat seit 2021."""
+    rng = np.random.default_rng(_seed(t) + 513)
+    end = pd.Timestamp.now(tz=TZ).tz_localize(None).normalize() - pd.Timedelta(days=12)
+    dates = si_settlements(SI_START, end)
+    base = rng.uniform(15e6, 70e6)
+    walk = np.cumsum(rng.normal(0.004, 0.06, len(dates)))
+    rows = []
+    for d, w in zip(dates, walk):
+        sh = float(base * np.exp(w))
+        adv = float(base / rng.uniform(0.9, 2.2))
+        rows.append({"date": d.strftime("%Y-%m-%d"), "shares": round(sh), "adv": round(adv),
+                     "dtc": round(sh / adv, 2)})
+    return rows
+
+
+@_ttl_cache(10800, fail_ttl=900)
+def get_short_interest(t):
+    """Short Interest seit 2021 für Aktien und ETFs: FINRA (zweimal im Monat) + Kurse (Yahoo) + Aktienzahl.
+    Döner: {sym, rows, close, counts{date: n}, cnt_now, float, so, vol, avg_vol, src, via, err}."""
+    t = str(t or "").upper().strip()
+    rows, err = _finra_si(t)
+    prof = get_share_profile(t)
+    via = "FINRA"
+    if not rows and prof.get("snap"):
+        rows, via = list(prof["snap"]), "Yahoo"
+    close, src = None, "none"
+    if rows:
+        src = "real"
+        h = get_history_max(t)
+        if h is not None and h.attrs.get("src") == "real" and len(h):
+            close = h["Close"]
+    elif t in KNOWN:                                          # ohne Internet: Testdaten, deutlich markiert
+        rows, via, src = _mock_si(t), "sample", "mock"
+        h = get_history(t)
+        close = h["Close"] if len(h) else None
+        fl = float(np.random.default_rng(_seed(t)).uniform(3e8, 9e8))
+        last = pd.Timestamp(rows[-1]["date"])
+        prof = dict(prof, float=fl, so=fl, hist={d.strftime("%Y-%m-%d"): fl for d in pd.bdate_range(
+            last - pd.Timedelta(days=330), last, freq="14D")})
+    counts = dict(prof.get("hist") or {})
+    cnt_now = prof.get("float") or prof.get("so")
+    if cnt_now and src != "none":
+        counts[pd.Timestamp.now(tz=TZ).strftime("%Y-%m-%d")] = float(cnt_now)
+    return {"sym": t, "rows": rows, "close": close, "counts": counts, "cnt_now": cnt_now,
+            "float": prof.get("float"), "so": prof.get("so"), "vol": prof.get("vol"), "avg_vol": prof.get("avg_vol"),
+            "src": src, "via": via, "err": err if via != "FINRA" or not rows else ""}
