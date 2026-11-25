@@ -21,7 +21,7 @@ import re
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "5.12"
+ENGINE_VERSION = "5.13"
 NAN = float("nan")
 
 
@@ -9656,3 +9656,165 @@ def value_label(upside, fair_band=5.0):
     if upside <= -fair_band:
         return "Overvalued", -1
     return "Fairly valued", 0
+
+
+# ======================================================================
+# v5.13 — Long Term: Halbleiter (Kurs vs. Forward EPS) und Short Interest
+# ======================================================================
+RECESSIONS = (("2007-12-01", "2009-06-30"), ("2020-02-01", "2020-04-30"))      # NBER-Rezessionen
+SEMIS_SRC = ("Source: Ritholtz Wealth Management, data via Bloomberg Finance L.P., original idea from Yardeni Research")
+SEMIS_TICKER = "^SOX"                       # PHLX Semiconductor — Yahoo hat keinen S&P-500-Halbleiter-Index
+SEMIS_REF_START = "2005-01"                 # Monatswerte (Monatsmitte); letzter Wert = Stand des Charts
+SEMIS_REF_END = "2026-11-12"
+SEMIS_REF_CLIP = ("2009-12", "2010-07")     # Forward EPS über +200 % (außerhalb der Skala)
+SEMIS_REF_PEAK = 953.0                      # „2010: up to +953 %“
+# Werte aus dem Ritholtz-Chart (S&P 500 Semiconductors, YoY %, Jan 2005 – 12.11.2026) gelesen — je Monat ≈ ±3–5
+# Prozentpunkte. Forward-EPS-Historie (Konsens) gibt es in keiner freien Quelle; deshalb diese Referenzreihe.
+SEMIS_REF_EPS = (
+    10, -2.3, -5.3, -7.7, -8.3, -9.6, 2.3, 8.3, 20.8, 35.3, 37.4, 33.3, 29.8, 28.5, 26.7, 22.8, 23.2, 24.6, 2.7,
+    0.5, -1.2, -4.1, -7.5, -8.4, -7.5, -7.7, -7.4, -8.7, -7.8, -8.6, -1.5, 1.2, 3.3, 7.8, 6.9, 7.8, 8.9, 8.4, 8.3,
+    8.3, 6.8, 8.4, 1.7, -0.5, -6.5, -24.3, -49.9, -71.2, -83.4, -85.9, -83.5, -76.2, -69, -63.6, -48.2, -39.6,
+    -33.2, 8.7, 61.1, None, None, None, None, None, None, None, None, 165.2, 124.8, 80.2, 61.7, 43.9, 37.4, 31.1,
+    28, 20.7, 17.8, 15.5, 11.2, 9.2, 9.9, 9.8, 3.5, 1.8, -0.5, -1.5, -2.3, -4.2, -6.6, -9, -12.7, -12.2, -14.2,
+    -19.4, -18.4, -15.5, -15.4, -15.5, -15.1, -15.7, -15.4, -14.3, -6.9, -3.9, 2.4, 14.5, 17, 19.3, 22.3, 22.5, 22,
+    24.1, 25, 29.8, 30.5, 29.5, 29.7, 27.7, 30.8, 33.3, 29.8, 28, 21.3, 19.1, 16.9, 7.5, 4.2, 2, -1.5, -0.5, -0.9,
+    -3.6, -1.8, 3.2, 3.5, 1.8, 2.7, 6.5, 10.9, 14.3, 19, 23.7, 25.8, 30, 30.8, 27.4, 35, 39.9, 40.4, 40.4, 41.9,
+    41, 39.2, 39.8, 39.6, 39.5, 43.4, 43.4, 42.4, 42.8, 45.1, 44.9, 40.9, 37.7, 33.3, 29.4, 21.1, 10.9, 2.7, -2.9,
+    -5.3, -6.5, -10.9, -15.1, -14.6, -13.9, -13.3, -12.1, -8.6, -1.5, 2, 6.3, 3.8, 1.4, 2.3, 8.4, 11.2, 13.7, 15,
+    16.3, 18.5, 20.2, 22, 27.1, 32.3, 39, 42.4, 42.5, 41.2, 39.9, 38.1, 35.3, 34.4, 34.1, 32, 31.4, 30.2, 27.3,
+    23.8, 21.3, 8.9, 1.5, -0.5, -9, -14.2, -19.3, -25, -28, -28.5, -29.8, -25.5, -22.5, -11.5, 2.9, 14.1, 25.2,
+    39.5, 52.9, 61.8, 73, 77.2, 84.1, 83.2, 80.8, 76.4, 69, 62.4, 62.1, 59.5, 54.4, 53.2, 47.3, 44.6, 40.7, 34.8,
+    33.5, 33.9, 37.4, 41.6, 46.7, 51.6, 64.5, 69.5, 79.9, 98.7, 119.7, 136.6, 149.2, 156.6, 161, 161, 161, 160)
+SEMIS_REF_PRICE = (
+    -20.7, -17.8, -15.4, -13, -8, 6.8, 21.6, 21.4, 27.6, 13.3, 14.8, 16.9, 16.9, 8.7, 8.9, 10.9, -1.5, -14, -15.4,
+    -12.4, -5.1, 1.5, 0.6, -0.9, -2.4, -2.4, -1.5, 0.6, 12.4, 24.3, 27.1, 19, 16.6, 14.8, 12.1, -2.1, -6.6, -6.6,
+    -5.3, -4.8, -6, -16.6, -18.4, -19.3, -46.1, -37.7, -44, -43.7, -40.7, -40.1, -36.6, -35.3, -34.4, -34.1, -16,
+    -12.4, -12.4, 17.6, 47.6, 54.3, 56.1, 57.9, 49.6, 42.5, 29.5, 24.6, 22, 1.8, 1.5, 13.6, 14.6, 13.6, 16.4, 19.1,
+    11.2, 11.3, 13.9, 22.2, 13.9, 13.9, 4.5, 4.4, 4.6, 4.8, 5.1, 5.1, 7.5, 2.1, -0.3, 0, 3.3, 15.4, 10.3, -6.9,
+    -6.8, -5.1, -8.4, -9, -7.5, -8.4, 10.6, 10.6, 9.9, 8.7, 20.1, 30.5, 31.7, 29.5, 28.5, 28.6, 28, 29.2, 28, 37.1,
+    38.3, 40.1, 37.1, 34.1, 37.1, 36.2, 35.3, 34.1, 25.8, 25.5, 22.6, 8.6, -5.4, -4.2, 4.2, 4.8, 3.9, -11, -11.2,
+    -7.7, -2.4, -3, 7.6, 18.2, 28.8, 34.7, 34.2, 32, 38.3, 44.6, 45.5, 45.5, 45.5, 45.5, 46.7, 45.8, 29.4, 29.5,
+    29.4, 44.9, 44.9, 44, 35.9, 36.2, 34.1, 35.1, 35.9, 34.4, 29.2, 29.8, 28, -5.4, -6.3, -9.5, -8.4, -8, 7.5, 7.4,
+    0.3, 0.6, 2.7, 3.6, 5.7, 30.6, 32.6, 48.7, 46.4, 26.5, 11.5, 11.5, 39.8, 38.3, 38.9, 47.9, 46.4, 42.8, 46.4,
+    46.6, 49.1, 53.1, 80.2, 72.4, 54.1, 53.4, 49.9, 47.6, 47.6, 51.9, 53.1, 50.4, 19.6, 20.2, 15.1, 3.6, 2, -11.8,
+    -11.2, -11.8, -26.8, -30.5, -30.8, -29.8, -11.2, -7.8, -4.5, 2.1, 59.4, 59.1, 52.3, 61.2, 74.8, 75.1, 71.2,
+    93.8, 93.5, 111.6, 108.5, 102.8, 108.2, 109.7, 92.3, 90.6, 102.8, 111, 93.2, 86.2, 76, 11.3, 9.3, 13.3, 15.2,
+    16.6, 47.3, 50.4, 50.4, 51, 41.9, 45.8, 52.8, 60.3, 70.6, 104, 99.5, 87.9, 55.2, 53.4, 48.5, 13.3, 12.2)
+
+
+def semis_ref():
+    """Referenzreihe aus dem Chart: DataFrame (Index = Monatsmitte, letzter = 12.11.2026) mit eps, price, clip."""
+    n = len(SEMIS_REF_EPS)
+    idx = list(pd.date_range(SEMIS_REF_START + "-01", periods=n, freq="MS") + pd.Timedelta(days=14))
+    idx[-1] = pd.Timestamp(SEMIS_REF_END)
+    mon = [d.strftime("%Y-%m") for d in idx]
+    clip = [SEMIS_REF_CLIP[0] <= m <= SEMIS_REF_CLIP[1] for m in mon]
+    return pd.DataFrame({"eps": [np.nan if v is None else float(v) for v in SEMIS_REF_EPS],
+                         "price": [float(v) for v in SEMIS_REF_PRICE], "clip": clip}, index=pd.DatetimeIndex(idx))
+
+
+def yoy_weekly(close, start="2005-01-01"):
+    """Veränderung zum Vorjahr in % — ein Wert je Woche (letzter Handelstag der Woche) ab `start`."""
+    try:
+        s = pd.Series(close).dropna().astype(float)
+        idx = pd.DatetimeIndex(s.index)
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+        s = pd.Series(s.values, index=idx.normalize()).sort_index()
+        s = s[~s.index.duplicated(keep="last")]
+    except (TypeError, ValueError):
+        return pd.Series(dtype=float)
+    if len(s) < 260:
+        return pd.Series(dtype=float)
+    w = s.groupby(s.index.to_period("W-FRI")).tail(1)
+    prev = s.asof(w.index - pd.Timedelta(days=365))
+    out = pd.Series((w.values / prev.values - 1.0) * 100.0, index=w.index)
+    out = out.replace([np.inf, -np.inf], np.nan).dropna()
+    return out[out.index >= pd.Timestamp(start)]
+
+
+SI_DAYS_MATCH = 90          # Aktienzahl gilt für Short-Interest-Stichtage höchstens ±90 Tage entfernt
+
+
+def _nearest(series, when, tol_days):
+    """Wert der Reihe am nächsten Datum (höchstens tol_days entfernt) — sonst None."""
+    if series is None or not len(series):
+        return None
+    i = series.index.get_indexer([when], method="nearest")[0]
+    if i < 0 or abs((series.index[i] - when).days) > tol_days:
+        return None
+    v = series.iloc[i]
+    return float(v) if v == v and v > 0 else None
+
+
+def si_frame(rows, close=None, counts=None):
+    """Short-Interest-Tabelle je Stichtag.
+    rows: [{date, shares, adv, dtc}] (FINRA) · close: Tagesschlusskurse · counts: Aktienzahl (Float bzw. Aktien im
+    Umlauf) je Datum. Ergebnis: DataFrame (Index = Stichtag) mit shares, adv, dtc, price, dollar, pct."""
+    recs = []
+    for r in rows or []:
+        try:
+            d = pd.Timestamp(str(r.get("date"))[:10])
+            q = float(r.get("shares"))
+        except (TypeError, ValueError):
+            continue
+        if not (q == q) or q < 0:
+            continue
+        adv = r.get("adv")
+        adv = float(adv) if adv is not None and float(adv) == float(adv) and float(adv) > 0 else None
+        dtc = r.get("dtc")
+        dtc = float(dtc) if dtc is not None and float(dtc) == float(dtc) and 0 <= float(dtc) < 999 else None
+        if dtc is None and adv:
+            dtc = q / adv
+        recs.append((d, q, adv, dtc))
+    if not recs:
+        return pd.DataFrame(columns=["shares", "adv", "dtc", "price", "dollar", "pct"])
+    df = pd.DataFrame(recs, columns=["date", "shares", "adv", "dtc"]).drop_duplicates("date", keep="last")
+    df = df.set_index("date").sort_index()
+    px = None
+    if close is not None and len(close):
+        c = pd.Series(close).dropna().astype(float)
+        ci = pd.DatetimeIndex(c.index)
+        c.index = (ci.tz_localize(None) if ci.tz is not None else ci).normalize()
+        px = c.sort_index()
+        px = px[~px.index.duplicated(keep="last")]
+    cnt = None
+    if counts is not None and len(counts):
+        k = pd.Series(counts).dropna().astype(float)
+        ki = pd.DatetimeIndex(k.index)
+        k.index = (ki.tz_localize(None) if ki.tz is not None else ki).normalize()
+        cnt = k.sort_index()
+        cnt = cnt[~cnt.index.duplicated(keep="last")]
+    prices, dollars, pcts = [], [], []
+    for d, row in df.iterrows():
+        p = None
+        if px is not None:
+            v = px.asof(d)
+            p = float(v) if v == v else None
+        prices.append(p)
+        dollars.append(row["shares"] * p if p else None)
+        n = _nearest(cnt, d, SI_DAYS_MATCH)
+        pcts.append(100.0 * row["shares"] / n if n else None)
+    df["price"], df["dollar"], df["pct"] = prices, dollars, pcts
+    return df
+
+
+def si_kpis(df):
+    """Kennzahlen zum letzten Stichtag: Datum, Short-Aktien, Vorwert, Änderung %, $-Volumen, Days to cover, % Float."""
+    if df is None or not len(df):
+        return {}
+    last = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else None
+    chg = None
+    if prev is not None and prev["shares"]:
+        chg = (last["shares"] / prev["shares"] - 1.0) * 100.0
+
+    def _f(v):
+        try:
+            v = float(v)
+            return v if v == v else None
+        except (TypeError, ValueError):
+            return None
+    return {"date": df.index[-1], "shares": _f(last["shares"]), "prev": _f(prev["shares"]) if prev is not None else None,
+            "chg_pct": chg, "dollar": _f(last["dollar"]), "dtc": _f(last["dtc"]), "pct": _f(last["pct"]),
+            "adv": _f(last["adv"]), "price": _f(last["price"])}
