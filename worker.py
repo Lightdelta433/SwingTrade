@@ -36,7 +36,7 @@ if HERE not in sys.path:
 import backend as bk  # noqa: E402
 import mock_data as md  # noqa: E402
 
-WORKER_VERSION = "5.12"
+WORKER_VERSION = "5.13"
 
 
 def _load_secrets():
