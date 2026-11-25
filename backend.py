@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-BACKEND_VERSION = "5.12"
+BACKEND_VERSION = "5.13"
 
 _LOCK = threading.RLock()
 CFG = {"store": {}, "mail": {}, "push": {}, "app_url": ""}
@@ -509,6 +509,63 @@ def profile_remove(email):
         allp = kv_get("profiles") or {"v": 1, "users": {}}
         if allp.get("users", {}).pop(str(email or "").lower(), None) is not None:
             kv_put("profiles", allp, sync=False)
+
+
+# ======================================================================
+# v5.13 — Short-Interest-Verlauf dauerhaft (Long Term)
+# ======================================================================
+#   FINRA-Stichtage und die täglich gemerkte Aktienzahl (Float bzw. Aktien im Umlauf) werden je Symbol gespeichert
+#   (mit [pulse_store] auch auf GitHub). So bleibt der Verlauf, falls FINRA einmal nicht antwortet, und „% of float“
+#   wird mit jedem Tag genauer (für ETFs gibt Yahoo keinen Verlauf der Aktienzahl).
+SI_KV = "shortint"
+SI_MAX_SYMS = 60
+_SILOCK = threading.RLock()
+
+
+def si_merge(sym, rows, count=None, day=None, store=True):
+    """Neue Short-Interest-Zeilen + heutige Aktienzahl in den gespeicherten Verlauf mischen.
+    Döner: (rows sortiert, counts {datum: anzahl}). store=False (Testdaten): nur lesen, nichts speichern."""
+    sym = re.sub(r"[^A-Z0-9.^=\-]", "", str(sym or "").upper())[:16]
+    if not sym:
+        return list(rows or []), {}
+    day = day or pd.Timestamp.now(tz=TZ).strftime("%Y-%m-%d")
+    with _SILOCK:
+        allv = kv_get(SI_KV) or {"v": 1, "sym": {}}
+        rec = allv.setdefault("sym", {}).get(sym) or {"rows": {}, "cnt": {}}
+        rec.setdefault("rows", {})
+        rec.setdefault("cnt", {})
+        changed = False
+        if store:
+            for r in rows or []:
+                d = str(r.get("date") or "")[:10]
+                try:
+                    v = [float(r["shares"]), None if r.get("adv") is None else float(r["adv"]),
+                         None if r.get("dtc") is None else float(r["dtc"])]
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if len(d) == 10 and rec["rows"].get(d) != v:
+                    rec["rows"][d] = v
+                    changed = True
+            try:
+                c_ = float(count) if count else 0.0
+            except (TypeError, ValueError):
+                c_ = 0.0
+            if c_ > 0 and not rec["cnt"].get(day):
+                rec["cnt"][day] = c_
+                changed = True
+        if changed and kv_loaded(SI_KV):        # nie über einen unbekannten (nicht gelesenen) Stand schreiben
+            rec["ts"] = time.time()
+            allv["sym"][sym] = rec
+            if len(allv["sym"]) > SI_MAX_SYMS:
+                for k_ in sorted(allv["sym"], key=lambda x: allv["sym"][x].get("ts", 0))[:len(allv["sym"]) - SI_MAX_SYMS]:
+                    allv["sym"].pop(k_, None)
+            kv_put(SI_KV, allv, sync=False)
+    merged = {d: {"date": d, "shares": v[0], "adv": v[1], "dtc": v[2]} for d, v in rec["rows"].items()}
+    for r in rows or []:                         # frische Zeilen gelten immer (auch ohne Speicher)
+        d = str(r.get("date") or "")[:10]
+        if len(d) == 10 and r.get("shares") is not None:
+            merged[d] = {"date": d, "shares": r.get("shares"), "adv": r.get("adv"), "dtc": r.get("dtc")}
+    return [merged[k] for k in sorted(merged)], dict(rec["cnt"])
 
 
 # ======================================================================
