@@ -26,7 +26,7 @@ import time
 
 import backend as bk
 
-BROKER_VERSION = "5.12"
+BROKER_VERSION = "5.13"
 _STATE = {"ib": None, "day": "", "n": 0, "err": ""}
 _LOCK = threading.RLock()
 
