@@ -143,6 +143,7 @@ def from_stooq(s):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    os.makedirs(os.path.join(os.path.dirname(__file__), "data"), exist_ok=True)
     syms = universe()
     print("symbols:", len(syms), flush=True)
     data = {}

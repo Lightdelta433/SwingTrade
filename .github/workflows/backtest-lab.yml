@@ -41,6 +41,7 @@ jobs:
 
       - name: Encrypt (only the holder of the private key can read it)
         run: |
+          mkdir -p lab/data
           openssl rand -hex 32 > k.txt
           openssl enc -aes-256-cbc -pbkdf2 -salt -in lab/out/market.csv.gz -out lab/data/market.enc -pass file:k.txt
           openssl pkeyutl -encrypt -pubin -inkey lab/pubkey.pem -pkeyopt rsa_padding_mode:oaep -in k.txt -out lab/data/market.key
