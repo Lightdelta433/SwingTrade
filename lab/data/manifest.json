@@ -1,0 +1,1967 @@
+{
+ "fetched_utc": "2026-11-27 11:06",
+ "start": "2003-01-01",
+ "symbols": 281,
+ "ok": 277,
+ "items": [
+  {
+   "sym": "AAPL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MSFT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NVDA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AMZN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GOOGL",
+   "src": "yahoo",
+   "rows": 5604,
+   "first": "2004-08-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "META",
+   "src": "yahoo",
+   "rows": 3652,
+   "first": "2012-05-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TSLA",
+   "src": "yahoo",
+   "rows": 4129,
+   "first": "2010-06-29",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AVGO",
+   "src": "yahoo",
+   "rows": 4354,
+   "first": "2009-08-06",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BRK-B",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "JPM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "V",
+   "src": "yahoo",
+   "rows": 4703,
+   "first": "2008-03-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MA",
+   "src": "yahoo",
+   "rows": 5159,
+   "first": "2006-05-25",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "UNH",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XOM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LLY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "JNJ",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "COST",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ABBV",
+   "src": "yahoo",
+   "rows": 3497,
+   "first": "2013-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MRK",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CVX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PEP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WMT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BAC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ADBE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CRM",
+   "src": "yahoo",
+   "rows": 5644,
+   "first": "2004-06-23",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NFLX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AMD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "INTC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CSCO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ORCL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "QCOM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TXN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AMAT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MU",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "IBM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NKE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DIS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MCD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SBUX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CAT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HON",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LMT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "RTX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "UPS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "FDX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "C",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WFC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AXP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BLK",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SCHW",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PYPL",
+   "src": "yahoo",
+   "rows": 2867,
+   "first": "2015-07-06",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "T",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "VZ",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TMUS",
+   "src": "yahoo",
+   "rows": 4934,
+   "first": "2007-04-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CMCSA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PFE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ABT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TMO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DHR",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MDT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BMY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GILD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AMGN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CVS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CI",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ELV",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PM",
+   "src": "yahoo",
+   "rows": 4705,
+   "first": "2008-03-17",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "F",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GM",
+   "src": "yahoo",
+   "rows": 4029,
+   "first": "2010-11-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "UBER",
+   "src": "yahoo",
+   "rows": 1898,
+   "first": "2019-05-10",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ABNB",
+   "src": "yahoo",
+   "rows": 1497,
+   "first": "2020-12-10",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SHOP",
+   "src": "yahoo",
+   "rows": 2898,
+   "first": "2015-05-20",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XYZ",
+   "src": "yahoo",
+   "rows": 2770,
+   "first": "2015-11-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PLTR",
+   "src": "yahoo",
+   "rows": 1547,
+   "first": "2020-09-30",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "COIN",
+   "src": "yahoo",
+   "rows": 1413,
+   "first": "2021-04-14",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MSTR",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SMCI",
+   "src": "yahoo",
+   "rows": 4948,
+   "first": "2007-03-29",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ARM",
+   "src": "yahoo",
+   "rows": 804,
+   "first": "2023-09-14",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SNOW",
+   "src": "yahoo",
+   "rows": 1557,
+   "first": "2020-09-16",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CRWD",
+   "src": "yahoo",
+   "rows": 1876,
+   "first": "2019-06-12",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PANW",
+   "src": "yahoo",
+   "rows": 3609,
+   "first": "2012-07-20",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NOW",
+   "src": "yahoo",
+   "rows": 3623,
+   "first": "2012-06-29",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "INTU",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ISRG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LRCX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KLAC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MRVL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ON",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ADI",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NXPI",
+   "src": "yahoo",
+   "rows": 4102,
+   "first": "2010-08-06",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DELL",
+   "src": "yahoo",
+   "rows": 2584,
+   "first": "2016-08-17",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HPQ",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WBD",
+   "src": "missing",
+   "rows": 0
+  },
+  {
+   "sym": "SNAP",
+   "src": "yahoo",
+   "rows": 2449,
+   "first": "2017-03-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ROKU",
+   "src": "yahoo",
+   "rows": 2290,
+   "first": "2017-09-28",
+   "last": "2026-11-06"
+  },
+  {
+   "sym": "ZM",
+   "src": "yahoo",
+   "rows": 1913,
+   "first": "2019-04-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DOCU",
+   "src": "yahoo",
+   "rows": 2158,
+   "first": "2018-04-27",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "RIVN",
+   "src": "yahoo",
+   "rows": 1266,
+   "first": "2021-11-10",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LCID",
+   "src": "yahoo",
+   "rows": 1555,
+   "first": "2020-09-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NIO",
+   "src": "yahoo",
+   "rows": 2063,
+   "first": "2018-09-12",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BABA",
+   "src": "yahoo",
+   "rows": 3065,
+   "first": "2014-09-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PDD",
+   "src": "yahoo",
+   "rows": 2096,
+   "first": "2018-07-26",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "JD",
+   "src": "yahoo",
+   "rows": 3148,
+   "first": "2014-05-22",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SOFI",
+   "src": "yahoo",
+   "rows": 1482,
+   "first": "2021-01-04",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HOOD",
+   "src": "yahoo",
+   "rows": 1339,
+   "first": "2021-07-29",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AFRM",
+   "src": "yahoo",
+   "rows": 1475,
+   "first": "2021-01-13",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DKNG",
+   "src": "yahoo",
+   "rows": 1846,
+   "first": "2019-07-25",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "RBLX",
+   "src": "yahoo",
+   "rows": 1437,
+   "first": "2021-03-10",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "U",
+   "src": "yahoo",
+   "rows": 1555,
+   "first": "2020-09-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NET",
+   "src": "yahoo",
+   "rows": 1811,
+   "first": "2019-09-13",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DDOG",
+   "src": "yahoo",
+   "rows": 1807,
+   "first": "2019-09-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MDB",
+   "src": "yahoo",
+   "rows": 2288,
+   "first": "2017-10-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TTD",
+   "src": "yahoo",
+   "rows": 2560,
+   "first": "2016-09-21",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ENPH",
+   "src": "yahoo",
+   "rows": 3686,
+   "first": "2012-03-30",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "FSLR",
+   "src": "yahoo",
+   "rows": 5036,
+   "first": "2006-11-17",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "OXY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SLB",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HAL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "COP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EOG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DVN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MRNA",
+   "src": "yahoo",
+   "rows": 2003,
+   "first": "2018-12-07",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BIIB",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "REGN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "VRTX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NEM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "FCX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AAL",
+   "src": "yahoo",
+   "rows": 5325,
+   "first": "2005-09-27",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DAL",
+   "src": "yahoo",
+   "rows": 4924,
+   "first": "2007-05-03",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "UAL",
+   "src": "yahoo",
+   "rows": 5235,
+   "first": "2006-02-06",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CCL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "RCL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NCLH",
+   "src": "yahoo",
+   "rows": 3485,
+   "first": "2013-01-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MAR",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LVS",
+   "src": "yahoo",
+   "rows": 5522,
+   "first": "2004-12-15",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WYNN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CLF",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MARA",
+   "src": "yahoo",
+   "rows": 3662,
+   "first": "2012-05-04",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "RIOT",
+   "src": "yahoo",
+   "rows": 2681,
+   "first": "2016-03-31",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CVNA",
+   "src": "yahoo",
+   "rows": 2409,
+   "first": "2017-04-28",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CHWY",
+   "src": "yahoo",
+   "rows": 1874,
+   "first": "2019-06-14",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ETSY",
+   "src": "yahoo",
+   "rows": 2922,
+   "first": "2015-04-16",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "W",
+   "src": "yahoo",
+   "rows": 3056,
+   "first": "2014-10-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PINS",
+   "src": "yahoo",
+   "rows": 1913,
+   "first": "2019-04-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LYFT",
+   "src": "yahoo",
+   "rows": 1927,
+   "first": "2019-03-29",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SPOT",
+   "src": "yahoo",
+   "rows": 2176,
+   "first": "2018-04-03",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TGT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LOW",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TJX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BKNG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CMG",
+   "src": "yahoo",
+   "rows": 5242,
+   "first": "2006-01-26",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LULU",
+   "src": "yahoo",
+   "rows": 4865,
+   "first": "2007-07-27",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "APA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MGM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EXPE",
+   "src": "yahoo",
+   "rows": 5372,
+   "first": "2005-07-21",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EBAY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GME",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AMC",
+   "src": "yahoo",
+   "rows": 3254,
+   "first": "2013-12-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BBY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KSS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "M",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GAP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HPE",
+   "src": "yahoo",
+   "rows": 2793,
+   "first": "2015-10-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WDC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "STX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ADSK",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SPY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "QQQ",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "IWM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DIA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLK",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLF",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLV",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLI",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLU",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLB",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLRE",
+   "src": "yahoo",
+   "rows": 2800,
+   "first": "2015-10-08",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XLC",
+   "src": "yahoo",
+   "rows": 2122,
+   "first": "2018-06-19",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SMH",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SOXX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ARKK",
+   "src": "yahoo",
+   "rows": 3035,
+   "first": "2014-10-31",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GLD",
+   "src": "yahoo",
+   "rows": 5540,
+   "first": "2004-11-18",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SLV",
+   "src": "yahoo",
+   "rows": 5178,
+   "first": "2006-04-28",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TLT",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "IEF",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SHY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EFA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EEM",
+   "src": "yahoo",
+   "rows": 5944,
+   "first": "2003-04-14",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DBC",
+   "src": "yahoo",
+   "rows": 5235,
+   "first": "2006-02-06",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "VNQ",
+   "src": "yahoo",
+   "rows": 5576,
+   "first": "2004-09-29",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HYG",
+   "src": "yahoo",
+   "rows": 4940,
+   "first": "2007-04-11",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "JNK",
+   "src": "yahoo",
+   "rows": 4775,
+   "first": "2007-12-04",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GDX",
+   "src": "yahoo",
+   "rows": 5162,
+   "first": "2006-05-22",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GDXJ",
+   "src": "yahoo",
+   "rows": 4286,
+   "first": "2009-11-11",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "USO",
+   "src": "yahoo",
+   "rows": 5191,
+   "first": "2006-04-10",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BNO",
+   "src": "yahoo",
+   "rows": 4148,
+   "first": "2010-06-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KRE",
+   "src": "yahoo",
+   "rows": 5140,
+   "first": "2006-06-22",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KBE",
+   "src": "yahoo",
+   "rows": 5290,
+   "first": "2005-11-15",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "IJR",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EWA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EWC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EWG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EWQ",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GC=F",
+   "src": "yahoo",
+   "rows": 6006,
+   "first": "2003-01-02",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "SI=F",
+   "src": "yahoo",
+   "rows": 6006,
+   "first": "2003-01-02",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "CL=F",
+   "src": "yahoo",
+   "rows": 6007,
+   "first": "2003-01-02",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "BTC-USD",
+   "src": "yahoo",
+   "rows": 4455,
+   "first": "2014-09-17",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "EUNL.DE",
+   "src": "yahoo",
+   "rows": 4362,
+   "first": "2009-09-25",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "SXR8.DE",
+   "src": "yahoo",
+   "rows": 4200,
+   "first": "2010-05-19",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "SXRV.DE",
+   "src": "yahoo",
+   "rows": 4149,
+   "first": "2010-05-07",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "EXS1.DE",
+   "src": "yahoo",
+   "rows": 4802,
+   "first": "2008-01-02",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "SXRT.DE",
+   "src": "yahoo",
+   "rows": 4247,
+   "first": "2010-03-11",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "IS3N.DE",
+   "src": "yahoo",
+   "rows": 3166,
+   "first": "2014-06-11",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "ZPRR.DE",
+   "src": "yahoo",
+   "rows": 3056,
+   "first": "2014-11-10",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "4GLD.DE",
+   "src": "yahoo",
+   "rows": 4325,
+   "first": "2009-11-13",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "EUNH.DE",
+   "src": "yahoo",
+   "rows": 4473,
+   "first": "2009-04-17",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "^VIX",
+   "src": "yahoo",
+   "rows": 6018,
+   "first": "2003-01-02",
+   "last": "2026-11-27"
+  },
+  {
+   "sym": "^GSPC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KMB",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MDLZ",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HSY",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GIS",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CAG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "YUM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SPGI",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MCO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ICE",
+   "src": "yahoo",
+   "rows": 5289,
+   "first": "2005-11-16",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CME",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MMC",
+   "src": "missing",
+   "rows": 0
+  },
+  {
+   "sym": "AON",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CB",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "TRV",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "ADP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PAYX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "VLO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MPC",
+   "src": "yahoo",
+   "rows": 3879,
+   "first": "2011-06-24",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "KMI",
+   "src": "yahoo",
+   "rows": 3971,
+   "first": "2011-02-11",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WMB",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "BP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SHEL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "UNP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "CSX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NOC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "GD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LHX",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "WM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "RSG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "HLT",
+   "src": "yahoo",
+   "rows": 3258,
+   "first": "2013-12-12",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NUE",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "STLD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SCCO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "LIN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "APD",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "VMC",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "MLM",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SHW",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PPG",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "DUK",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "SO",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AEP",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "XEL",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "PSA",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "EXR",
+   "src": "yahoo",
+   "rows": 5607,
+   "first": "2004-08-16",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "O",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "NNN",
+   "src": "yahoo",
+   "rows": 6014,
+   "first": "2003-01-02",
+   "last": "2026-11-25"
+  },
+  {
+   "sym": "AVB",
+   "src": "missing",
+   "rows": 0
+  },
+  {
+   "sym": "EQR",
+   "src": "missing",
+   "rows": 0
+  }
+ ]
+}
